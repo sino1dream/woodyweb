@@ -1,7 +1,15 @@
 import unittest
 
 from fundcalc import PalmmicroFundCalculator
-from stockdata import DailyRecord, FundProfile, MemoryFundDataSource, MySqlFundDataSource, StockDataArrayBuilder, get_input_symbol_array
+from stockdata import (
+    DailyRecord,
+    FundProfile,
+    MemoryFundDataSource,
+    MySqlFundDataSource,
+    StockDataArrayBuilder,
+    build_fund_calculator,
+    get_input_symbol_array,
+)
 
 
 class FakeCursor:
@@ -112,6 +120,7 @@ class FakeConnection:
 class StockDataArrayBuilderTest(unittest.TestCase):
     def test_input_symbols_match_php_normalization_shape(self):
         self.assertEqual(get_input_symbol_array("sz159518, SH513100\nfx_susdcny"), ["SZ159518", "SH513100", "fx_susdcny"])
+        self.assertEqual(get_input_symbol_array("sz159518" + chr(0xFF0C) + "sh513100" + chr(0x3001) + "qqq"), ["SZ159518", "SH513100", "QQQ"])
 
     def test_builds_direct_calibrated_fund_data(self):
         source = MemoryFundDataSource(
@@ -152,6 +161,28 @@ class StockDataArrayBuilderTest(unittest.TestCase):
             },
         )
         self.assertAlmostEqual(PalmmicroFundCalculator(data).est_net_value("SZ159518"), 1.3003748571428573)
+
+    def test_build_fund_calculator_from_source(self):
+        source = MemoryFundDataSource(
+            stocks={"SZ159518": "1"},
+            profiles={
+                "SZ159518": FundProfile(
+                    symbol="SZ159518",
+                    stock_id="1",
+                    position=0.8,
+                    official_date="2026-06-10",
+                    cny_est=7.1,
+                    est_symbol="XOP",
+                    est_netvalue=130.68,
+                )
+            },
+            calibration={"1": [DailyRecord("2026-06-10", 700.0)]},
+            netvalue={("1", "2026-06-10"): 1.2},
+        )
+
+        calculator = build_fund_calculator(source, "SZ159518")
+
+        self.assertAlmostEqual(calculator.est_net_value("SZ159518"), 1.3003748571428573)
 
     def test_builds_leverage_intermediate_entries(self):
         source = MemoryFundDataSource(

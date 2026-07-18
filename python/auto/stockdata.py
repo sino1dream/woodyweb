@@ -1,13 +1,21 @@
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
 from typing import Any, Mapping
 
-from fundcalc import qdii_est_symbol, qdii_hk_est_symbol, qdii_jp_est_symbol, qdii_eu_est_symbol, qdii_qqq_symbols, qdii_spy_symbols
+from fundcalc import (
+    PalmmicroFundCalculator,
+    qdii_est_symbol,
+    qdii_hk_est_symbol,
+    qdii_jp_est_symbol,
+    qdii_eu_est_symbol,
+    qdii_qqq_symbols,
+    qdii_spy_symbols,
+)
 
 FLOAT_PRECISION = 6
 YAHOO_INDEX_CHAR = "^"
+INPUT_SYMBOL_SEPARATORS = (",", chr(0xFF0C), chr(0x3001), "\r", "\n")
 
 
 @dataclass(frozen=True)
@@ -86,7 +94,9 @@ def stock_get_symbol(text: str) -> str:
 
 
 def get_input_symbol_array(symbols: str) -> list[str]:
-    normalized = re.sub(r"[,，、\r\n]+", " ", symbols)
+    normalized = symbols
+    for separator in INPUT_SYMBOL_SEPARATORS:
+        normalized = normalized.replace(separator, " ")
     return [stock_get_symbol(part) for part in normalized.split() if part]
 
 
@@ -245,6 +255,15 @@ class StockDataArrayBuilder:
 def build_stock_data_from_mysql_env(symbols: str, symbol_range: set[str] | None = None) -> dict[str, dict[str, Any]]:
     source = MySqlFundDataSource.from_env()
     return StockDataArrayBuilder(source).build(symbols, symbol_range)
+
+
+def build_fund_calculator(source: FundDataSource, symbols: str, symbol_range: set[str] | None = None) -> PalmmicroFundCalculator:
+    return PalmmicroFundCalculator(StockDataArrayBuilder(source).build(symbols, symbol_range))
+
+
+def build_fund_calculator_from_mysql_env(symbols: str, symbol_range: set[str] | None = None) -> PalmmicroFundCalculator:
+    source = MySqlFundDataSource.from_env()
+    return build_fund_calculator(source, symbols, symbol_range)
 
 
 @dataclass
