@@ -133,11 +133,13 @@ Flask 路由
 2. ~~`php/stock/stockref.php`、`php/stock/stockprefetch.php`：实时行情和缓存。~~
    已完成，见 `python/auto/stockref.py`、`python/auto/stockprefetch.py`、
    `python/auto/tzutil.py` 与 `python/auto/README_stockref_migration.md`。
-3. `php/stock/mysqlref.php`、`fundref.php`、`qdiiref.php`：引用对象层。
+3. ~~`php/stock/mysqlref.php`、`fundref.php`、`qdiiref.php`：引用对象层。~~
+   已完成，见 `python/auto/refobj.py` 与
+   `python/auto/README_refobj_migration.md`（含 `cnyref.php` 与 `GbToUtf8()`）。
 4. `php/ui/table.php`、`stocktable.php`、`stockdisp.php`、`link.php`：页面渲染层。
 5. `php/layout.php`、`php/menu.php`、`php/stocklink.php`：站点布局和导航。
 
-第 1、2 步已经落地：
+第 1、2、3 步已经落地：
 
 - `python/auto/stocksymbol.py`：`stocksymbol.php` 的纯逻辑移植（常量、全部符号表、
   数字区间、符号构造、`StockSymbol` 分类与交易时段/时区）。
@@ -298,6 +300,16 @@ Flask 路由
   新浪指数点位，导致同一套用例在装了 `requests` 的机器上全绿、没装的机器上红 6 个。
   现把联网收敛成可注入的 `pair_fetcher`，测试不再依赖外网。
   详见 `python/auto/README_usnav_and_hedge_migration.md`。
+- **引用对象层（第 3 步）**：`refobj.py` 迁 `mysqlref.php` / `fundref.php` /
+  `qdiiref.php` / `cnyref.php` 四个文件与 `GbToUtf8()`，`Gb2312` 查表改用标准库
+  `gb18030`。它是"一个有状态的符号"：行情 + 库里的 id/净值/仓位/校准值 + 三个估值，
+  页面上几乎所有数字都从它身上取。三条刻意取舍：**不在构造时联网**（名称由数据源
+  给，PHP 是 `LoadSinaFundData()`）、**三个 EST 不在这里实现**（唯一实现是
+  `fundestcalc`，避免重演"估值 4.59 变 20245"那次两条实现并存的事故）、
+  **外部依赖全部可注入**。四个地区合成一个类 + `region` 查表。
+  已知偏差：PHP 这个位置用的 `FundPairReference` / `HoldingsReference` 未迁移，
+  由 `EstReference` 顶上；`MyStockReference`（`stock_ref`）由调用方注入。
+  详见 `python/auto/README_refobj_migration.md`。
 
 远端分支 `origin/devin/1780933111-migrate-php-core-to-python` 已有
 `python/core/stock_symbol.py` 和 `python/core/sina_fetcher.py`：
@@ -312,7 +324,7 @@ Flask 路由
 
 ```powershell
 cd F:\woody\woodyweb\python
-python -B -m unittest discover -s auto -p "test_*.py"        # 522 个
+python -B -m unittest discover -s auto -p "test_*.py"        # 574 个
 python -B -m unittest discover -s web\tests -p "test_*.py"   # 61 个
 ```
 

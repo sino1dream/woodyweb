@@ -1,0 +1,614 @@
+"""`python/auto/refobj.py` 的单元测试。
+
+对应 PHP `php/stock/mysqlref.php`、`fundref.php`、`qdiiref.php`、`cnyref.php`。
+
+与 `test_autocalibration.py` 一样，**这些用例不许联网**：数据源是内存假实现，
+行情加载回调默认不传（传了也不会被自动调用）。
+"""
+
+from __future__ import annotations
+
+import unittest
+
+import refobj
+import stockref
+from refobj import (
+    NETVALUE_PRECISION,
+    QDII_REGIONS,
+    CnyReference,
+    EstReference,
+    FundReference,
+    MysqlReference,
+    QdiiReference,
+    build_qdii_reference,
+    gb_to_utf8,
+)
+
+
+class Rec:
+    """日频记录（只需要 ``date`` / ``close``）。"""
+
+    def __init__(self, date=None, close=None):
+        self.date = date
+        self.close = close
+
+
+class FakeSource:
+    """内存数据源。
+
+    默认数据取自演示库里 ``SZ161130`` 那一组（见 README_autocalibration）：
+    校准值 32.079543、校准日净值 4.5452、仓位 0.95。
+    """
+
+    STOCK = {
+        "SZ161130": 1,
+        "SH513100": 2,
+        "QQQ": 4,
+        "^NDX": 6,
+        "USCNY": 8,
+        "fx_susdcny": 9,
+        "HKCNY": 10,
+        "fx_shkdcny": 11,
+    }
+
+    def __init__(self, names=None, calibration=None, netvalue=None, history=None,
+                 position=None, adjclose=None, net_value_count=2):
+        self.names = names or {}
+        self.calibration = calibration or {}
+        self.netvalue = netvalue or {}
+        self.history = history or {}
+        self.adjclose = adjclose or {}
+        self.position = position or {}
+        self.net_value_count = net_value_count
+        self.written_calibration = []
+
+    def get_stock_id(self, symbol):
+        return self.STOCK.get(symbol)
+
+    def get_stock_name(self, symbol):
+        return self.names.get(symbol)
+
+    def get_position(self, stock_id):
+        return self.position.get(stock_id)
+
+    def get_calibration_now(self, stock_id):
+        record = self.calibration.get(stock_id)
+        return Rec(*record) if record else None
+
+    def get_netvalue_close(self, stock_id, date):
+        return self.netvalue.get((stock_id, str(date)))
+
+    def get_history_close(self, stock_id, date):
+        return self.history.get((stock_id, str(date)))
+
+    def get_history_adjclose(self, stock_id, date):
+        return self.adjclose.get((stock_id, str(date)))
+
+    def get_latest_net_value_close(self, stock_id):
+        return self.netvalue.get((stock_id, "latest"))
+
+    def get_latest_net_value_date(self, stock_id):
+        return self.netvalue.get((stock_id, "latest_date"))
+
+    def get_latest_history_close(self, stock_id):
+        return self.history.get((stock_id, "latest"))
+
+    def get_latest_history_date(self, stock_id):
+        return self.history.get((stock_id, "latest_date"))
+
+    def get_prev_history_close(self, stock_id, date):
+        return self.history.get((stock_id, "prev"))
+
+    def count_net_value(self, stock_id):
+        return self.net_value_count
+
+    def write_calibration(self, stock_id, date, value):
+        self.written_calibration.append((stock_id, date, value))
+        return True
+
+
+class GbToUtf8Test(unittest.TestCase):
+    """`GbToUtf8()`：PHP 是手写查表，Python 用标准库 ``gb18030``。"""
+
+    def test_decodes_bytes(self):
+        self.assertEqual(gb_to_utf8("易方达".encode("gb18030")), "易方达")
+
+    def test_returns_chinese_text_unchanged(self):
+        """已经是中文的 str 不能再转（会乱码），必须原样返回。"""
+        self.assertEqual(gb_to_utf8("易方达"), "易方达")
+
+    def test_handles_none(self):
+        self.assertIsNone(gb_to_utf8(None))
+
+    def test_ascii_passes_through(self):
+        self.assertEqual(gb_to_utf8("QQQ"), "QQQ")
+
+
+class MysqlReferenceTest(unittest.TestCase):
+    def test_position_falls_back_to_symbol_default(self):
+        """库里没有仓位时回落 ``GetDefaultPosition()``：LOF 是 0.95。
+
+        这条盯着一个真 bug：早期版本把默认值硬编码成 1.0，等于"满仓"，
+        而 PHP 官网 `sz161125cn.php` 明写"仓位估算值使用0.95"。
+        """
+        self.assertAlmostEqual(MysqlReference("SZ161130", source=FakeSource()).get_position(), 0.95)
+        self.assertAlmostEqual(MysqlReference("QQQ", source=FakeSource()).get_position(), 1.0)
+
+    def test_stored_position_wins(self):
+        source = FakeSource(position={1: 0.88})
+        self.assertAlmostEqual(MysqlReference("SZ161130", source=source).get_position(), 0.88)
+
+    def test_zero_position_is_treated_as_missing(self):
+        """PHP 用真值判断，仓位写成 0 等同于"没读到"，回落默认值。"""
+        source = FakeSource(position={1: 0.0})
+        self.assertAlmostEqual(MysqlReference("SZ161130", source=source).get_position(), 0.95)
+
+    def test_is_fund_by_net_value_count(self):
+        self.assertTrue(MysqlReference("SZ161130", source=FakeSource(net_value_count=3)).is_fund())
+        self.assertFalse(MysqlReference("QQQ", source=FakeSource(net_value_count=0)).is_fund())
+
+    def test_get_close_uses_price_for_today(self):
+        ref = MysqlReference("SZ161130", source=FakeSource())
+        ref.str_price = "4.796"
+        ref.str_date = "2026-10-02"
+        self.assertEqual(ref.get_close("2026-10-02"), "4.796")
+
+    def test_get_close_falls_back_to_history(self):
+        source = FakeSource(history={(1, "2026-10-01"): 4.75})
+        ref = MysqlReference("SZ161130", source=source)
+        self.assertEqual(ref.get_close("2026-10-01"), 4.75)
+
+    def test_get_val_without_date_is_current_price(self):
+        ref = MysqlReference("SZ161130", source=FakeSource())
+        ref.str_price = "4.796"
+        self.assertAlmostEqual(ref.get_val(), 4.796)
+
+    def test_get_net_value_prefers_netvalue_when_count_positive(self):
+        source = FakeSource(net_value_count=2, netvalue={(1, "2026-10-01"): 4.5452},
+                            history={(1, "2026-10-01"): 4.75})
+        ref = MysqlReference("SZ161130", source=source)
+        # 有净值记录 -> 取净值（4.5452），不是行情价（4.75）
+        self.assertAlmostEqual(ref.get_net_value("2026-10-01"), 4.5452)
+
+    def test_get_net_value_falls_back_to_price_without_records(self):
+        """没有净值记录时拿行情当净值用 —— 这是 PHP 的原设计，不是兜底 bug。"""
+        source = FakeSource(net_value_count=0, history={(1, "2026-10-01"): 4.75})
+        ref = MysqlReference("SZ161130", source=source)
+        self.assertAlmostEqual(ref.get_net_value("2026-10-01"), 4.75)
+
+    def test_get_net_value_display_precision(self):
+        """有净值记录用 4 位（``NETVALUE_PRECISION``），没有就用符号精度。"""
+        with_netvalue = MysqlReference("SZ161130", source=FakeSource(net_value_count=2))
+        self.assertEqual(with_netvalue.get_net_value_display(4.5452), "4.5452")
+        self.assertEqual(NETVALUE_PRECISION, 4)
+
+        without = MysqlReference("SZ161130", source=FakeSource(net_value_count=0))
+        # 没有净值时显示的是行情价，按符号精度（3 位）
+        self.assertEqual(without.get_net_value_display(4.5452), "4.545")
+
+    def test_get_net_value_display_of_false_is_empty(self):
+        ref = MysqlReference("SZ161130", source=FakeSource())
+        self.assertEqual(ref.get_net_value_display(None), "")
+
+    def test_chinese_name_falls_back_to_english(self):
+        """数据里常常只有一个名字，那时统一放在 strName。"""
+        ref = MysqlReference("SZ161130", source=FakeSource())
+        ref.str_name = "易方达纳斯达克100LOF"
+        self.assertEqual(ref.get_chinese_name(), "易方达纳斯达克100LOF")
+
+    def test_est_net_value_priority_is_realtime_fair_official(self):
+        """新鲜度优先：实时 > 参考 > 官方。
+
+        三个估值字段是 ``FundReference`` 才有的（PHP 声明在 ``fundref.php:26-28``）；
+        ``MysqlReference::GetOfficialNetValue()`` 是**写死 ``return false``**
+        （``mysqlref.php:81``），所以这里必须用 ``FundReference``。
+        """
+        ref = FundReference("SZ161130", source=FakeSource())
+        self.assertIsNone(ref.get_est_net_value())
+
+        ref.official_net_value = 4.5
+        self.assertAlmostEqual(ref.get_est_net_value(), 4.5)
+        ref.fair_net_value = 4.6
+        self.assertAlmostEqual(ref.get_est_net_value(), 4.6)
+        ref.realtime_net_value = 4.7
+        self.assertAlmostEqual(ref.get_est_net_value(), 4.7)
+
+    def test_base_class_has_no_estimation_at_all(self):
+        """`MysqlReference` 基类的三个估值恒为 ``None`` —— 对齐 PHP 的 ``return false``。"""
+        ref = MysqlReference("SZ161130", source=FakeSource())
+        ref.official_net_value = 4.5
+        self.assertIsNone(ref.get_official_net_value())
+        self.assertIsNone(ref.get_fair_net_value())
+        self.assertIsNone(ref.get_realtime_net_value())
+
+    def test_missing_source_methods_do_not_raise(self):
+        """数据源缺方法时按"取不到"处理，与 PHP 的 false 对齐。"""
+        ref = MysqlReference("SZ161130", source=object())
+        self.assertIsNone(ref.get_stock_id())
+        self.assertIsNone(ref.get_close("2026-10-01"))
+
+        # IsFund() 的第二条路是 IsFundA()，只看符号本身、与数据源无关；
+        # SZ161130 是 A 股基金，返回 True 才是对的，所以这里用非基金符号。
+        self.assertFalse(MysqlReference("QQQ", source=object()).is_fund())
+
+
+class ConstructionIsOfflineTest(unittest.TestCase):
+    """**回归**：构造引用对象不许联网。
+
+    PHP 的 ``FundReference::LoadData()`` 会调 ``LoadSinaFundData()`` 抓基金名。
+    本版改成从数据源取名字（见 ``refobj`` 模块 docstring 取舍 1），
+    所以这里把新浪加载换成"一调用就抛异常"，断言构造过程不会碰到它。
+    """
+
+    def test_construction_does_not_load_sina_data(self):
+        def _boom(self, *args, **kwargs):
+            raise AssertionError("构造引用对象不该联网抓行情")
+
+        original = stockref.StockReference.load_sina_data
+        stockref.StockReference.load_sina_data = _boom
+        try:
+            source = FakeSource(names={"SZ161130": "易方达纳斯达克100LOF"})
+            ref = QdiiReference("SZ161130", source=source)
+            self.assertEqual(ref.get_chinese_name(), "易方达纳斯达克100LOF")
+        finally:
+            stockref.StockReference.load_sina_data = original
+
+    def test_missing_name_keeps_has_data_false(self):
+        """数据源没有名字时等价于 PHP 抓失败：``SetHasData(false)``。"""
+        ref = FundReference("SZ161130", source=FakeSource())
+        self.assertFalse(ref.has_quote_data())
+
+
+class FundReferenceTest(unittest.TestCase):
+    def test_factor_comes_from_calibration(self):
+        source = FakeSource(calibration={1: ("2026-10-01", 32.079543)})
+        self.assertAlmostEqual(FundReference("SZ161130", source=source).get_factor(), 32.079543)
+
+    def test_factor_defaults_to_one(self):
+        self.assertAlmostEqual(FundReference("SZ161130", source=FakeSource()).get_factor(), 1.0)
+
+    def test_adjust_and_reverse_are_inverse(self):
+        source = FakeSource(calibration={1: ("2026-10-01", 32.079543)},
+                            netvalue={(1, "2026-10-01"): 4.5452}, position={1: 0.95})
+        ref = FundReference("SZ161130", source=source)
+
+        self.assertAlmostEqual(ref._get_calibration_base_val(), 4.5452)
+        adjusted = ref.adjust_position(100.0)
+        self.assertAlmostEqual(ref.reverse_adjust_position(adjusted), 100.0, places=6)
+
+    def test_forex_ref_uses_spot_for_etf_and_cny_for_lof(self):
+        """ETF 按盘中即期汇率申赎，LOF 只能按当天中间价。"""
+        lof = QdiiReference("SZ161130", source=FakeSource(), auto_estimate=False)
+        self.assertIs(lof.get_forex_ref(), lof.cny_ref)
+
+        etf = QdiiReference("SH513100", source=FakeSource(), auto_estimate=False)
+        self.assertIs(etf.get_forex_ref(), etf.forex_ref)
+
+    def test_set_est_ref_accepts_symbol_string(self):
+        ref = FundReference("SZ161130", source=FakeSource())
+        ref.set_est_ref("QQQ")
+        self.assertIsInstance(ref.get_est_ref(), EstReference)
+        self.assertEqual(ref.get_est_ref().get_symbol(), "QQQ")
+
+    def test_realtime_ref_requires_pair_ref(self):
+        ref = FundReference("SZ161130", source=FakeSource())
+        self.assertIsNone(ref.get_realtime_ref())
+
+        class WithPair:
+            def get_pair_ref(self):
+                return "pair"
+
+        ref.set_est_ref(WithPair())
+        self.assertEqual(ref.get_realtime_ref(), "pair")
+
+    def test_delegates_to_stock_ref(self):
+        """A 股基金的场内行情才是"真价格"，PHP 把这几个方法委托给 stock_ref。"""
+
+        class StockRef:
+            def get_symbol(self):
+                return "SZ161130A"
+
+            def get_stock_id(self):
+                return 99
+
+            def get_price_display(self, disp=None, prev=None, precision=None):
+                return "delegated"
+
+            def get_percentage_text(self, divisor=None, dividend=None):
+                return "1.23%"
+
+        ref = FundReference("SZ161130", source=FakeSource(), stock_ref=StockRef())
+        self.assertEqual(ref.get_symbol(), "SZ161130A")
+        self.assertEqual(ref.get_stock_id(), 99)
+        self.assertEqual(ref.get_price_display(), "delegated")
+        self.assertEqual(ref.get_percentage_text(), "1.23%")
+
+    def test_insert_fund_calibration_prefers_source_writer(self):
+        source = FakeSource()
+        ref = FundReference("SZ161130", source=source)
+        ref.str_date = "2026-10-02"
+        ref.factor = 41.5
+
+        self.assertTrue(ref.insert_fund_calibration())
+        self.assertEqual(source.written_calibration, [(1, "2026-10-02", 41.5)])
+
+    def test_insert_fund_calibration_without_date_is_noop(self):
+        ref = FundReference("SZ161130", source=FakeSource())
+        self.assertFalse(ref.insert_fund_calibration())
+
+
+class CnyReferenceTest(unittest.TestCase):
+    """`CnyReference`：汇率只有每天一个中间价，且不在行情表里。"""
+
+    def test_loads_from_netvalue_and_fixes_time(self):
+        source = FakeSource(netvalue={(8, "latest"): 6.705, (8, "latest_date"): "2026-10-02"},
+                            history={(8, "prev"): 6.7})
+        ref = CnyReference("USCNY", source=source)
+
+        self.assertEqual(ref.get_price(), "6.705")
+        self.assertEqual(ref.get_date(), "2026-10-02")
+        # 中国外汇交易中心 09:15 公布中间价
+        self.assertEqual(ref.get_time(), "09:15:00")
+
+    def test_get_close_reads_netvalue_table(self):
+        """汇率压根不在 stockhistory 里，`CnyReference` 把 GetClose 改成查净值表。"""
+        source = FakeSource(netvalue={(8, "2026-10-01"): 6.71}, history={(8, "2026-10-01"): 1.0})
+        ref = CnyReference("USCNY", source=source)
+        self.assertEqual(ref.get_close("2026-10-01"), 6.71)
+
+
+class QdiiRegionTest(unittest.TestCase):
+    """四个地区的中间价与即期外汇符号（``qdiiref.php`` 底部四个子类）。"""
+
+    def test_region_symbols(self):
+        self.assertEqual(QDII_REGIONS["us"], ("USCNY", "fx_susdcny"))
+        self.assertEqual(QDII_REGIONS["hk"], ("HKCNY", "fx_shkdcny"))
+        self.assertEqual(QDII_REGIONS["jp"], ("JPCNY", "fx_sjpycny"))
+        self.assertEqual(QDII_REGIONS["eu"], ("EUCNY", "fx_seurcny"))
+
+    def test_us_fund_uses_us_cny(self):
+        ref = QdiiReference("SZ161130", source=FakeSource(), auto_estimate=False)
+        self.assertEqual(ref.cny_symbol, "USCNY")
+        self.assertEqual(ref.forex_symbol, "fx_susdcny")
+        self.assertEqual(ref.get_cny_ref().get_symbol(), "USCNY")
+
+    def test_hk_fund_uses_hk_cny(self):
+        ref = QdiiReference("SH510900", source=FakeSource(), region="hk", auto_estimate=False)
+        self.assertEqual(ref.cny_symbol, "HKCNY")
+        self.assertEqual(ref.forex_symbol, "fx_shkdcny")
+
+    def test_est_symbol_resolution(self):
+        """``SZ161130`` 的估值标的是 ``^NDX``（不是 ``QQQ``）。"""
+        ref = QdiiReference("SZ161130", source=FakeSource(), auto_estimate=False)
+        self.assertEqual(ref.get_est_ref().get_symbol(), "^NDX")
+
+    def test_build_guesses_region(self):
+        source = FakeSource()
+        self.assertEqual(build_qdii_reference("SZ161130", source=source, auto_estimate=False).region, "us")
+        self.assertEqual(build_qdii_reference("SH510900", source=source, auto_estimate=False).region, "hk")
+
+
+class QdiiValueTest(unittest.TestCase):
+    """`GetQdiiValue` / `GetEstValue` / 份额换算。"""
+
+    def _reference(self):
+        source = FakeSource(
+            calibration={1: ("2026-10-01", 32.079543)},
+            netvalue={(1, "2026-10-01"): 4.5452,
+                      # LOF 的汇率走中间价引用，所以 USCNY(8) 也得有最新中间价
+                      (8, "latest"): 6.705, (8, "latest_date"): "2026-10-02"},
+            position={1: 0.95},
+        )
+        ref = QdiiReference("SZ161130", source=source, auto_estimate=False)
+        # 不传汇率时取的正是这个中间价，两个方向必须用同一个数
+        self.assertEqual(ref.get_forex_ref().get_price(), "6.705")
+        return ref
+
+    def test_get_qdii_value_formula(self):
+        """``QdiiGetVal`` 之后再过一次仓位调整。"""
+        ref = self._reference()
+        raw = 31098.7787 * 6.705 / 32.079543
+        expected = 0.95 * raw + 0.05 * 4.5452
+        self.assertAlmostEqual(ref.get_qdii_value(31098.7787, 6.705), expected, places=6)
+
+    def test_get_est_value_is_the_inverse(self):
+        """``GetEstValue(GetQdiiValue(x)) == x`` —— 这是它能自证的唯一约束。
+
+        注意两个方向取汇率的方式必须一致：``GetQdiiValue`` 不传汇率时用
+        ``GetForexRef()->GetPrice()``，``GetEstValue`` 也用它。所以假数据里
+        USCNY 必须有最新中间价，否则算出来的逆是 0.0。
+        """
+        ref = self._reference()
+        for value in (31098.7787, 7790.5298, 100.0):
+            self.assertAlmostEqual(ref.get_est_value(ref.get_qdii_value(value, 6.705)), value, places=4)
+
+    def test_get_qdii_value_without_factor_is_zero(self):
+        ref = QdiiReference("SZ161130", source=FakeSource(), auto_estimate=False)
+        self.assertEqual(ref.factor, 1.0)
+        self.assertGreater(ref.get_qdii_value(1.0, 1.0), 0.0)
+
+    def test_quantity_conversion(self):
+        ref = self._reference()
+        self.assertEqual(ref.get_est_quantity(3200), int(3200 / 32.079543))
+        self.assertEqual(ref.get_qdii_quantity(100), int(100 * 32.079543))
+
+    def test_quantity_round_trip_loses_less_than_one_unit(self):
+        """份额往返会丢一点 —— ``int()`` 截断造成的，PHP 同样如此。
+
+        丢的量**小于一个中间层单位**：先把基金份额除以校准值再截断，最多丢
+        不到 1 份中间层，乘回去就是不到 ``fFactor``。100000 份实测回到 99991，
+        差 9 —— 校准值 32.08，所以这不是 bug，是截断的正常上界。
+        """
+        ref = self._reference()
+        factor = ref.get_factor()
+        for quantity in (100000, 50000, 12345):
+            back = ref.get_qdii_quantity(ref.get_est_quantity(quantity))
+            self.assertLessEqual(back, quantity)
+            self.assertGreater(back, quantity - factor)
+
+
+class QdiiEstimateTest(unittest.TestCase):
+    """``EstNetValue()``：**只做流程，算法委托给 fundestcalc**。
+
+    用一个假 estimator 断言"三个字段被正确填上"，而不是在这里重算一遍公式
+    —— 两条实现并存正是本项目出过事故的原因。
+    """
+
+    class FakeEstimator:
+        def __init__(self, official=None, fair=None, realtime=None):
+            self.official = official
+            self.fair = fair
+            self.realtime = realtime
+            self.store = None
+            self.recorded = []
+
+        def compute_official(self, symbol):
+            return self.official
+
+        def compute_fair(self, symbol):
+            return self.fair
+
+        def compute_realtime(self, symbol):
+            return self.realtime
+
+        def record_official(self, symbol):
+            self.recorded.append(symbol)
+            return True
+
+    class EstRecord:
+        def __init__(self, date, value):
+            self.date = date
+            self.value = value
+
+    def _reference(self, estimator):
+        source = FakeSource(
+            calibration={1: ("2026-10-01", 32.079543)},
+            netvalue={(1, "2026-10-01"): 4.5452, (8, "2026-10-02"): 6.705},
+            position={1: 0.95},
+        )
+        ref = QdiiReference("SZ161130", source=source, auto_estimate=False, estimator=estimator)
+        # 中间层（^NDX）与官方净值同日：官方 EST 用那天的中间价
+        ref.get_est_ref().str_date = "2026-10-02"
+        ref.get_cny_ref().str_price = "6.705"
+        # 中间价已经翻到 10-03。这个"错开"是必要的：PHP 只在
+        # 汇率日期或中间层日期 != 官方日期时才算参考 EST —— 都相同说明
+        # 参考 EST 就是官方 EST，没有信息量。
+        ref.get_cny_ref().str_date = "2026-10-03"
+        return ref
+
+    def test_fills_three_fields_from_estimator(self):
+        estimator = self.FakeEstimator(
+            official=self.EstRecord("2026-10-02", 4.592143),
+            fair=self.EstRecord("2026-10-02", 4.6),
+            realtime=self.EstRecord("2026-10-02", 4.61),
+        )
+        ref = self._reference(estimator)
+        # 让 get_realtime_ref 有值，实时 EST 才会算
+        ref.get_est_ref().get_pair_ref = lambda: "pair"
+
+        ref.est_net_value()
+
+        self.assertAlmostEqual(ref.get_official_net_value(), 4.592143)
+        self.assertEqual(ref.get_official_date(), "2026-10-02")
+        self.assertAlmostEqual(ref.get_fair_net_value(), 4.6)
+        self.assertAlmostEqual(ref.get_realtime_net_value(), 4.61)
+        # 新鲜度优先
+        self.assertAlmostEqual(ref.get_est_net_value(), 4.61)
+
+    def test_records_official_est(self):
+        estimator = self.FakeEstimator(official=self.EstRecord("2026-10-02", 4.59))
+        ref = self._reference(estimator)
+
+        ref.est_net_value()
+
+        self.assertEqual(estimator.recorded, ["SZ161130"])
+
+    def test_fair_est_needs_realtime_ref(self):
+        """实时 EST 只在中间层带配对引用时才存在（``$est_ref->EstFromPair()``）。"""
+        estimator = self.FakeEstimator(official=self.EstRecord("2026-10-02", 4.59),
+                                       realtime=self.EstRecord("2026-10-02", 4.61))
+        ref = self._reference(estimator)
+
+        ref.est_net_value()
+
+        self.assertIsNone(ref.get_realtime_net_value())
+
+    def test_without_estimator_is_not_fatal(self):
+        """算不出 EST 也不能让页面挂：三个字段保持空。"""
+        source = FakeSource()
+        ref = QdiiReference("SZ161130", source=source)
+        self.assertIsNone(ref.get_est_net_value())
+
+    def test_estimator_exception_is_swallowed(self):
+        class Boom:
+            def compute_official(self, symbol):
+                raise RuntimeError("模拟估算失败")
+
+            def compute_fair(self, symbol):
+                raise RuntimeError("模拟估算失败")
+
+            def compute_realtime(self, symbol):
+                raise RuntimeError("模拟估算失败")
+
+        ref = self._reference(Boom())
+        ref.est_net_value()
+        self.assertIsNone(ref.get_official_net_value())
+
+
+class QdiiAdjustFactorTest(unittest.TestCase):
+    """``AdjustFactor()``：**只在新的官方净值到货那天**重算校准值。"""
+
+    def test_does_not_recalculate_when_net_value_already_known(self):
+        """该日期已有净值 -> PHP 的 ``InsertDaily`` 返回 false -> 不重算。"""
+        source = FakeSource(netvalue={(1, "2026-10-02"): 4.5452})
+        ref = QdiiReference("SZ161130", source=source, auto_estimate=False)
+        ref.str_date = "2026-10-02"
+        ref.str_price = "4.796"
+
+        self.assertIsNone(ref.adjust_factor())
+
+    def test_recalculates_when_net_value_is_new(self):
+        source = FakeSource(
+            netvalue={(6, "2026-10-02"): 31098.7787, (8, "2026-10-02"): 6.705},
+        )
+        ref = QdiiReference("SZ161130", source=source, auto_estimate=False)
+        ref.str_date = "2026-10-02"
+        ref.str_price = "4.796"
+        ref.get_cny_ref().str_date = "2026-10-01"
+
+        factor = ref.adjust_factor()
+
+        expected = 31098.7787 * 6.705 / 4.796
+        self.assertIsNotNone(factor)
+        self.assertAlmostEqual(factor, expected, places=6)
+        self.assertAlmostEqual(ref.get_factor(), expected, places=6)
+
+    def test_returns_none_when_est_value_missing(self):
+        source = FakeSource(netvalue={(8, "2026-10-02"): 6.705})
+        ref = QdiiReference("SZ161130", source=source, auto_estimate=False)
+        ref.str_date = "2026-10-02"
+        ref.str_price = "4.796"
+        ref.get_cny_ref().str_date = "2026-10-01"
+
+        self.assertIsNone(ref.adjust_factor())
+
+
+class AliasTest(unittest.TestCase):
+    """PHP 原名别名（见 AGENTS.md）必须真的指向同一个实现。"""
+
+    def test_method_aliases(self):
+        ref = MysqlReference("SZ161130", source=FakeSource())
+        self.assertEqual(ref.GetClose("2026-10-01"), ref.get_close("2026-10-01"))
+        self.assertEqual(ref.GetNetValue("2026-10-01"), ref.get_net_value("2026-10-01"))
+        self.assertEqual(ref.GetPosition(), ref.get_position())
+
+        fund = QdiiReference("SZ161130", source=FakeSource(), auto_estimate=False)
+        self.assertEqual(fund.GetQdiiValue(1.0, 1.0), fund.get_qdii_value(1.0, 1.0))
+        self.assertEqual(fund.GetEstQuantity(100), fund.get_est_quantity(100))
+
+    def test_function_alias(self):
+        self.assertIs(refobj.GbToUtf8, gb_to_utf8)
+
+
+if __name__ == "__main__":
+    unittest.main()
