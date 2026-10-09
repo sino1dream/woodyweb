@@ -1,0 +1,279 @@
+body {
+  margin: 0;
+  color: #222;
+  background: #f6f7f8;
+  font-family: "Microsoft YaHei", "PingFang SC", Verdana, Arial, sans-serif;
+  font-size: 14px;
+}
+
+.site-header {
+  padding: 18px 28px;
+  color: #fff;
+  background: #049acc;
+}
+
+.site-title {
+  font-size: 22px;
+  font-weight: bold;
+}
+
+.site-nav {
+  margin-top: 10px;
+}
+
+.site-nav a {
+  margin-right: 18px;
+  color: #fff;
+  font-weight: bold;
+  text-decoration: none;
+}
+
+.site-main {
+  max-width: 980px;
+  margin: 24px auto;
+  padding: 0 18px;
+}
+
+.site-footer {
+  max-width: 980px;
+  margin: 24px auto;
+  padding: 12px 18px;
+  color: #666;
+  border-top: 1px solid #ddd;
+}
+
+h1,
+h2 {
+  color: #333;
+}
+
+.symbol-form input {
+  width: 220px;
+  padding: 8px;
+  border: 1px solid #bbb;
+  border-radius: 4px;
+}
+
+.symbol-form button {
+  padding: 8px 18px;
+  color: #fff;
+  background: #049acc;
+  border: 0;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.hint {
+  color: #777;
+}
+
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  background: #fff;
+}
+
+.data-table th,
+.data-table td {
+  padding: 8px 10px;
+  border: 1px solid #ddd;
+  text-align: left;
+  vertical-align: top;
+}
+
+.data-table th {
+  width: 180px;
+  color: #444;
+  background: #eef3f6;
+}
+
+.estimate {
+  color: magenta;
+  font-weight: bold;
+}
+
+.config-json {
+  overflow: auto;
+  padding: 14px;
+  background: #fff;
+  border: 1px solid #ddd;
+}
+
+.ok {
+  color: #087c25;
+  font-weight: bold;
+}
+
+.warning {
+  color: #cc0000;
+  font-weight: bold;
+}
+
+/* 分组列表：覆盖 .data-table th 的固定 180px 宽度，让各列按内容排布 */
+.fund-list th {
+  width: auto;
+}
+
+.fund-list thead th {
+  color: #fff;
+  background: #049acc;
+  white-space: nowrap;
+}
+
+.fund-list tbody tr:nth-child(even) {
+  background: #fafcfd;
+}
+
+.fund-list td.symbol {
+  font-family: Consolas, "Courier New", monospace;
+  white-space: nowrap;
+}
+
+.fund-list td a {
+  color: #049acc;
+  text-decoration: none;
+}
+
+.fund-list td a:hover {
+  text-decoration: underline;
+}
+
+.group-description {
+  color: #666;
+}
+
+.group-nav {
+  padding-left: 20px;
+}
+
+.group-nav a {
+  color: #049acc;
+}
+
+/* 溢价率列：正值（溢价）红、负值（折价）绿，遵循国内涨跌配色习惯 */
+.fund-list td.premium {
+  font-family: Consolas, "Courier New", monospace;
+  white-space: nowrap;
+}
+
+.fund-list td.premium.positive {
+  color: #cc0000;
+}
+
+.fund-list td.premium.negative {
+  color: #087c25;
+}
+
+/* 涨跌幅列：与溢价率同一套配色（涨红跌绿），对应生产端
+   <font color="red"> / <font color="black"> 的参考数据表 */
+.fund-list td.change {
+  font-family: Consolas, "Courier New", monospace;
+  white-space: nowrap;
+}
+
+.fund-list td.change.positive {
+  color: #cc0000;
+}
+
+.fund-list td.change.negative {
+  color: #087c25;
+}
+
+/* 日期与时间列：等宽字体对齐，扫描一列时数字位能对上 */
+.fund-list td.calibration-date,
+.fund-list td.net-value-date,
+.fund-list td.quote-date,
+.fund-list td.quote-time {
+  font-family: Consolas, "Courier New", monospace;
+  white-space: nowrap;
+}
+
+/* 基金净值与最新价：两者都是价格量，用同样的等宽字体便于上下对照。
+   净值一天一个数、价格盘中一直动，视觉上不加区别，靠列名区分。 */
+.fund-list td.price,
+.fund-list td.net-value {
+  font-family: Consolas, "Courier New", monospace;
+  white-space: nowrap;
+}
+
+/* 行情更新时间与数据源：次要信息，弱化显示避免和价格抢注意力 */
+.fund-list td.quote-time,
+.fund-list td.quote-source,
+.fund-list td.est-symbol {
+  color: #777;
+}
+
+.fund-list td.quote-source,
+.fund-list td.est-symbol {
+  font-size: 12px;
+}
+
+/* ---------------------------------------------------------------------------
+   历史数据页面（/history/<kind>/<symbol>）
+   对应 PHP 的 stockhistoryparagraph / fundhistoryparagraph /
+   netvaluehistoryparagraph / netvaluecloseparagraph /
+   calibrationhistoryparagraph / fundshareparagraph
+   --------------------------------------------------------------------------- */
+
+.history-nav {
+  margin: 0 0 10px;
+  padding: 6px 0;
+  border-bottom: 1px solid #e2e2e2;
+  font-size: 13px;
+}
+
+.history-nav a,
+.history-nav .current {
+  display: inline-block;
+  margin-right: 10px;
+  padding: 2px 8px;
+  border-radius: 3px;
+}
+
+.history-nav .current {
+  background: #2f6f9f;
+  color: #fff;
+}
+
+.paging {
+  color: #555;
+  font-size: 13px;
+}
+
+.paging a {
+  margin-left: 8px;
+}
+
+.history-table {
+  font-size: 13px;
+}
+
+.history-table th {
+  white-space: nowrap;
+}
+
+.history-table td {
+  white-space: nowrap;
+}
+
+/* 整行高亮：对应 PHP EchoMatchTableColumn() —— 实测仓位与库里仓位一致时 */
+.history-table tr.match {
+  background: #f2f8ee;
+}
+
+/* 列头颜色：对应 PHP <font color="...">，逐个映射到相近的可读色 */
+.history-table .col-blue { color: #1a4fa0; }
+.history-table .col-olive { color: #6b7a1f; }
+.history-table .col-orange { color: #b5651d; }
+.history-table .col-indigo { color: #3f3f9f; }
+.history-table .col-green { color: #087c25; }
+.history-table .col-maroon { color: #8b1a1a; }
+.history-table .col-magenta { color: #a0107a; }
+.history-table .col-navy { color: #1a2f6b; }
+
+/* 单元格颜色：数值涨跌，沿用 PHP 的红涨绿跌 */
+.history-table td.cell-red { color: #cc0000; }
+.history-table td.cell-green { color: #087c25; }
+.history-table td.cell-grey { color: #777; }
+.history-table td.cell-black { color: inherit; }
+

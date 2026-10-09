@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}{{ fund.name }} - 基金估值{% endblock %}
+{% block content %}
+  <h1>{{ fund.name }}【{{ fund.symbol }}】</h1>
+  <table class="data-table">
+    <tbody>
+      <tr><th>股票代码</th><td>{{ fund.symbol }}</td></tr>
+      <tr><th>名称</th><td>{{ fund.name }}</td></tr>
+      <tr><th>数据库 ID</th><td>{{ fund.stock_id }}</td></tr>
+      <tr><th>仓位</th><td>{{ fund.position }}</td></tr>
+      <tr><th>官方日期</th><td>{{ fund.official_date or "" }}</td></tr>
+      <tr><th>汇率估值</th><td>{{ fund.cny_est if fund.cny_est is not none else "" }}</td></tr>
+      <tr><th>估值净值</th><td class="estimate">{{ "%.6f"|format(fund.estimate) if fund.estimate is not none else "暂无估值数据" }}</td></tr>
+    </tbody>
+  </table>
+
+  <h2>估值配置</h2>
+  <pre class="config-json">{{ config_json }}</pre>
+
+  <p>
+    {% if group %}
+      <a href="{{ url_for('fund.fund_group_page', group=group) }}">返回分组列表</a>
+    {% endif %}
+    <a href="{{ url_for('main.index') }}">返回首页</a>
+  </p>
+{% endblock %}

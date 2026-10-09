@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block title %}状态 - Palmmicro Python Web{% endblock %}
+{% block content %}
+  <h1>服务状态</h1>
+  <p>
+    数据库：
+    {% if status.database.ok %}
+      <span class="ok">正常</span>
+    {% else %}
+      <span class="warning">不可用</span>
+    {% endif %}
+    {% if status.database.version %}（{{ status.database.version }}）{% endif %}
+  </p>
+
+  <h2>数据表行数</h2>
+  <table class="data-table">
+    <thead><tr><th>表</th><th>行数</th></tr></thead>
+    <tbody>
+      {% for name, count in status.tables.items() %}
+        <tr><td>{{ name }}</td><td>{{ count if count is not none else "不可用" }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <h2>最新日期</h2>
+  <table class="data-table">
+    <thead><tr><th>表</th><th>日期</th></tr></thead>
+    <tbody>
+      {% for name, date in status.latest.items() %}
+        <tr><td>{{ name }}</td><td>{{ date or "" }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <h2>迁移状态</h2>
+  <table class="data-table">
+    <thead><tr><th>模块</th><th>状态</th></tr></thead>
+    <tbody>
+      {% for name, value in status.migration.items() %}
+        <tr><td>{{ name }}</td><td>{{ value }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+{% endblock %}

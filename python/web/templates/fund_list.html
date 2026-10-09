@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block title %}{{ group.title }} - 基金估值{% endblock %}
+{% block content %}
+  <h1>{{ group.title }}</h1>
+  <p class="group-description">{{ group.description }}（共 {{ group.count }} 只）</p>
+
+  {% if group.rows %}
+    <table class="data-table fund-list">
+      <thead>
+        <tr>
+          {% for column in group.columns %}<th>{{ column }}</th>{% endfor %}
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in group.rows %}
+          <tr>
+            {# 列顺序必须与 FundListService.get_group() 的 columns 一致 #}
+            <td class="symbol">
+              {% if row.group %}
+                <a href="{{ url_for('fund.fund_page_in_group', group=row.group, symbol=row.symbol) }}">{{ row.symbol }}</a>
+              {% else %}
+                <a href="{{ url_for('fund.fund_page', symbol=row.symbol) }}">{{ row.symbol }}</a>
+              {% endif %}
+            </td>
+            <td>{{ row.name }}</td>
+            <td class="est-symbol">{{ row.est_symbol }}</td>
+            <td>{{ row.position }}</td>
+            <td>{{ row.calibration }}</td>
+            <td class="calibration-date">{{ row.calibration_date }}</td>
+            {# 基金净值：官方公布的单位净值（netvaluehistory），与「最新价」不是一回事 #}
+            <td class="net-value">{{ row.net_value }}</td>
+            <td class="net-value-date">{{ row.net_value_date }}</td>
+            <td class="quote-date">{{ row.quote_date }}</td>
+            <td class="quote-time">{{ row.quote_time }}</td>
+            <td class="price">{{ row.price }}</td>
+            <td class="change {{ row.change_class }}">{{ row.change }}</td>
+            <td class="premium {{ row.premium_class }}">{{ row.premium }}</td>
+            <td class="quote-source">{{ row.quote_source }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p class="empty">该分组暂无数据。</p>
+  {% endif %}
+
+  <h2>其它分组</h2>
+  <ul class="group-nav">
+    {% for item in groups %}
+      {% if item.name != group.name %}
+        <li><a href="{{ url_for('fund.fund_group_page', group=item.name) }}">{{ item.title }}</a>（{{ item.count }}）</li>
+      {% endif %}
+    {% endfor %}
+  </ul>
+
+  <p><a href="{{ url_for('main.index') }}">返回首页</a></p>
+{% endblock %}

@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% block title %}{{ table.name }} {{ table.title }} - 基金估值{% endblock %}
+{% block content %}
+  <h1>{{ table.name }}（{{ table.symbol }}）{{ table.title }}</h1>
+  <p class="group-description">{{ table.description }}</p>
+
+  <nav class="history-nav">
+    {% for kind, meta in kinds.items() %}
+      {% if kind == table.kind %}
+        <span class="current">{{ meta.title }}</span>
+      {% else %}
+        <a href="{{ url_for('history.history_page', kind=kind, symbol=table.symbol) }}">{{ meta.title }}</a>
+      {% endif %}
+    {% endfor %}
+  </nav>
+
+  {% if paging.show %}
+    <p class="paging">
+      总数：{{ paging.total }}
+      当前显示：{{ paging.first }}-{{ paging.last }}
+      {% if paging.prev_start is not none %}
+        <a href="{{ url_for('history.history_page', kind=table.kind, symbol=table.symbol, start=paging.prev_start, num=paging.num) }}">上一页</a>
+      {% endif %}
+      {% if paging.next_start is not none %}
+        <a href="{{ url_for('history.history_page', kind=table.kind, symbol=table.symbol, start=paging.next_start, num=paging.num) }}">下一页</a>
+      {% endif %}
+      {% if paging.all %}
+        <a href="{{ url_for('history.history_page', kind=table.kind, symbol=table.symbol, start=0, num=0) }}">全部记录</a>
+      {% endif %}
+    </p>
+  {% endif %}
+
+  {% if table.rows %}
+    <table class="data-table history-table">
+      <thead>
+        <tr>
+          {# 列头文字与颜色都由服务层给出：颜色名对应 PHP 的 <font color> #}
+          {% for column in table.columns %}
+            <th{% if column.width %} style="width: {{ column.width }}px"{% endif %}>
+              {% if column.color %}<span class="col-{{ column.color }}">{{ column.text }}</span>{% else %}{{ column.text }}{% endif %}
+            </th>
+          {% endfor %}
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in table.rows %}
+          <tr{% if row.match %} class="match"{% endif %}>
+            {# 单元格要么是纯文本，要么是 [文本, 颜色名] #}
+            {% for cell in row.cells %}
+              {% if cell is string %}
+                <td>{{ cell }}</td>
+              {% else %}
+                <td class="cell-{{ cell[1] }}">{{ cell[0] }}</td>
+              {% endif %}
+            {% endfor %}
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p class="empty">该符号暂无{{ table.title }}数据。</p>
+  {% endif %}
+
+  <p class="history-back">
+    {% if table.group %}
+      <a href="{{ url_for('fund.fund_group_page', group=table.group) }}">返回分组列表</a>
+    {% endif %}
+    <a href="{{ url_for('fund.fund_page', symbol=table.symbol) }}">返回基金详情</a>
+    <a href="{{ url_for('main.index') }}">返回首页</a>
+  </p>
+{% endblock %}

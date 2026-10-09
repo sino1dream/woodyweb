@@ -1,0 +1,6 @@
+# 演示数据的本地备份（由 backup_demo_tables.py 生成）。
+#
+# 为什么不入库：它是"某一刻数据库快照"，随本地抓取/校准不断变化，
+# 且体积不小（几百 KB）。还原方法见
+# python/auto/README_autocalibration_migration.md 第八节。
+_demo_backup.json

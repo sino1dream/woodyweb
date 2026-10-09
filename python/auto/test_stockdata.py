@@ -1,4 +1,6 @@
 import unittest
+import tempfile
+from pathlib import Path
 
 from fundcalc import PalmmicroFundCalculator
 from stockdata import (
@@ -9,6 +11,11 @@ from stockdata import (
     StockDataArrayBuilder,
     build_fund_calculator,
     get_input_symbol_array,
+    load_mysql_env,
+    mysql_connection_error_message,
+    mysql_config_from_env,
+    parse_mysql_env_file,
+    stock_get_symbol,
 )
 
 
@@ -88,6 +95,19 @@ class FakeConnection:
         if sql.startswith("SELECT date FROM holdingsdate"):
             row = self.tables["holdingsdate"].get(str(params[0]))
             return [row] if row else []
+        # 真实表名是 calibrationhistory（PHP CalibrationSql 的定义），
+        # 调用方传的短名 "calibration" 会在 MySqlFundDataSource._daily_table 里解析。
+        # 这里按真实表名匹配，同时兼容旧写法。
+        if sql.startswith("SELECT date, close FROM calibrationhistory WHERE stock_id = %s AND date <= %s"):
+            stock_id, date = str(params[0]), params[1]
+            return [row for row in self.tables["calibration"].get(stock_id, []) if row["date"] <= date][:1]
+        if sql.startswith("SELECT date, close FROM calibrationhistory WHERE stock_id = %s ORDER BY"):
+            return self.tables["calibration"].get(str(params[0]), [])[:1]
+        if sql.startswith("SELECT date, close FROM calibrationhistory"):
+            return self.tables["calibration"].get(str(params[0]), [])[:1]
+        if sql.startswith("SELECT close FROM calibrationhistory"):
+            row = next((item for item in self.tables["calibration"].get(str(params[0]), []) if item["date"] == params[1]), None)
+            return [{"close": row["close"]}] if row else []
         if sql.startswith("SELECT date, close FROM calibration WHERE stock_id = %s ORDER BY"):
             return self.tables["calibration"].get(str(params[0]), [])[:1]
         if sql.startswith("SELECT date, close FROM calibration WHERE stock_id = %s AND date <= %s"):
@@ -98,6 +118,33 @@ class FakeConnection:
         if sql.startswith("SELECT close FROM calibration"):
             row = next((item for item in self.tables["calibration"].get(str(params[0]), []) if item["date"] == params[1]), None)
             return [{"close": row["close"]}] if row else []
+        if sql.startswith("SELECT close, quote_date FROM estquote"):
+            # 中间层估值表（Python 侧新增）。替身里没有时返回空，等价于"未抓过
+            # 中间层行情"，此时 get_est_quote 返回 None、构建器跳过 est_quote。
+            row = self.tables.get("estquote", {}).get(str(params[0]))
+            return [{"close": row["close"], "quote_date": row["date"]}] if row else []
+        # 汇率回退用的 as-of 查询（该日期或之前最近一天）
+        if sql.startswith("SELECT date, close FROM netvaluehistory WHERE stock_id = %s AND date <= %s"):
+            stock_id, date = str(params[0]), params[1]
+            rows = [
+                {"date": key[1], "close": value}
+                for key, value in self.tables["netvaluehistory"].items()
+                if key[0] == stock_id and key[1] <= date
+            ]
+            rows.sort(key=lambda item: item["date"], reverse=True)
+            return rows[:1]
+        if sql.startswith("SELECT date, close FROM stockhistory WHERE stock_id = %s AND date <= %s"):
+            stock_id, date = str(params[0]), params[1]
+            rows = [
+                {"date": key[1], "close": value}
+                for key, value in self.tables["stockhistory"].items()
+                if key[0] == stock_id and key[1] <= date
+            ]
+            rows.sort(key=lambda item: item["date"], reverse=True)
+            return rows[:1]
+        if sql.startswith("SELECT close, date FROM netvaluehistory"):
+            row = self.tables["netvaluehistory"].get((str(params[0]), params[1]))
+            return [{"close": row["close"], "date": params[1]}] if row else []
         if sql.startswith("SELECT close FROM netvaluehistory"):
             row = self.tables["netvaluehistory"].get((str(params[0]), params[1]))
             return [row] if row else []
@@ -121,6 +168,12 @@ class StockDataArrayBuilderTest(unittest.TestCase):
     def test_input_symbols_match_php_normalization_shape(self):
         self.assertEqual(get_input_symbol_array("sz159518, SH513100\nfx_susdcny"), ["SZ159518", "SH513100", "fx_susdcny"])
         self.assertEqual(get_input_symbol_array("sz159518" + chr(0xFF0C) + "sh513100" + chr(0x3001) + "qqq"), ["SZ159518", "SH513100", "QQQ"])
+
+    def test_bare_digits_get_a_market_prefix(self):
+        # StockGetSymbol() runs the Chinese fund/stock builders before upper-casing.
+        self.assertEqual(get_input_symbol_array("162411 513180"), ["SZ162411", "SH513180"])
+        self.assertEqual(get_input_symbol_array("600000"), ["SH600000"])
+        self.assertEqual(stock_get_symbol("162411"), "SZ162411")
 
     def test_builds_direct_calibrated_fund_data(self):
         source = MemoryFundDataSource(
@@ -263,6 +316,75 @@ class StockDataArrayBuilderTest(unittest.TestCase):
 
 
 class MySqlFundDataSourceTest(unittest.TestCase):
+    def test_parse_mysql_env_file(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / ".env"
+            path.write_text(
+                "\n".join(
+                    [
+                        "# local secrets",
+                        "PALMMICRO_DB_HOST=127.0.0.1",
+                        "PALMMICRO_DB_PASSWORD='secret'",
+                        "OTHER=value",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            values = parse_mysql_env_file(path)
+
+        self.assertEqual(values, {"PALMMICRO_DB_HOST": "127.0.0.1", "PALMMICRO_DB_PASSWORD": "secret"})
+
+    def test_load_mysql_env_prefers_process_environment(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / ".env"
+            path.write_text("PALMMICRO_DB_USER=file_user\nPALMMICRO_DB_PASSWORD=file_secret\n", encoding="utf-8")
+
+            values = load_mysql_env({"PALMMICRO_DB_PASSWORD": "process_secret"}, path)
+
+        self.assertEqual(values["PALMMICRO_DB_USER"], "file_user")
+        self.assertEqual(values["PALMMICRO_DB_PASSWORD"], "process_secret")
+
+    def test_mysql_config_from_env_defaults_legacy_values(self):
+        config = mysql_config_from_env({"PALMMICRO_DB_PASSWORD": "secret"})
+
+        self.assertEqual(config["host"], "mysql")
+        self.assertEqual(config["port"], 3306)
+        self.assertEqual(config["user"], "n5gl0n39mnyn183l_woody")
+        self.assertEqual(config["password"], "secret")
+        self.assertEqual(config["database"], "n5gl0n39mnyn183l_camman")
+
+    def test_mysql_config_from_env_accepts_local_host_and_port(self):
+        config = mysql_config_from_env(
+            {
+                "PALMMICRO_DB_HOST": "127.0.0.1",
+                "PALMMICRO_DB_PORT": "3307",
+                "PALMMICRO_DB_USER": "woody",
+                "PALMMICRO_DB_DATABASE": "camman",
+                "PALMMICRO_DB_PASSWORD": "secret",
+            }
+        )
+
+        self.assertEqual(config["host"], "127.0.0.1")
+        self.assertEqual(config["port"], 3307)
+        self.assertEqual(config["user"], "woody")
+        self.assertEqual(config["database"], "camman")
+
+    def test_mysql_config_from_env_requires_password_and_integer_port(self):
+        with self.assertRaises(RuntimeError):
+            mysql_config_from_env({})
+        with self.assertRaises(RuntimeError):
+            mysql_config_from_env({"PALMMICRO_DB_PASSWORD": "secret", "PALMMICRO_DB_PORT": "abc"})
+        with self.assertRaises(RuntimeError):
+            mysql_config_from_env({"PALMMICRO_DB_USER": "<root>", "PALMMICRO_DB_PASSWORD": "secret"})
+
+    def test_mysql_connection_error_message_has_specific_hints(self):
+        config = mysql_config_from_env({"PALMMICRO_DB_PASSWORD": "secret"})
+
+        self.assertIn("rejected the login", mysql_connection_error_message(config, Exception(1045, "Access denied")))
+        self.assertIn("database does not exist", mysql_connection_error_message(config, Exception(1049, "Unknown database")))
+        self.assertIn("TCP connection failed", mysql_connection_error_message(config, Exception(2003, "Can't connect")))
+
     def test_reads_legacy_tables_and_builds_calibrated_stock_data(self):
         source = MySqlFundDataSource(FakeConnection())
 
@@ -280,6 +402,49 @@ class MySqlFundDataSourceTest(unittest.TestCase):
         self.assertEqual(source.get_fund_pair_id("2"), "4")
         self.assertEqual(source.get_stock_symbol("4"), "SPY")
         self.assertAlmostEqual(source.get_stock_hedge("SZ159518", "1"), 875.0)
+
+
+class PositionDefaultTest(unittest.TestCase):
+    """仓位默认值的回归测试。
+
+    背景（真实 bug）：``get_position()`` 曾把默认值硬编码成 ``1.0``，而 PHP 是
+    ``MysqlReference::__construct()`` 回落到 ``StockSymbol::GetDefaultPosition()``，
+    即 ``IsLofA() ? 0.95 : 1.0``（``php/stock/stocksymbol.php:1001``）。
+
+    后果：库里没有 ``fundposition`` 行的 LOF 基金会算成 1.0 —— 实测 SZ162411、
+    SH501018 都受影响；SZ161125 则因为种子数据显式写了 1.0 而中招。
+    PHP 官网 ``sz161125cn.php`` 明写"仓位估算值使用0.95"。
+    """
+
+    def test_memory_source_falls_back_to_symbol_default(self):
+        from stockdata import MemoryFundDataSource
+
+        source = MemoryFundDataSource(
+            stocks={"SZ162411": "1", "SH513350": "2", "QQQ": "3"},
+            # 故意不给 positions，触发回落到符号默认仓位
+        )
+
+        self.assertAlmostEqual(source.get_position("1"), 0.95)   # LOF
+        self.assertAlmostEqual(source.get_position("2"), 1.0)    # ETF
+        self.assertAlmostEqual(source.get_position("3"), 1.0)    # 美股标的
+
+    def test_explicit_position_wins(self):
+        from stockdata import MemoryFundDataSource
+
+        source = MemoryFundDataSource(
+            stocks={"SZ161125": "1"},
+            positions={"1": 0.98},
+        )
+        self.assertAlmostEqual(source.get_position("1"), 0.98)
+
+    def test_defaults_match_php_get_default_position(self):
+        from stocksymbol import StockSymbol
+
+        # 与 php/stock/stocksymbol.php:1001 对齐：LOF 0.95，其余 1.0
+        for symbol in ("SZ161130", "SZ161125", "SZ162411", "SH501018", "SH501312"):
+            self.assertAlmostEqual(StockSymbol(symbol).get_default_position(), 0.95, msg=symbol)
+        for symbol in ("SH513100", "SH513350", "SH600000"):
+            self.assertAlmostEqual(StockSymbol(symbol).get_default_position(), 1.0, msg=symbol)
 
 
 if __name__ == "__main__":

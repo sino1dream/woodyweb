@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}首页 - Palmmicro Python Web{% endblock %}
+{% block content %}
+  <h1>基金估值</h1>
+  <p>输入基金代码查看已迁移的 Python 估值结果。</p>
+  <form class="symbol-form" method="get" action="{{ url_for('main.index') }}">
+    <input id="symbol-input" name="symbol" type="text" value="SZ161130" placeholder="例如 SZ161130">
+    <button type="submit">查看</button>
+  </form>
+  <p class="hint">示例：SZ161130、SZ161125（LOF）、SH513100（ETF）</p>
+
+  <h2>基金分组</h2>
+  <ul class="group-nav">
+    {% for item in groups %}
+      <li><a href="{{ url_for('fund.fund_group_page', group=item.name) }}">{{ item.title }}</a>（{{ item.count }} 只）</li>
+    {% endfor %}
+  </ul>
+{% endblock %}
