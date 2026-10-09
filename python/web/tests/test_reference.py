@@ -129,7 +129,7 @@ class RowTest(unittest.TestCase):
         # 首格外链 + 中间四格 + 名称
         self.assertEqual(row.cells[0], '<a href="https://example.test/SZ161130">新浪</a>')
         self.assertEqual(row.cells[1], "4.796")
-        self.assertEqual(row.cells[2], ("-1.23%", "red"))
+        self.assertEqual(row.cells[2], ("-1.23%", "green"))
         self.assertEqual(row.cells[3], "2026-10-02")
         self.assertEqual(row.cells[4], "15:00")
         self.assertEqual(row.cells[5], "易方达纳斯达克100LOF")
@@ -182,27 +182,50 @@ class RowTest(unittest.TestCase):
 
 
 class PercentageColorTest(unittest.TestCase):
-    """涨跌幅染色：逐条对照 ``php/stock/stockref.php:147``。"""
+    """涨跌幅染色：形状对照 ``php/stock/stockref.php:147``，颜色用全站统一的涨红跌绿。"""
 
-    def test_negative_is_red(self):
-        self.assertEqual(percentage_cell("-1.23%"), ("-1.23%", "red"))
+    def test_negative_is_green(self):
+        """**与 PHP 原文不同**：PHP 在这里给 ``red``（跌红），本实现给 ``green``。
 
-    def test_positive_is_black(self):
-        self.assertEqual(percentage_cell("1.23%"), ("1.23%", "black"))
+        裁决见 :mod:`web.services.reference_service` 的模块 docstring ——
+        跌红涨黑只在 ``GetPercentageDisplay()`` 一处出现，涨红跌绿才是
+        ``StockGetPriceDisplay()`` 的主流口径。
+        """
+        self.assertEqual(percentage_cell("-1.23%"), ("-1.23%", "green"))
+
+    def test_positive_is_red(self):
+        """**与 PHP 原文不同**：PHP 在这里给 ``black``（涨黑），本实现给 ``red``。"""
+        self.assertEqual(percentage_cell("1.23%"), ("1.23%", "red"))
+
+    def test_zero_percent_counts_as_up(self):
+        """``0.00%`` 不带 ``-``，按 PHP 的分支走"非下跌"那一路。
+
+        与分组列表页 ``"negative" if change < 0 else "positive"`` 的判定一致：
+        只有严格小于 0 才算跌。两处对 0 的处理必须相同，否则同一只基金
+        在两个页面上会一红一绿。
+        """
+        self.assertEqual(percentage_cell("0.00%"), ("0.00%", "red"))
 
     def test_without_percent_sign_is_gray(self):
-        """`GetPercentageText()` 返回空串（没有昨收可比）时 PHP 染灰。"""
+        """`GetPercentageText()` 返回空串（没有昨收可比）时染灰，这一条与 PHP 一致。"""
         self.assertEqual(percentage_cell(""), ("", "gray"))
         self.assertEqual(percentage_cell(None), ("", "gray"))
 
-    def test_conflicts_with_fund_list_convention(self):
-        """**记录在案的冲突**：本表照抄 ``stockref.php:147`` 的"跌红涨黑"，
-        而分组列表页（``fund_list_service``）对同样的跌幅给的是"跌绿"，
-        即"涨红跌绿"。两处口径相反，这条用例把现状钉住，等裁决后再改这里。
+    def test_matches_fund_list_convention(self):
+        """与分组列表页口径一致：跌是绿、涨是红。
+
+        分组列表页（``fund_list_service``）用的是
+        ``"negative" if change < 0 else "positive"``，CSS 里
+        ``.negative`` 是绿、``.positive`` 是红。这里把"同一个跌幅
+        必须得到同一个方向"钉住，防止有人把某一处单独改回去。
         """
-        self.assertEqual(percentage_cell("-1.23%")[1], "red")
-        # 分组列表页（fund_list_service）对同样的跌幅给的是绿色：
-        self.assertNotEqual(percentage_cell("-1.23%")[1], "green")
+        self.assertEqual(percentage_cell("-1.23%")[1], "green")
+        self.assertEqual(percentage_cell("1.23%")[1], "red")
+        # 两处对"跌"的判断必须是同一个方向
+        for text in ("-1.23%", "-0.01%"):
+            self.assertEqual(percentage_cell(text)[1], "green")
+        for text in ("1.23%", "0.01%", "0.00%"):
+            self.assertEqual(percentage_cell(text)[1], "red")
 
 
 class ReferenceRouteTest(unittest.TestCase):

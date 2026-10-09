@@ -31,6 +31,7 @@ from web.services.history_service import (
     HistoryNotFoundError,
     default_history_service_factory,
 )
+from web.services.fundest_service import FundEstService, default_fundest_service_factory
 from web.services.reference_service import ReferenceService, default_reference_service_factory
 from web.services.status_service import default_status_service_factory
 
@@ -51,6 +52,8 @@ def create_app(
     updater_factory: Any = None,
     reference_service_factory: Any = None,
     reference_refs_builder: Any = None,
+    fundest_service_factory: Any = None,
+    fundest_refs_builder: Any = None,
 ) -> Flask:
     """创建 Flask 应用，允许测试注入服务工厂。"""
     app = Flask(__name__)
@@ -82,6 +85,16 @@ def create_app(
     )
     if reference_refs_builder is not None:
         app.extensions["reference_refs_builder"] = reference_refs_builder
+
+    # 基金详情页的「估值」表（php/ui/fundestparagraph.php）。
+    # 与参考数据表不同，它的 refs builder **没有默认实现** —— 三档估值必须
+    # 由带 estimator 的引用对象填，凭页面现有的单一估值硬塞进「官方EST」列
+    # 等于又造一条 EST 口径。详见 web/routes/fund.py 的 _build_fundest()。
+    app.extensions["fundest_service_factory"] = (
+        fundest_service_factory or default_fundest_service_factory
+    )
+    if fundest_refs_builder is not None:
+        app.extensions["fundest_refs_builder"] = fundest_refs_builder
 
     init_app(app)
     register_blueprints(app)

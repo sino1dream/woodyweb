@@ -1,0 +1,44 @@
+{# php/ui 渲染层的共用表格宏。
+
+   对应 PHP 的 EchoTableParagraphBegin() / EchoTableColumn() / EchoTableParagraphEnd()
+   三件套：那边是"开始 echo 表头 → 每行 echo → 结束 echo"，这里是一个宏。
+
+   为什么抽出来：php/ui 里还有十几个段落（trading / stock / sma / portfolio …）
+   都是同一套"列定义 + 行数据"，逐个在模板里复制这段循环会让每加一个段落
+   都重复二十行 Jinja。列头颜色、单元格颜色、首格外链这三条规则集中在这里改。
+
+   table              —— service 返回的 {"columns", "rows", "id"} 结构
+   css_class          —— 追加在 data-table 之后的页面专属类
+   first_cell_is_html —— 首格是否为 HTML（PHP 那里首格恒为 GetStockLink() 之类的 <a>）。
+                         默认 False：只有确实需要透传标签的表格才打开，
+                         避免把业务文本也一并关掉转义。
+#}
+{% macro data_table(table, css_class="", first_cell_is_html=False) %}
+  {% if table %}
+    <table class="data-table {{ css_class }}"{% if table.id %} id="{{ table.id }}"{% endif %}>
+      <thead>
+        <tr>
+          {% for column in table.columns %}
+            <th{% if column.width %} style="width: {{ column.width }}px"{% endif %}>
+              {% if column.color %}<span class="col-{{ column.color }}">{{ column.text }}</span>{% else %}{{ column.text }}{% endif %}
+            </th>
+          {% endfor %}
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in table.rows %}
+          <tr>
+            {# 单元格要么是纯文本，要么是 [文本, 颜色名] #}
+            {% for cell in row.cells %}
+              {% set text = cell if cell is string else cell[0] %}
+              {% set color = "" if cell is string else cell[1] %}
+              {% set hinted = loop.first and row.title %}
+              {% set classes = ("cell-" ~ color if color else "") ~ (" with-hint" if hinted else "") %}
+              <td{% if classes %} class="{{ classes }}"{% endif %}{% if hinted %} title="{{ row.title }}"{% endif %}>{% if loop.first and first_cell_is_html %}{{ text|safe }}{% else %}{{ text }}{% endif %}</td>
+            {% endfor %}
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% endif %}
+{% endmacro %}

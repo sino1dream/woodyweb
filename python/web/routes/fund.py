@@ -60,8 +60,36 @@ def _render_fund(symbol: str, group: str):
         fund=output,
         config_json=config_json,
         group=group,
+        fundest=_build_fundest(symbol),
         reference=_build_reference(symbol),
     )
+
+
+def _build_fundest(symbol: str) -> dict[str, Any] | None:
+    """基金详情页的「估值」表（``php/ui/fundestparagraph.php``）。
+
+    **默认不渲染**，这是本版与 PHP 最大的一处不同，也是刻意的：
+
+    这张表要显示的是**三档**估值（官方 / 参考 / 实时），分别来自
+    ``GetOfficialNetValue()`` / ``GetFairNetValue()`` / ``GetRealtimeNetValue()``，
+    在 Python 侧必须由 ``refobj.QdiiReference`` 配 ``fundestcalc`` 的
+    estimator 填进去。而基金详情页现在只有一个
+    ``PalmmicroFundCalculator.est_net_value()`` 的结果（就是页面上那个
+    "估值净值"）—— 把它硬塞进「官方EST」列，等于**又造一条 EST 口径**。
+
+    上一次出现两条口径并存的后果是：SZ161130 的官方 EST 从 4.59 变成 20245，
+    页面还不报错。所以这里只留注入口，等 estimator 接线那一步做完再打开。
+
+    注入方式：``create_app(fundest_refs_builder=...)``。
+    """
+    builder = current_app.extensions.get("fundest_refs_builder")
+    if builder is None:
+        return None
+    try:
+        return current_app.extensions["fundest_service_factory"]().get_table(builder([symbol]))
+    except Exception:
+        # 估值算不出来不该让整个详情页挂掉
+        return None
 
 
 def _build_reference(symbol: str) -> dict[str, Any] | None:

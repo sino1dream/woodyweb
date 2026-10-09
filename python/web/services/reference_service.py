@@ -15,9 +15,9 @@ PHP 那一份是"边拼 HTML 边 echo"：
 ``<font color>`` 片段而是随单元格返回的颜色名。这样同一份数据既能给页面用，
 也能给 JSON API 用 —— PHP 那边想复用到接口上就得先正则剥标签。
 
-## 一个必须知道的口径冲突（尚未裁决）
+## 涨幅配色：**不**照抄 PHP，采用全站统一的"涨红跌绿"
 
-``涨幅`` 这一格的染色规则来自 ``php/stock/stockref.php:147``：
+``php/stock/stockref.php:147`` 的规则是这样的：
 
 .. code-block:: php
 
@@ -26,11 +26,18 @@ PHP 那一份是"边拼 HTML 边 echo"：
 
 也就是 **跌红、涨黑**。但同一个 PHP 代码库里 ``StockGetPriceDisplay()``
 （``php/stock.php:91``）的默认参数是 ``($strGreater='red', $strLess='green')``，
-即 **涨红跌绿**；``python/web`` 的分组列表页用的也是后者。
+即 **涨红跌绿**；``GetRatioDisplay()`` 同样以 1.0 为基准走红/绿；
+``python/web`` 的分组列表页（``fund_list_service``）用的也是后者。
 
-两份实现**对于"跌该是什么颜色"给出了相反答案**。本模块默认**照抄 PHP 原文**
-（见 :func:`percentage_cell`），因为这是迁移而不是 redesign ——
-但这个冲突需要裁决，详见 ``README_ui_column_migration.md`` 的已知偏差第 1 条。
+**裁决结论（2026-10-09）：统一成涨红跌绿**，与分组列表页一致。
+理由：跌红涨黑只在 ``GetPercentageDisplay()`` 这一处出现，而涨红跌绿是
+``StockGetPriceDisplay()`` 的默认参数、被 ``GetRatioDisplay()`` /
+``GetNumberDisplay()`` 等一大片函数共用，后者才是代码库的主流口径。
+把孤例改成多数派，改动面更小也更不容易再冒出第二个口径。
+
+因此 :func:`percentage_cell` 的返回值与 PHP 原文**不同**：
+跌是 ``green`` 而不是 ``red``，涨是 ``red`` 而不是 ``black``。
+这是**已知偏差第 1 条**（见 ``README_ui_column_migration.md``）。
 """
 
 from __future__ import annotations
@@ -68,19 +75,52 @@ REFERENCE_SESSION_COLOR = "gray"
 def percentage_cell(text: Any) -> tuple:
     """把涨跌幅文本转成 ``(文本, 颜色)`` 单元格。
 
-    规则逐字照抄 ``php/stock/stockref.php:147``：以 ``-`` 开头是 ``red``，
-    带 ``%`` 的其它情况 ``black``，**没有 ``%`` 号是 ``gray``**（那时候
-    ``GetPercentageText()`` 返回的是空串，表示该标的压根没有昨收可比）。
+    形状照抄 ``php/stock/stockref.php:147`` 的三分支（带 ``%`` 且带 ``-`` /
+    带 ``%`` 不带 ``-`` / 不带 ``%``），但**颜色改成全站统一的涨红跌绿**：
+
+    ================================  ===================  ==================
+    情形                                PHP 原文             本实现
+    ================================  ===================  ==================
+    带 ``%`` 且以 ``-`` 开头（跌）      ``red``              ``green``
+    带 ``%`` 其它（涨或持平）           ``black``            ``red``
+    不带 ``%``（无昨收可比）            ``gray``             ``gray``
+    ================================  ===================  ==================
+
+    最后一行的 ``gray`` 与 PHP 一致：那时 ``GetPercentageText()`` 返回空串，
+    表示该标的压根没有昨收可比，灰色用来和"真的是 0%"区分开。
+
+    与 :func:`_cell` 的区别见 :func:`get_stock_reference_cells` 的调用处 ——
+    只有涨幅这一格需要染色，价格/日期/时间都是纯文本。
     """
     displayed = "" if text is None else str(text)
     if not displayed.endswith("%"):
         return displayed, REFERENCE_SESSION_COLOR
-    return displayed, ("red" if displayed.startswith("-") else "black")
+    return displayed, ("green" if displayed.startswith("-") else "red")
 
 
 def _cell(value: Any) -> Any:
     """空值统一成空串，避免模板里出现 ``None``。"""
     return "" if value is None else value
+
+
+def stock_name_of(source: Any, ref: Any) -> str:
+    """对应 ``SqlGetStockName($ref->GetSymbol())``。
+
+    **已知偏差**：宽屏（``$bWide``）时 PHP 会把名称做成雪球外链
+    （``GetXueqiuLink()``，``php/externallink.php:131``）。外链函数族属于
+    优先级列表第 5 步、未迁移，所以这里**始终返回纯文本名称**，
+    由模板决定要不要加链接。
+
+    抽成模块级函数是因为 ``ahparagraph`` / ``fundestparagraph`` 也要查名字，
+    而它们不是 :class:`ReferenceService`。
+    """
+    if source is None:
+        return ""
+    try:
+        return _cell(source.get_stock_name(ref.get_symbol()))
+    except Exception:
+        # 查名字失败不该让整张表挂掉
+        return ""
 
 
 def build_reference_columns(admin: bool = False, layout_width: int = None) -> list:
@@ -206,20 +246,8 @@ class ReferenceService:
         return row
 
     def _name_of(self, ref: Any) -> str:
-        """对应 ``SqlGetStockName($ref->GetSymbol())``。
-
-        **已知偏差**：宽屏（``$bWide``）时 PHP 会把名称做成雪球外链
-        （``GetXueqiuLink()``，``php/externallink.php:131``）。外链函数族属于
-        优先级列表第 5 步、未迁移，所以这里**始终返回纯文本名称**，
-        由模板决定要不要加链接。
-        """
-        if self.source is None:
-            return ""
-        try:
-            return _cell(self.source.get_stock_name(ref.get_symbol()))
-        except Exception:
-            # 查名字失败不该让整张表挂掉
-            return ""
+        """转调 :func:`stock_name_of`。"""
+        return stock_name_of(self.source, ref)
 
     @staticmethod
     def _session_of(ref: Any) -> str:

@@ -13,8 +13,20 @@
 | `php/ui/referenceparagraph.php` | 104 | `web/services/reference_service.py` |
 | `php/ui/htmlelement.php` | 156 | **刻意不迁**（见取舍 1） |
 
-产出：`auto/uicolumn.py`（+ 30 个用例）、`web/services/reference_service.py`
+第二轮（🟢 档，配色裁决之后）：
+
+| PHP | 行数 | 本版 | 用例 |
+| --- | --- | --- | --- |
+| `php/ui/pricepoolparagraph.php` | 136 | `auto/pricepool.py` | 33 |
+| `php/ui/ahparagraph.php` | 94 | `web/services/pair_service.py` | 31 |
+| `php/ui/fundestparagraph.php` | 174 | `web/services/fundest_service.py` | 27 |
+
+第一轮产出：`auto/uicolumn.py`（+ 30 个用例）、`web/services/reference_service.py`
 （+ 20 个用例）、基金详情页接线、CSS 泛化。
+第二轮另抽出 `web/templates/_data_table.html` 宏（见"第二轮"末）。
+
+测试总数：第一轮后 `auto 604` / `web 81`；
+第二轮后 **`auto 637` / `web 140`**（Python 3.7 与 3.13 均全绿）。
 
 ---
 
@@ -128,7 +140,7 @@ EchoTableColumn($ar, false, $strFirstHint);   // 名称降级成首格的 title 
 （宁可少一块，也不摆一张全空的表格 —— 那会让人以为数据丢了）；
 加载抛异常时同样降级，`/fund/SZ162411` 照常返回 200。
 
-## 四、⚠️ 一个必须裁决的口径冲突（本轮最重要的发现）
+## 四、一个口径冲突，以及它的裁决结果（本轮最重要的发现）
 
 `涨幅` 这一格的颜色，同一份 PHP 代码库里给出了**两个相反的答案**：
 
@@ -139,10 +151,32 @@ EchoTableColumn($ar, false, $strFirstHint);   // 名称降级成首格的 title 
 
 而 `python/web` 的分组列表页（`fund_list_service`）实现的是后者，即"涨红跌绿"。
 
-**本轮的选择：照抄 PHP 原文（`ReferenceService` 用"跌红涨黑"）**，因为这是迁移
-而不是 redesign —— 但我没有偷偷统一它们。`percentage_cell()` 的注释、
-`test_conflicts_with_fund_list_convention` 这条用例、以及本节，把冲突钉在三处，
-等你裁决。**如果决定全站统一成"涨红跌绿"，改动只有 `percentage_cell()` 一处 + 那条用例。**
+第一轮的做法是**照抄 PHP 原文（跌红涨黑）**，并把冲突钉在三个地方等裁决。
+
+### ✅ 裁决（2026-10-09）：全站统一成"涨红跌绿"
+
+选多数派，理由有三条：
+
+1. **跌红涨黑是孤例**。全代码库里只有 `GetPercentageDisplay()` 一处这么写；
+   涨红跌绿是 `StockGetPriceDisplay()` 的默认参数，
+   `GetRatioDisplay()`（基准 1.0）、`GetNumberDisplay()` 等一大片函数都共用它。
+2. **改动面最小**。统一成涨红跌绿，要改的只有 `percentage_cell()` 一个函数；
+   反过来统一成跌红涨黑，要动的是所有走 `StockGetPriceDisplay()` 的地方。
+3. **与国内行情惯例一致**（涨红跌绿），用户不需要在两个页面间切换心智模型。
+
+于是 `percentage_cell()` 的三分支**形状照抄 PHP、颜色改成涨红跌绿**：
+
+| 情形 | PHP 原文 | 本实现 |
+| --- | --- | --- |
+| 带 `%` 且以 `-` 开头（跌） | `red` | **green** |
+| 带 `%` 其它（涨或持平） | `black` | **red** |
+| 不带 `%`（无昨收可比） | `gray` | `gray`（**唯一与 PHP 相同的一档**） |
+
+第三档保持灰色很重要：那时 `GetPercentageText()` 返回的是空串，
+灰色用来和"真的是 0.00%"区分开 —— 空串会被染色成红，就分不清了。
+
+`test_matches_fund_list_convention` 把"同一个跌幅在两个页面必须同色"钉住，
+防止有人把某一处单独改回去。
 
 ## 五、CSS 的一处泛化
 
@@ -156,7 +190,7 @@ EchoTableColumn($ar, false, $strFirstHint);   // 名称降级成首格的 title 
   等于这个列一直接用不了；
 * `td.cell-gray` + 斜体：参考数据表的盘前/盘后说明，PHP 是 `<i><font color=gray>`。
 
-## 六、本轮测试情况
+## 六、第一轮测试情况
 
 | 套件 | 数量 | 环境 |
 | --- | --- | --- |
@@ -183,9 +217,93 @@ EchoTableColumn($ar, false, $strFirstHint);   // 名称降级成首格的 title 
 并且连 `GetDisplay` 都没有时兜底到符号而不是对象地址。
 `test_camel_case_alias_objects_are_supported` 钉住它。
 
+## 六 bis、第二轮：🟢 档三个段落（pricepool / ah / fundest）
+
+裁决完配色后接着做的"省事档"。三个段落各自的**产出与接线状态不一样**，
+分开说清楚。
+
+### `pricepoolparagraph`(136) → `auto/pricepool.py` + `test_pricepool.py`（33 用例）
+
+零外部依赖，是整个 `php/ui` 里最接近模板的一个段落：数据部分只是两个
+纯计数类（`PriceGoal` / `PricePool`），表现部分是固定五列的手写 `<tr>/<td>`。
+放在 `auto` 而不是 `web/services`，因为它不依赖 Flask，将来导出 CSV 也要用。
+
+顺带未迁 `PricePoolCsvFile extends PageCsvFile`：`PageCsvFile` 属于
+`php/csvfile.php`（文件 I/O + 分页写盘，未迁移），它在这里唯一的作用就是
+给子类挂一个 `$pool`。Python 侧调用方直接持有 `PricePool` 即可。
+
+**⚠️ 抓到第二个 PHP bug：`$bTranspose` 只换标签不换数据**
+
+`EchoPricePoolParagraph()` 的 `$bTranspose` **默认为 true**，而它做的事是把
+「行标签数组」和「列标签数组」互换着传进渲染函数。渲染函数内部**行索引永远
+对应 `h/u/l_goal`（溢价轴）、列索引永远对应 `higher/unchanged/lower`（涨跌轴）**
+—— 这两条从不改变。于是默认那条路径下 9 格里只有对角线 3 格语义正确。
+
+两个调用方的实际情况：
+
+* `woody/res/php/_thanousparadox.php:23` 显式传 `false` —— **正确**；
+* `woody/res/netvalueclosecn.php:21` 用默认值 —— **正在吃这个 bug**。
+
+本版 `transpose=True` 改成**真的转置数据**（行列标签与数据一起换）；
+另留 `legacy_labels=True` 复刻 PHP 行为，仅供逐格对照排查。
+`test_legacy_labels_reproduce_the_php_bug` 用一组**刻意不对称**的样本把差异钉住
+—— 对称样本会让两个实现撞出相同的数字，把 bug 盖住。
+
+### `ahparagraph`(94) → `web/services/pair_service.py` + `test_pair.py`（31 用例）
+
+一个 PHP 文件里有三个段落（A/B、A/H、ADR/H），结构完全一样、只有尾部列不同，
+所以本版是"一张列定义表 + 一套行组装"，`kind` 决定用哪一套。
+`adr` 比另外两种多一列仓位、用美元而不是人民币。
+
+`MyPairReference`（`php/stock/fundpairref.php:3`）**尚未迁移**，所以
+`GetPairRef()` / `EstFromPair()` / `GetPriceRatio()` 这几个方法在 Python 侧还不存在。
+本模块通过按方法名取数的 `_invoke()` 容忍这一点：方法出现了格子自动填上，
+没出现就整段不输出（与 PHP 里"配对标的缺失"的表现一致）。**本模块不需要为
+`MyPairReference` 的迁移改代码。**
+
+**⚠️ 抓到第三个 PHP bug：`ab` / `ah` 的行比表头多一格**
+
+`_echoPairItem()` 不管哪种配对都会在最后追加"仓位"格，但只有 `adr` 的列定义
+里有 `TableColumnPosition`。于是 `adr` 是 6 列 / 6 格（对齐），
+`ab` `ah` 是 5 列 / 6 格 —— 多出来那格没有表头。
+本版照抄（不静默砍掉那一格），用返回的 `cell_count` 暴露差异，
+`RowLengthTest` 钉住。
+
+### `fundestparagraph`(174) → `web/services/fundest_service.py` + `test_fundest.py`（27 用例）
+
+`php/ui` 里**被引用最多**的一个段落（`_qdii*` / `_chinaindex` / `_chinafuture` /
+`_mystock*` / `holdingscn` 都在用），是三档估值的主展示位。
+
+表头由"**扫一遍所有 ref**"决定：只要有任意一个标的有参考/实时估值，
+就给所有人加两列 —— 这是为了让列数统一。
+
+**⚠️ 抓到第四个 PHP bug：实时估值那一档少一次补齐**
+
+参考估值有 `else if ($bFair) { $ar[] = ''; $ar[] = ''; }`，实时估值**只有 `if`**。
+所以"别人有实时估值、自己没有"时，那一行会**少两格**，后面的单元格整体左移。
+本版照抄并暴露 `cell_count`，`RowLengthTest` 里放了"参考估值会补齐"的对照组。
+
+**这一档刻意没有接线到生产页面**，这是本轮最重要的一处"不做"：
+
+三档估值必须由 `refobj.QdiiReference` 配 `fundestcalc` 的 estimator 填。
+基金详情页现在只有一个 `PalmmicroFundCalculator.est_net_value()` 的结果，
+把它硬塞进「官方EST」列就是**又造一条 EST 口径** —— 上一次两条口径并存的后果
+是 SZ161130 的官方 EST 从 4.59 变成 20245 且页面不报错。
+所以只留 `create_app(fundest_refs_builder=...)` 注入口，等 estimator 接线那一步。
+
+### 顺带抽出 `_data_table.html` 宏
+
+参考数据表原先在 `fund_detail.html` 里内联二十行 Jinja。后面还有十几个段落
+（trading / stock / sma / portfolio …）都是同一套"列定义 + 行数据"，
+逐个复制会让每加一个段落都重复二十行。抽成宏后，
+列头颜色 / 单元格颜色 / 首格外链这三条规则集中在一处。
+`first_cell_is_html` **默认关闭**，只有确实需要透传 `<a>` 的表格才打开。
+
 ## 七、已知偏差
 
-1. **涨跌幅配色冲突**（见第四节，待裁决）。
+1. **涨跌幅配色与 PHP 原文相反**：本实现是"涨红跌绿"（已裁决，见第四节），
+   `php/stock/stockref.php:147` 的原文是"跌红涨黑"。这是**故意**的偏差，
+   不是抄错 —— 不要"顺手改回 PHP 原文"。
 2. **`TableColumn.GetDisplay()` 不加粗**：PHP 返回 `<b>文本</b>`，本版返回纯文本，
    加粗由模板/CSS 决定。
 3. **参考数据表的外链带 ``|safe``**：首格是 `GetExternalLink()` 产出的 `<a>` 标签
@@ -197,6 +315,14 @@ EchoTableColumn($ar, false, $strFirstHint);   // 名称降级成首格的 title 
 5. **`GetArbitrageQuantity()` 未迁**（服务 porfolio 域，`GetStockHedge()` 未迁移）。
 6. **`RefEchoTableColumn()` 的 `title` 只实现了参考数据表那一条路径**
    （`$bWide` 时 PHP 传 `false`，不挂 tooltip）。
+7. **估值表（`fundest`）默认不接线到生产页面**：需要显式注入
+   `fundest_refs_builder`。原因见"第二轮"那一节 —— 避免造出第二条 EST 口径。
+8. **配对表（`ah`）的 ref 数据源未迁**：`MyPairReference` 缺失时行会退化成
+   只有首格（宽屏时加行情五格），与 PHP 里"配对标的缺失"的表现一致，但**数据不全**。
+9. **`pricepool` 的 `transpose` 是真转置**，与 PHP 同名参数（只换标签）不同；
+   `legacy_labels=True` 可复刻 PHP。同理 `EchoTableParagraphBegin()` 那个
+   "表太宽就 `trigger_error` 并返回 false" 的守卫没迁 ——
+   `LayoutGetDisplayWidth()` 属于布局层（第 5 步）。
 
 ## 八、还剩下什么（`php/ui` 全景）
 
@@ -206,11 +332,13 @@ EchoTableColumn($ar, false, $strFirstHint);   // 名称降级成首格的 title 
 `calibrationhistory` / `shareshistory`（`history_service.py`）+ `fundlist`
 （`fund_list_service.py`）。
 
-剩下约 16 个待迁，按依赖从少到多：
+**第二轮已做掉 🟢 档三个**：`pricepoolparagraph`(136) / `ahparagraph`(94) /
+`fundestparagraph`(174)，详见"第二轮"那一节。
+
+剩下约 13 个待迁，按依赖从少到多：
 
 | 档 | 文件 | 阻塞点 |
 | --- | --- | --- |
-| 🟢 省事 | `pricepoolparagraph`(136) `ahparagraph`(94) `fundestparagraph`(174) | `pricepool` 零外部依赖、已经在手写 HEREDOC 插值，本质就是 Jinja2；另两个缺 `FundPairReference` 的少量方法，**不需要全迁那 278 行** |
 | 🟡 中等 | `tradingparagraph`(197) `stockparagraph`(45) | 需要实时五档、`StockSql`；有一处 `strlen()*11` 估算像素宽，**在 CSS 布局下没有意义，应删掉而不是照抄** |
 | 🟠 偏难 | `smaparagraph`(225) `portfolioparagraph`(160) `netvaluehistory` 收尾 | `StockHistory`（SMA/BOLL/EMA，16KB，无 Python 对应）；`static $fCny` 函数级静态跨行累加，**照抄翻译一定出 bug** |
 | 🔴 建议不同方式处理 | `stockgroup` / `fundpurchase` / `transaction` / `comment`(≈450) | 会员/持仓/交易域，`$acct` 与一堆 Sql 全未迁；渲染函数里混着写库链接。建议 Python 版直接用 Flask-Login 重写而非平移 |
