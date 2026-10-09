@@ -14,6 +14,39 @@
     </tbody>
   </table>
 
+  {% if reference %}
+    <h2>参考数据</h2>
+    {# 表格数据由 web/services/reference_service.py 给出，这里只负责渲染：
+       列头的颜色、单元格的颜色都是数据，不再像 PHP 那样 echo <font color>。 #}
+    <table class="data-table reference-table">
+      <thead>
+        <tr>
+          {% for column in reference.columns %}
+            <th{% if column.width %} style="width: {{ column.width }}px"{% endif %}>
+              {% if column.color %}<span class="col-{{ column.color }}">{{ column.text }}</span>{% else %}{{ column.text }}{% endif %}
+            </th>
+          {% endfor %}
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in reference.rows %}
+          <tr>
+            {# 单元格要么是纯文本，要么是 [文本, 颜色名]。
+               首格永远是 GetExternalLink() 产出的 <a> 标签，与 PHP 一样按原样输出。 #}
+            {% for cell in row.cells %}
+              {% set text = cell if cell is string else cell[0] %}
+              {% set color = "" if cell is string else cell[1] %}
+              {% set hinted = loop.first and row.title %}
+              {% set classes = ("cell-" ~ color if color else "") ~ (" with-hint" if hinted else "") %}
+              <td{% if classes %} class="{{ classes }}"{% endif %}{% if hinted %} title="{{ row.title }}"{% endif %}>{% if loop.first %}{{ text|safe }}{% else %}{{ text }}{% endif %}</td>
+            {% endfor %}
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <p class="table-note">参考数据来自外部行情源，抓不到时对应行留空。</p>
+  {% endif %}
+
   <h2>估值配置</h2>
   <pre class="config-json">{{ config_json }}</pre>
 

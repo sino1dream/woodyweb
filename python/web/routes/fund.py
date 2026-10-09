@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import json
 
+from typing import Any
+
 from flask import Blueprint, current_app, jsonify, redirect, render_template, request, url_for
 
 from web.bootstrap import install_paths
@@ -58,7 +60,42 @@ def _render_fund(symbol: str, group: str):
         fund=output,
         config_json=config_json,
         group=group,
+        reference=_build_reference(symbol),
     )
+
+
+def _build_reference(symbol: str) -> dict[str, Any] | None:
+    """基金详情页的「参考数据」表（``php/ui/referenceparagraph.php``）。
+
+    **取不到行情时返回 ``None`` 而不是空表**：模板据此整段跳过。
+    宁可少一块，也不要在页面上摆一张全空的表格 —— 那会让人以为是数据丢了。
+
+    只取基金本身这一个符号：PHP 的详情页还会带上估值标的与汇率，
+    但那两个目前要等 refobj 的 ``QdiiReference`` 接进页面后再补。
+    """
+    service = _get_reference_service()
+    if service is None:
+        return None
+    try:
+        table = service.get_table(_get_reference_refs([symbol]))
+    except Exception:
+        return None
+    return table if table["rows"] else None
+
+
+def _get_reference_service():
+    factory = current_app.extensions.get("reference_service_factory")
+    return None if factory is None else factory()
+
+
+def _get_reference_refs(symbols: list[str]):
+    """按符号建引用对象；未显式注入时走真实抓取（可能联网，已在上层兜底）。"""
+    builder = current_app.extensions.get("reference_refs_builder")
+    if builder is not None:
+        return builder(symbols)
+    from web.services.reference_service import build_stock_references
+
+    return build_stock_references(symbols)
 
 
 @fund_bp.route("/api/fund/<symbol>")

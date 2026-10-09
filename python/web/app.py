@@ -31,6 +31,7 @@ from web.services.history_service import (
     HistoryNotFoundError,
     default_history_service_factory,
 )
+from web.services.reference_service import ReferenceService, default_reference_service_factory
 from web.services.status_service import default_status_service_factory
 
 
@@ -48,6 +49,8 @@ def create_app(
     fund_list_service_factory: Any = None,
     history_service_factory: Any = None,
     updater_factory: Any = None,
+    reference_service_factory: Any = None,
+    reference_refs_builder: Any = None,
 ) -> Flask:
     """创建 Flask 应用，允许测试注入服务工厂。"""
     app = Flask(__name__)
@@ -68,6 +71,17 @@ def create_app(
     # 测试可注入带假行情源的实例。
     if updater_factory is not None:
         app.extensions["updater_factory"] = updater_factory
+
+    # 基金详情页的「参考数据」表（php/ui/referenceparagraph.php）。
+    # 两个口子都可以注入：
+    #   reference_service_factory  —— 替换整个表格服务；
+    #   reference_refs_builder     —— 只替换"按符号建引用对象"这一步
+    #                                 （默认实现会真的抓新浪，测试必须顶掉）。
+    app.extensions["reference_service_factory"] = (
+        reference_service_factory or default_reference_service_factory
+    )
+    if reference_refs_builder is not None:
+        app.extensions["reference_refs_builder"] = reference_refs_builder
 
     init_app(app)
     register_blueprints(app)

@@ -34,6 +34,12 @@ body {
   padding: 0 18px;
 }
 
+.table-note {
+  margin-top: 6px;
+  color: #777;
+  font-size: 12px;
+}
+
 .site-footer {
   max-width: 980px;
   margin: 24px auto;
@@ -261,19 +267,28 @@ h2 {
   background: #f2f8ee;
 }
 
-/* 列头颜色：对应 PHP <font color="...">，逐个映射到相近的可读色 */
-.history-table .col-blue { color: #1a4fa0; }
-.history-table .col-olive { color: #6b7a1f; }
-.history-table .col-orange { color: #b5651d; }
-.history-table .col-indigo { color: #3f3f9f; }
-.history-table .col-green { color: #087c25; }
-.history-table .col-maroon { color: #8b1a1a; }
-.history-table .col-magenta { color: #a0107a; }
-.history-table .col-navy { color: #1a2f6b; }
+/* 列头颜色：对应 PHP <font color="...">，逐个映射到相近的可读色。
+   作用域放在 .data-table 而不是某个具体页面：history.html 用的是
+   class="data-table history-table"，参考数据表同样复用这一套列定义。 */
+.data-table .col-blue { color: #1a4fa0; }
+.data-table .col-olive { color: #6b7a1f; }
+.data-table .col-orange { color: #b5651d; }
+.data-table .col-indigo { color: #3f3f9f; }
+.data-table .col-green { color: #087c25; }
+.data-table .col-maroon { color: #8b1a1a; }
+.data-table .col-magenta { color: #a0107a; }
+.data-table .col-navy { color: #1a2f6b; }
+/* 盈亏列用红色；原先缺这条，列无法显示配色 */
+.data-table .col-red { color: #cc0000; }
 
 /* 单元格颜色：数值涨跌，沿用 PHP 的红涨绿跌 */
-.history-table td.cell-red { color: #cc0000; }
-.history-table td.cell-green { color: #087c25; }
-.history-table td.cell-grey { color: #777; }
-.history-table td.cell-black { color: inherit; }
+.data-table td.cell-red { color: #cc0000; }
+.data-table td.cell-green { color: #087c25; }
+.data-table td.cell-grey { color: #777; }
+.data-table td.cell-black { color: inherit; }
+/* 参考数据表：盘前/盘后说明文字，PHP 是 <i><font color=gray> */
+.data-table td.cell-gray { color: #777; font-style: italic; }
+
+/* 参考数据表首格的 tooltip：PHP 用 title=股票名 */
+.data-table td.with-hint { cursor: help; border-bottom: 1px dotted #999; }
 

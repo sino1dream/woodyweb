@@ -54,17 +54,12 @@ from historytable import (  # noqa: E402
 )
 from stockdata import FundDataSource, MySqlFundDataSource  # noqa: E402
 from stocksymbol import in_array_hk_mix, in_array_qdii, in_array_qdii_mix  # noqa: E402
+from uicolumn import POS_NETVALUE_DIFF  # noqa: E402
 from web.db import get_db  # noqa: E402
 
 
 class HistoryNotFoundError(LookupError):
     """未知的历史数据类型，或该符号没有相应数据。"""
-
-
-# 对应 PHP ``php/ui/stockdisp.php:32`` 的 ``define('POS_NETVALUE_DIFF', 4.0)``：
-# 净值记录页只有在"当天净值涨跌超过 4%"时才反算仓位 —— 作者用它规避
-# 官方 EST 的其他误差来源（净值波动小的时候反算出的仓位噪声太大）。
-POS_NETVALUE_DIFF = 4.0
 
 
 def _column(text: str, color: str = "", width: int = 0) -> dict[str, Any]:

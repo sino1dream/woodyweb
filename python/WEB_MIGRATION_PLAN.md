@@ -136,7 +136,14 @@ Flask 路由
 3. ~~`php/stock/mysqlref.php`、`fundref.php`、`qdiiref.php`：引用对象层。~~
    已完成，见 `python/auto/refobj.py` 与
    `python/auto/README_refobj_migration.md`（含 `cnyref.php` 与 `GbToUtf8()`）。
-4. `php/ui/table.php`、`stocktable.php`、`stockdisp.php`、`link.php`：页面渲染层。
+4. `php/ui/table.php`、`stocktable.php`、`stockdisp.php`、`stockcomm.php`：
+   渲染层的**列定义**已落地（`auto/uicolumn.py`），`referenceparagraph.php`
+   也已完成（`web/services/reference_service.py` + 基金详情页接线），见
+   `python/auto/README_ui_column_migration.md`。**仍未迁**：`smaparagraph`
+   （需先在 StockHistory 上做 SMA/EMA）、`tradingparagraph`、`ahparagraph`、
+   `fundestparagraph`、`pricepoolparagraph`，以及会员/持仓域的
+   `portfolioparagraph` / `stockgroupparagraph` / `transactionparagraph` /
+   `commentparagraph`（这组建议重写而非平移）。
 5. `php/layout.php`、`php/menu.php`、`php/stocklink.php`：站点布局和导航。
 
 第 1、2、3 步已经落地：
@@ -310,6 +317,20 @@ Flask 路由
   已知偏差：PHP 这个位置用的 `FundPairReference` / `HoldingsReference` 未迁移，
   由 `EstReference` 顶上；`MyStockReference`（`stock_ref`）由调用方注入。
   详见 `python/auto/README_refobj_migration.md`。
+- **渲染层（第 4 步，第一轮）**：先搬 `php/ui` 里被最多文件共享的那一个东西 ——
+  **列定义**。`python/auto/uicolumn.py` 把 `stockdisp.php` 的显示常量、
+  `table.php` 的 `TableColumn`、`stocktable.php` 的 34 个列预置、
+  `stockcomm.php` 的排序操作收成单一出处，消灭了各 service 各自重复定义列的问题。
+  三条取舍：**不迁 `htmlelement.php`**（那一整份就是产出 HTML 片段的函数）、
+  **颜色不再烧进文本**（PHP 在构造期就把 `<font color>` 拼进列文本，这里改成数据，
+  使同一份定义能给模板和 JSON API 用）、**`RefSortByNumeric` 不去重**（PHP 用
+  symbol 做键会静默覆盖重复项）。
+  同时迁了 `referenceparagraph.php` → `web/services/reference_service.py`，
+  并接进基金详情页（`/fund/<symbol>` 现在多了"参考数据"表）。
+  **发现一处待裁决的口径冲突**：`php/stock/stockref.php:147` 的涨跌幅染色是
+  "跌红涨黑"，而 `php/stock.php:91` 与分组列表页是"涨红跌绿"，两者相反。
+  本轮照抄前者并钉在三处注释/用例里等你裁决。
+  详见 `python/auto/README_ui_column_migration.md`。
 
 远端分支 `origin/devin/1780933111-migrate-php-core-to-python` 已有
 `python/core/stock_symbol.py` 和 `python/core/sina_fetcher.py`：
@@ -324,8 +345,8 @@ Flask 路由
 
 ```powershell
 cd F:\woody\woodyweb\python
-python -B -m unittest discover -s auto -p "test_*.py"        # 574 个
-python -B -m unittest discover -s web\tests -p "test_*.py"   # 61 个
+python -B -m unittest discover -s auto -p "test_*.py"        # 604 个
+python -B -m unittest discover -s web\tests -p "test_*.py"   # 81 个
 ```
 
 注意：Web 层测试需要 Flask 与 PyMySQL，当前只装在系统 Python 3.7 上。

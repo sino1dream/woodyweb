@@ -233,6 +233,9 @@ class TableRow:
 
     cells: list = field(default_factory=list)
     match: bool = False
+    #: 第一格的 tooltip。对应 ``EchoTableColumn($ar, $strColor, $strFirstHint)``
+    #: 的第三个参数：参考数据表把股票名挂在这一行的链接上（见 ``referenceparagraph.php``）。
+    title: str = ""
 
     def add(self, value: Any, color: str = "") -> "TableRow":
         """追加一格。``color`` 为空表示普通文本。"""
