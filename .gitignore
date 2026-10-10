@@ -1,0 +1,32 @@
+# woodyweb 根目录版本库忽略规则
+#
+# 本仓库以前没有根级 .gitignore，导致若干本地工具目录（合计约 9MB 的产物）
+# 长期处于“未跟踪但未忽略”状态。只要在仓库根顺手执行 git add -A，
+# 这些与源码无关的东西就会被扫进版本库，事后很难清理干净。这里一次性补上。
+#
+# 规则只覆盖「工具 / 缓存 / 本机环境」三类，不碰任何 PHP、Python 源码与文档。
+# 注意：Git 的 .gitignore 不支持行尾注释，注释必须独占一行。
+
+# 一、本机工具与会话产物（非源码，体积大，且随会话反复变动）
+# .aksrc  —— akshare 源码包与打包缓存
+# .archify —— 架构分析的一次性输出
+# .dsh / .agents —— DSH 会话技能缓存与状态目录
+# .workbuddy —— 助手工作台数据（含 .workbuddy/memory 工作日志，只留在本机）
+/.aksrc/
+/.archify/
+/.dsh/
+/.agents/
+/.workbuddy/
+
+# 二、Python 运行产物
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.tox/
+
+# 三、本机环境与编辑器残留
+.env
+*.log
+.DS_Store
+Thumbs.db
