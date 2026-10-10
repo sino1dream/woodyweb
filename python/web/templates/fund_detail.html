@@ -20,6 +20,24 @@
      列头的颜色、单元格的颜色都是数据，不再像 PHP 那样 echo <font color>。
      首格在 PHP 里恒为 GetExternalLink() / GetStockLink() 产出的 <a> 标签，
      所以 first_cell_is_html=True 只对这两张表打开。 #}
+  {% if trading %}
+    <h2>五档交易</h2>
+    <p class="table-note">{{ trading.title }}{% if trading.rotation_link %}
+      <a href="{{ trading.rotation_link.url }}">{{ trading.rotation_link.text }}</a>{% endif %}</p>
+    {# url_for 会把 live=1 拼进查询串，别再手写 '?live=1'，
+       否则会得到 '?live=1?live=1'。 #}
+    {{ data_table(trading, "trading-table") }}
+    <p class="table-note">
+      盘口只有抓实时行情才有 ——
+      <a href="{{ url_for('fund.fund_page', symbol=fund.symbol, live=1) }}">点此刷新本页</a>。
+    </p>
+  {% else %}
+    <p class="table-note">
+      暂无五档盘口数据（库快照不含买卖档位）。
+      <a href="{{ url_for('fund.fund_page', symbol=fund.symbol, live=1) }}">抓取实时行情后再看</a>。
+    </p>
+  {% endif %}
+
   {% if fundest %}
     <h2>估值</h2>
     {{ data_table(fundest, "fund-est-table", first_cell_is_html=True) }}

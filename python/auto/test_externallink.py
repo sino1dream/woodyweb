@@ -19,6 +19,8 @@ from externallink import (
     get_link_element,
     get_sina_fund_link,
     get_sina_stock_link,
+    get_xueqiu_link,
+    get_xueqiu_url,
 )
 
 
@@ -150,6 +152,40 @@ class SinaStockLinkDispatchTest(unittest.TestCase):
         html = get_sina_stock_link("^ZZZUNKNOWN")
         self.assertTrue(html)
         self.assertNotIn("href=\"\"", html)
+
+
+class XueqiuLinkTest(unittest.TestCase):
+    """``GetXueqiuLink()``：股票列表页的名称格与五档表的标题用它。
+
+    雪球不认 ``^`` 开头的指数写法，所以要逐个换名 —— 换错的外链会 404，
+    而且**从表格上看不出来**，只能靠这里钉住。
+    """
+
+    def test_plain_symbol_is_used_as_is(self):
+        self.assertEqual(get_xueqiu_url("SZ161130"), "https://xueqiu.com/S/SZ161130")
+
+    def test_indices_use_xueqiu_codes(self):
+        self.assertEqual(get_xueqiu_url("^NDX"), "https://xueqiu.com/S/.NDX")
+        self.assertEqual(get_xueqiu_url("^GSPC"), "https://xueqiu.com/S/.INX")
+        self.assertEqual(get_xueqiu_url("^HSI"), "https://xueqiu.com/S/HKHSI")
+        self.assertEqual(get_xueqiu_url("^HSCE"), "https://xueqiu.com/S/HKHSCEI")
+
+    def test_futures_use_xueqiu_codes(self):
+        self.assertEqual(get_xueqiu_url("hf_CHA50CFD"), "https://xueqiu.com/S/CNmain")
+
+    def test_unmapped_symbols_fall_back_to_themselves(self):
+        """未列入的符号原样使用 —— PHP 的缺省分支就是这条。"""
+        self.assertEqual(get_xueqiu_url("hf_NQ"), "https://xueqiu.com/S/hf_NQ")
+
+    def test_link_uses_the_given_display_text(self):
+        html = get_xueqiu_link("SZ161130", "纳斯达克100")
+        self.assertIn('href="https://xueqiu.com/S/SZ161130"', html)
+        self.assertIn(">纳斯达克100</a>", html)
+        self.assertIn('target="_blank"', html)
+
+    def test_url_and_link_do_not_duplicate_the_mapping(self):
+        """``link`` 必须复用 ``url`` —— 两份改名字典迟早会分家。"""
+        self.assertIn(get_xueqiu_url("^NDX"), get_xueqiu_link("^NDX"))
 
 
 if __name__ == "__main__":

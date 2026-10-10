@@ -15,4 +15,9 @@
       <li><a href="{{ url_for('fund.fund_group_page', group=item.name) }}">{{ item.title }}</a>（{{ item.count }} 只）</li>
     {% endfor %}
   </ul>
+
+  <h2>其它</h2>
+  <ul class="group-nav">
+    <li><a href="{{ url_for('stock.stock_page') }}">全部股票代码</a>（对应 PHP 的 <code>stockparagraph.php</code>）</li>
+  </ul>
 {% endblock %}

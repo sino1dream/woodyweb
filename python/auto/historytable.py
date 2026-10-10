@@ -249,6 +249,17 @@ class TableRow:
     #: 这里只存 URL、不存 HTML：拼链接属于模板的职责（它才知道 ``url_for``），
     #: 服务层通过注入的回调拿到 URL，见 ``web/services/stock_service.py``。
     href: str = ""
+    #: **非首格**的链接。键是 :attr:`cells` 的下标（从 0 起）；
+    #: 值可以是 **URL 字符串**（把该格文本包成 ``<a>``），也可以是
+    #: **``[{"text", "url"}, ...]``**（直接渲染成一串链接、忽略文本）。
+    #:
+    #: 为什么需要它：PHP 的行里不止首格有链接 —— ``stockparagraph`` 的名称格是
+    #: 雪球外链、管理员列还要塞"编辑/删除"两个链接。只有 :attr:`href` 一个口子时，
+    #: 剩下的格子只能由服务层自己拼 HTML，那与"数据与渲染分离"相悖。
+    #:
+    #: 例：``row.hrefs[1] = "https://xueqiu.com/S/SZ161130"``
+    #:     ``row.hrefs[2] = [{"text": "编辑", "url": "/stock/edit/SZ161130"}]``
+    hrefs: dict = field(default_factory=dict)
 
     def add(self, value: Any, color: str = "") -> "TableRow":
         """追加一格。``color`` 为空表示普通文本。"""

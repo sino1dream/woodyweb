@@ -314,6 +314,131 @@ EchoTableColumn($ar, false, $strFirstHint);   // 名称降级成首格的 title 
 列头颜色 / 单元格颜色 / 首格外链这三条规则集中在一处。
 `first_cell_is_html` **默认关闭**，只有确实需要透传 `<a>` 的表格才打开。
 
+## 六 ter、第三轮：🟡 档两个段落（trading / stock）
+
+接用户"先做 🟡 这一档"的指令。两个段落的依赖完全不同：一个是**全 `php/ui`
+里唯一依赖实时五档**的，另一个是零依赖的两列表格；所以它们的可测性也
+天差地别 —— trading 必须能独立跑通，stock 则顺手把 `StockSql` 接上了线。
+
+### `tradingparagraph`(197) → `web/services/trading_service.py` + `test_trading.py`（39 用例）
++ `test_trading_route.py`（5 用例，需 flask）
+
+行序与整行底色是这一段的全部骨架：涨停（橙）→ 卖5…卖1 → 买1…买5 → 跌停（橙），
+其中**只有买一/卖一染黄**（`_getTradingColor(): ($i == 0) ? 'yellow' : false`）。
+橙/黄是整行 `background-color`，所以走 `TableRow.background`（上一轮预置的字段），
+与单元格文字色不是一回事。
+
+三个入口按 PHP 原样保留为三个方法（列与溢价的装配各不相同）：
+
+| 方法 | PHP | 列 |
+| --- | --- | --- |
+| `fund_table()` | `EchoFundTradingParagraph()` | 交易/价格/数量 + **嵌套**追加的官方/参考/实时溢价 |
+| `pair_table()` | `EchoFundPairTradingParagraph()` | 无条件加一列"官方溢价" |
+| `get_table()` | `EchoTradingParagraph()` | 用 `TableColumnStock`（对照标的名）当表头，格子里填溢价 |
+
+#### 发现了两处 PHP 死代码/错位，都照抄 + 测试钉住
+
+1. **`_checkTradingQuantity()` 里的 `if ($strQuantity != '0') return false;` 是不可达的**。
+   外层 `if ($strQuantity = $ref->GetAskQuantity($i))` 已经把 `'0'` 判为假值滤掉了
+   （PHP 的字符串 `'0'` 在布尔上下文里是 `false`）。这在 Python 里是**真陷阱**：
+   `'0'` 在 Python 是**真值**，照字面翻译会把"没有挂单"误判成"有挂单"，
+   于是多渲染一张空盘口表。本模块一律走 `_php_truthy()` 而不是 `if value:`，
+   `PhpTruthinessTest` 把"Python 判真 / PHP 判假"这条差异写在断言里。
+2. **回调列在价格缺失时少一格**：列头只看有没有传 callback，行里还要求
+   `empty($strPrice) == false`。价格缺失（有量无量价）时该行比表头少一格。
+   补空格等于掩盖，所以照抄，并把 `cell_count` / `column_count` 一起返回。
+
+#### 删除了 `strlen()*11` 的像素宽度估算（用户明确同意）
+
+PHP 在加回调列时按"一个字符 11 像素"估宽度、再用屏幕宽度截一刀。
+在 CSS 布局下这条估算没有意义（列宽只是 hint），而且 `strlen()` 按**字节**算，
+中文名一个字 3 字节必然偏窄；它还依赖未迁移的 `LayoutGetDisplayWidth()`
+与 `$_SESSION['mobile']`，把"有没有 session"采进列定义，
+会让同一个数据结构无法给 JSON API 征用。改用定宽 `TRADING_CALLBACK_WIDTH = 80`。
+
+#### 接线：`/fund/<symbol>?live=1`
+
+**默认不渲染**。盘口只在抓原始行情时才有 —— `realtimequote` 快照表只有
+最新价/昨收/名称几个字段，没有买卖档位。而 `auto/refquote.py` 的取舍是
+"抓取归 daemon，页面只读"，所以正常请求**不联网**，表格因此不出现。
+
+要看到它必须显式要求一次：`?live=1` 或环境变量 `PALMMICRO_TRADING_LIVE_QUOTES=1`。
+这与 `/api/quotes` 的 `?refresh=1` 同套路（见 `web/routes/quote.py`）。
+
+**长期正解还没做**：把盘口写进快照表（daemon 每 60 秒一次），页面照样读库。
+那要动 schema，属于单独一步。
+
+实测 `?live=1` 时 `SZ161130` 的渲染结果（13 行 = 表头 + 12 行）：
+
+```text
+交易  价格    数量   官方溢价  参考溢价
+涨停  5.372         18.19%    18.08%
+卖5   4.889   7100   7.56%     7.47%
+… 卖4 → 卖1 …
+买1   4.880   4400   7.37%     7.27%
+… 买2 → 买5 …
+跌停  4.396         -3.28%    -3.37%
+```
+
+### `stockparagraph`(45) → `web/services/stock_service.py` + `test_stock.py`（29 用例）
++ `test_stock_route.py`（7 用例，需 flask）
+
+真正的难点不在两列，而在**把 PHP 那句塞进标题的 `GetMenuLink()` HTML 拆成数据**：
+
+```php
+$strMenuLink = GetMenuLink(false, $sql->CountData(), $iStart, $iNum);
+```
+
+本版返回 `paging` dict（首页/上一页/下一页/末页/每页 N 条），由模板用 `url_for`
+生成链接。翻页的 start 计算**复用** `auto/stocksql.stock_paging_columns()`
+（上一轮就写好、一直没人接线的函数），不在服务里另写一份。
+
+`GetMenuLink()` 最后一轮 `for` 的两个反直觉之处，测试各钉一条：
+
+* 上界是 `总数 + 步长 - 1` 而不是总数 —— **总数 30 也给出"每页 100"**；
+* 候选允许**超出总数**（总数 250 时给出 100/200/300）。
+
+#### 顺带把 `auto/stocksql.py` 接上了线
+
+上一轮写好的 `stocksql.py`（158 行 / 24 用例）一直是孤儿，这一档正好是它的
+唯一调用点 —— `/stock` 列表页分页取 `stock` 表的符号与中文名。
+
+#### 顺带补了 `externallink.get_xueqiu_url()` / `get_xueqiu_link()`
+
+PHP 的 `GetXueqiuLink()`（`php/externallink.php:131`）。名称格需要它的**URL**，
+所以拆成"URL 函数"+"`<a>` 函数"两个 —— 服务层只要地址，HTML 交给模板。
+雪球不认 `^` 开头的指数写法，逐条换名（`^NDX → .NDX`、`^HSI → HKHSI`…），
+换错的外链会 404 且**从表格上看不出来**，只能靠测试钉住。
+这一条同时把"宽屏名称外链未迁"那条旧偏差（下面第 4 条）翻掉了。
+
+### 新增 `/stock` 与 `/api/stock`
+
+`web/routes/stock.py` + `templates/stock_list.html`。分页参数沿用 PHP 的
+`start` / `num`，与 `/history/*` 同口径（`num=0` 表示全部）。
+
+**链接构造器放在路由层**：生成 URL 需要请求上下文（`url_for`），而服务层
+跑在没有请求的地方也要能用（脚本导出、测试）。所以工厂只管数据源，
+链接由路由补 —— `_get_table()` 里那几行 `getattr` 就是为此。
+
+### `TableRow.hrefs`：给非首格也开一个链接口子
+
+上一轮只加了 `href`（首格）。但 `stockparagraph` 的名称格是雪球外链、
+管理员列还要塞"编辑/删除"**两个**链接 —— 只有一个口子时，剩下的格子只能
+由服务层自己拼 HTML，那与"数据与渲染分离"相悖。所以新增 `hrefs: dict`：
+
+* 值是 **URL 字符串** → 把该格文本包成 `<a>`；
+* 值是 **`[{"text", "url"}, ...]`** → 直接渲染成一串链接。
+
+`_data_table.html` 现在按这个顺序取：首格 HTML → 非首格单链接 → 非首格多链接
+→ 首格 `href` → 纯文本。
+
+### 管理员那一列：加列、不加链接
+
+`new TableColumn('', 270)` 的**列**照抄（空表头、宽 270），
+但 `GetStockEditDeleteLink()` 属于 🔴 membership 域 —— 要登录 + 管理员角色，
+本项目连账号体系都还没迁。所以做成 `admin_link_builder` 注入回调：
+不注入就只有空表头，**现在先别编 URL**。
+
 ## 七、已知偏差
 
 1. **涨跌幅配色与 PHP 原文相反**：本实现是"涨红跌绿"（已裁决，见第四节），
@@ -324,9 +449,10 @@ EchoTableColumn($ar, false, $strFirstHint);   // 名称降级成首格的 title 
 3. **参考数据表的外链带 ``|safe``**：首格是 `GetExternalLink()` 产出的 `<a>` 标签
    （PHP 也是直接 echo），模板对 `loop.first` 关闭转义。**这是本轮唯一的 HTML 透传点**，
    如果以后要把这一块接到不可信数据上，需要改成结构化的 `{"text","href"}`。
-4. **宽屏名称外链未迁**：PHP 的 `$bWide` 会把名称做成雪球链接
-   （`GetXueqiuLink()`，`php/externallink.php:131`）。外链函数族属于第 5 步，
-   未迁移；本版始终返回纯文本名称。
+4. **~~宽屏名称外链未迁~~（已过期，2026-10-10）**：第三轮补上了
+   `externallink.get_xueqiu_url()`，股票列表页的名称格已经是雪球外链了。
+   但**参考数据表**的名称格还没接上 —— 那条走的是 `$bWide` 分支，
+   与 `stockparagraph` 不是同一个调用点，仍返回纯文本。
 5. **`GetArbitrageQuantity()` 未迁**（服务 porfolio 域，`GetStockHedge()` 未迁移）。
 6. **`RefEchoTableColumn()` 的 `title` 只实现了参考数据表那一条路径**
    （`$bWide` 时 PHP 传 `false`，不挂 tooltip）。
@@ -341,6 +467,16 @@ EchoTableColumn($ar, false, $strFirstHint);   // 名称降级成首格的 title 
    `legacy_labels=True` 可复刻 PHP。同理 `EchoTableParagraphBegin()` 那个
    "表太宽就 `trigger_error` 并返回 false" 的守卫没迁 ——
    `LayoutGetDisplayWidth()` 属于布局层（第 5 步）。
+10. **五档表默认不渲染**：盘口只在抓实时行情时才有，库快照没有。
+    `?live=1` / `PALMMICRO_TRADING_LIVE_QUOTES=1` 才会去抓。见"第三轮"那一节。
+11. **五档表的"轮动交易"链接恒为 `None`**：`GetRotationTradingLink()` 指向
+    `rotationtrading` 页面（`woody/res/rotationtradingcn.php`，🔴 membership 域），
+    本站还没有该页面。等那一页迁完，在 `default_trading_service_factory()`
+    补一个 `link_builder` 即可，服务本身不用改。
+12. **股票列表的管理员列有表头无链接**：列照抄（`''` + 宽 270），
+    操作链接等账号体系那一档。见"第三轮"末尾。
+13. **`_checkTradingQuantity()` 的内层判定是死代码**，本版照样写、照样测，
+    以免有人照字面翻译时把它当成有效分支。见"第三轮"。
 
 ## 八、还剩下什么（`php/ui` 全景）
 
@@ -353,11 +489,13 @@ EchoTableColumn($ar, false, $strFirstHint);   // 名称降级成首格的 title 
 **第二轮已做掉 🟢 档三个**：`pricepoolparagraph`(136) / `ahparagraph`(94) /
 `fundestparagraph`(174)，详见"第二轮"那一节。
 
-剩下约 13 个待迁，按依赖从少到多：
+**第三轮已做掉 🟡 档两个**：`tradingparagraph`(197) / `stockparagraph`(45)，
+详见"第三轮"那一节。
+
+剩下约 11 个待迁，按依赖从少到多：
 
 | 档 | 文件 | 阻塞点 |
 | --- | --- | --- |
-| 🟡 中等 | `tradingparagraph`(197) `stockparagraph`(45) | 需要实时五档、`StockSql`；有一处 `strlen()*11` 估算像素宽，**在 CSS 布局下没有意义，应删掉而不是照抄** |
 | 🟠 偏难 | `smaparagraph`(225) `portfolioparagraph`(160) `netvaluehistory` 收尾 | `StockHistory`（SMA/BOLL/EMA，16KB，无 Python 对应）；`static $fCny` 函数级静态跨行累加，**照抄翻译一定出 bug** |
 | 🔴 建议不同方式处理 | `stockgroup` / `fundpurchase` / `transaction` / `comment`(≈450) | 会员/持仓/交易域，`$acct` 与一堆 Sql 全未迁；渲染函数里混着写库链接。建议 Python 版直接用 Flask-Login 重写而非平移 |
 

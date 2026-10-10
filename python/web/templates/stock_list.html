@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% from "_data_table.html" import data_table %}
+{% block title %}股票列表 - 基金估值{% endblock %}
+{% block content %}
+  <h1>股票列表</h1>
+
+  {# 翻页控件：PHP 把 GetMenuLink() 的结果当表格标题（一串拼好的 HTML），
+     本版把它数据化，链接在这里用 url_for 生成。 #}
+  {% set paging = table.paging %}
+  {% if paging.show %}
+    <p class="paging">
+      总数：{{ paging.total }}
+      当前显示：{{ paging.first_index }}-{{ paging.last_index }}
+      {% if paging.first_start is not none %}
+        <a href="{{ url_for('stock.stock_page', start=paging.first_start, num=paging.num) }}">{{ paging.first }}</a>
+      {% endif %}
+      {% if paging.prev_start is not none %}
+        <a href="{{ url_for('stock.stock_page', start=paging.prev_start, num=paging.num) }}">{{ paging.prev }}</a>
+      {% endif %}
+      {% if paging.next_start is not none %}
+        <a href="{{ url_for('stock.stock_page', start=paging.next_start, num=paging.num) }}">{{ paging.next }}</a>
+      {% endif %}
+      {% if paging.last_start is not none %}
+        <a href="{{ url_for('stock.stock_page', start=paging.last_start, num=paging.num) }}">{{ paging.last }}</a>
+      {% endif %}
+      {% for size in paging.page_sizes %}
+        {% if size == paging.num %}
+          <span class="current">{{ size }}</span>
+        {% else %}
+          <a href="{{ url_for('stock.stock_page', start=0, num=size) }}">{{ size }}</a>
+        {% endif %}
+      {% endfor %}
+      <a href="{{ url_for('stock.stock_page', start=0, num=0) }}">全部</a>
+    </p>
+  {% else %}
+    <p class="paging">总数：{{ paging.total }}</p>
+  {% endif %}
+
+  {% if table.rows %}
+    {{ data_table(table, "stock-table") }}
+  {% else %}
+    <p class="empty">stock 表里暂无符号。</p>
+  {% endif %}
+
+  <p>
+    <a href="{{ url_for('main.index') }}">返回首页</a>
+  </p>
+{% endblock %}

@@ -319,7 +319,7 @@ Flask 路由
   已知偏差：PHP 这个位置用的 `FundPairReference` / `HoldingsReference` 未迁移，  
   由 `EstReference` 顶上；`MyStockReference`（`stock_ref`）由调用方注入。  
   详见 `python/auto/README_refobj_migration.md`。
-- **渲染层（第 4 步，已做两轮）**：先说一个推翻预设的事实 —— `php/ui` 里  
+- **渲染层（第 4 步，已做三轮）**：先说一个推翻预设的事实 —— `php/ui` 里  
   **几乎没有 `XxxParagraph` 类**，20 多个 `EchoXxxParagraph()` 全是过程式函数  
   直接 `echo` HTML，所以按"类对类"平推是错的。改成**先搬最共享的列定义**  
   （`auto/uicolumn.py`，PHP `stocktable.php` 那 30 个类其实只是"默认值不同"的  
@@ -332,7 +332,21 @@ Flask 路由
   `LayoutGetDisplayWidth()`）。  
   顺带查清：**7 个段落早就在 `python/web` 里了**（`history_service.py` 6 个 +  
   `fund_list_service.py`），真正待迁的是约 13 个。  
-  已迁：`reference` / `pricepool` / `ah` / `fundest` 四个段落 + 列定义地基。  
+  已迁：`reference` / `pricepool` / `ah` / `fundest` / `trading` / `stock`
+  六个段落 + 列定义地基。**🟡 档（第三轮）的两个**要点：
+
+  * `tradingparagraph` 是 `php/ui` 里**唯一依赖实时五档**的段落。库快照没有
+    买卖档位，所以它**默认不渲染**，需 `?live=1`（与 `/api/quotes?refresh=1`
+    同套路）；长期正解是把盘口写进快照表，那要动 schema，另算一步。
+  * 按用户指令**删掉了 `strlen()*11` 的像素宽度估算** —— 它在 CSS 布局下
+    没有意义，还依赖未迁移的 `LayoutGetDisplayWidth()` 与 `$_SESSION['mobile']`。
+  * `stockparagraph` 只有 45 行，但它把 `GetMenuLink()` 的 HTML 塞在标题里；
+    本版把翻页数据化（复用上一轮的 `stocksql.stock_paging_columns()`），
+    新增 `/stock` 与 `/api/stock`，顺带把孤着的 `auto/stocksql.py` 接上线。
+  * 两个 PHP 陷阱：`_checkTradingQuantity()` 里那句 `!= '0'` 是**不可达的**
+    （`'0'` 在 PHP 是假值），而它在 Python 里是真值 —— 照字面翻译会多摆一张
+    空盘口表；`GetMenuLink()` 的候选项允许**超出总数**（250 条时给到 300）。
+
   **配色裁决**：涨跌幅统一成**涨红跌绿**。PHP 自身在这件事上是矛盾的 ——  
   `php/stock/stockref.php:147` 的 `GetPercentageDisplay()` 是"跌红涨黑"，  
   而 `php/stock.php:91` 的 `StockGetPriceDisplay()` 默认参数（被 `GetRatioDisplay()`  
@@ -414,8 +428,8 @@ Flask 路由
 
 ```powershell
 cd F:\woody\woodyweb\python
-python -B -m unittest discover -s auto -p "test_*.py"        # 694 个
-python -B -m unittest discover -s web\tests -p "test_*.py"   # 168 个
+python -B -m unittest discover -s auto -p "test_*.py"        # 700 个
+python -B -m unittest discover -s web\tests -p "test_*.py"   # 248 个
 ```
 
 注意：Web 层测试需要 Flask 与 PyMySQL，当前只装在系统 Python 3.7 上。  

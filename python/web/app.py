@@ -34,6 +34,8 @@ from web.services.history_service import (
 from web.services.fundest_service import FundEstService, default_fundest_service_factory
 from web.services.reference_service import ReferenceService, default_reference_service_factory
 from web.services.status_service import default_status_service_factory
+from web.services.stock_service import StockService, default_stock_service_factory
+from web.services.trading_service import TradingService, default_trading_service_factory
 
 
 def _error_response(message: str, status: int):
@@ -54,6 +56,9 @@ def create_app(
     reference_refs_builder: Any = None,
     fundest_service_factory: Any = None,
     fundest_refs_builder: Any = None,
+    trading_service_factory: Any = None,
+    trading_refs_builder: Any = None,
+    stock_service_factory: Any = None,
 ) -> Flask:
     """创建 Flask 应用，允许测试注入服务工厂。"""
     app = Flask(__name__)
@@ -95,6 +100,22 @@ def create_app(
     )
     if fundest_refs_builder is not None:
         app.extensions["fundest_refs_builder"] = fundest_refs_builder
+
+    # 基金详情页的「五档交易」表（php/ui/tradingparagraph.php）。
+    # 盘口数据只有抓实时行情才有 —— 库快照里没有买卖五档，所以：
+    #   trading_service_factory  —— 替换整个表格服务；
+    #   trading_refs_builder     —— 只替换"按符号建引用对象"这一步，
+    #                               默认实现会按需联网（见 web/routes/fund.py）。
+    app.extensions["trading_service_factory"] = (
+        trading_service_factory or default_trading_service_factory
+    )
+    if trading_refs_builder is not None:
+        app.extensions["trading_refs_builder"] = trading_refs_builder
+
+    # 股票列表页（php/ui/stockparagraph.php）：从 stock 表分页取符号。
+    app.extensions["stock_service_factory"] = (
+        stock_service_factory or default_stock_service_factory
+    )
 
     init_app(app)
     register_blueprints(app)

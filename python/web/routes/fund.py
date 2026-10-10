@@ -14,6 +14,7 @@ Werkzeug 会让它们重载，匹配时**先注册的规则优先**。所以必�
 from __future__ import annotations
 
 import json
+import os
 
 from typing import Any
 
@@ -61,10 +62,105 @@ def _render_fund(symbol: str, group: str):
         fund=output,
         config_json=config_json,
         group=group,
+        trading=_build_trading(symbol),
         fundest=_build_fundest(symbol),
         reference=_build_reference(symbol),
         shares=_build_shares(symbol),
     )
+
+
+def _wants_live_order_book() -> bool:
+    """本请求是否允许**抓实时行情**去换五档盘口。
+
+    ## 为什么默认关
+
+    五档盘口（``GetAskQuantity`` / ``GetBidPrice`` 那一组）**只在抓原始行情时才有** ——
+    ``realtimequote`` 快照表只存了最新价/昨收/名称五六个字段，没有买卖档位。
+    ``auto/refquote.py`` 的取舍是"抓取归 daemon，页面只读"，所以正常请求
+    **不联网**，五档表因此不渲染（``trading_service`` 检测到没有挂单量就返回
+    ``None``）。
+
+    要看到它，显式要求一次：
+
+    * 请求带 ``?live=1``；或
+    * 环境变量 ``PALMMICRO_TRADING_LIVE_QUOTES=1``。
+
+    这与 ``/api/quotes`` 的 ``?refresh=1`` 是同一套路（见 ``web/routes/quote.py``），
+    目的都是让"什么时候会联网"在代码里数得清楚。
+
+    ## 正解还没做
+
+    长期应该把盘口写进快照表（daemon 每 60 秒一次），页面照样读库。
+    那要动 schema，属于单独一步；在此之前用这个开关过渡。
+    """
+    if request.args.get("live") in ("1", "true", "yes"):
+        return True
+    return os.getenv("PALMMICRO_TRADING_LIVE_QUOTES", "0") == "1"
+
+
+def _build_trading(symbol: str) -> dict[str, Any] | None:
+    """基金详情页的「五档交易」表（``php/ui/tradingparagraph.php``）。
+
+    这里要传进去的是**基金引用对象**（``refobj.QdiiReference``）而不是纯行情引用：
+    ``EchoFundTradingParagraph($fund, …)`` 内部先 ``GetStockRef($fund)`` 取盘口，
+    再用 ``$fund`` 自己的三档估值算溢价列。顺序不能反 —— 反过来就只剩三列空表。
+
+    **盘口没有数据就整段跳过**：不带 ``?live=1`` 时几乎必然如此（见
+    :func:`_wants_live_order_book`），这与详情页其它三张表的处理一致。
+    """
+    service = _get_trading_service()
+    if service is None:
+        return None
+    try:
+        refs = _get_trading_refs(symbol)
+        if not refs:
+            return None
+        table = service.fund_table(refs[0])
+    except Exception:
+        return None
+    return table if table else None
+
+
+def _get_trading_service():
+    factory = current_app.extensions.get("trading_service_factory")
+    return None if factory is None else factory()
+
+
+def _get_trading_refs(symbol: str) -> list:
+    """建基金引用对象，并在要求时给它的场内行情对象补一次**五档**。"""
+    builder = current_app.extensions.get("trading_refs_builder")
+    if builder is not None:
+        return builder([symbol])
+    refs = _build_qdii_refs([symbol])
+    if refs and _wants_live_order_book():
+        _fill_order_book(refs[0])
+    return refs
+
+
+def _fill_order_book(ref: Any) -> bool:
+    """给 ref 的行情对象补五档；返回是否补到。
+
+    只用 ``apply_network``（``auto/refquote.py``）而不是 ``load_quote_into``，
+    因为这里要的就是"此刻的挂单"，快照里根本没有、读一百遍也没有。
+    """
+    quote_ref = None
+    for name in ("get_stock_ref", "GetStockRef"):
+        getter = getattr(ref, name, None)
+        if callable(getter):
+            try:
+                quote_ref = getter()
+            except Exception:
+                quote_ref = None
+            if quote_ref is not None:
+                break
+    if quote_ref is None:
+        quote_ref = ref
+    try:
+        from refquote import NetworkQuoteSource, apply_network
+
+        return apply_network(quote_ref, NetworkQuoteSource())
+    except Exception:
+        return False
 
 
 def _build_shares(symbol: str) -> dict[str, Any] | None:

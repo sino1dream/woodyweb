@@ -65,6 +65,56 @@ def get_external_link(http: Any, display: Any = None) -> str:
     return get_link_element(text, http, {"target": "_blank"})
 
 
+#: 雪球。对应 PHP ``GetXueqiuUrl()``。
+XUEQIU_URL = "https://xueqiu.com"
+
+#: 指数符号 → 雪球代码。对应 ``GetXueqiuLink()`` 里那张 ``switch``。
+#:
+#: 雪球不认 ``^`` 开头的写法，所以要逐个换名；未列出的指数**原样使用符号**
+#: （PHP 的缺省分支就是 ``$strXueqiu = $strSymbol``）。
+XUEQIU_INDEX_CODES = {
+    "^DJI": ".DJI",
+    "^GSPC": ".INX",
+    "^HSI": "HKHSI",
+    "^HSCE": "HKHSCEI",
+    "^HSTECH": "HKHSTECH",
+    "^NDX": ".NDX",
+}
+
+#: 新浪期货 → 雪球代码。同样未列入的原样使用。
+XUEQIU_FUTURE_CODES = {
+    "hf_CHA50CFD": "CNmain",
+}
+
+
+def get_xueqiu_url(symbol: Any) -> str:
+    """对应 ``GetXueqiuLink()`` 里的 URL 拼装：``<base>/S/<代码>``。
+
+    单独抽出 URL（而不是像 PHP 那样直接产出 ``<a>``）是因为渲染层需要它：
+    ``stockparagraph`` 的名称格、``tradingparagraph`` 的标题都只要地址，
+    HTML 交给模板拼。
+    """
+    sym = _symbol_object(symbol)
+    text = str(_call(sym, "get_symbol") or symbol)
+
+    code = text
+    if _call(sym, "is_index"):
+        code = XUEQIU_INDEX_CODES.get(text, text)
+    elif _call(sym, "is_sina_future"):
+        code = XUEQIU_FUTURE_CODES.get(text, text)
+    return XUEQIU_URL + "/S/" + code
+
+
+def get_xueqiu_link(symbol: Any, display: Any = None) -> str:
+    """对应 ``GetXueqiuLink($sym, $strDisplay = false)``：带 ``target=_blank`` 的 ``<a>``。
+
+    ``display`` 缺省时用 ``GetDisplay()``，与 PHP 一致。
+    """
+    sym = _symbol_object(symbol)
+    text = display if display else _display_of(sym)
+    return get_external_link(get_xueqiu_url(sym), text)
+
+
 def get_sina_fund_link(symbol: Any) -> str:
     """对应 ``GetSinaFundLink()``：中国场内基金的行情页外链。
 

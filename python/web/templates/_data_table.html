@@ -27,16 +27,25 @@
       </thead>
       <tbody>
         {% for row in table.rows %}
-          {# row.background 是整行底色（PHP 的 background-color），row.href 只作用于首格 #}
+          {# row.background 是整行底色（PHP 的 background-color）；row.href 只作用于首格 #}
           <tr{% if row.background %} class="bg-{{ row.background }}"{% endif %}>
             {% for cell in row.cells %}
               {% set text = cell if cell is string else cell[0] %}
               {% set color = "" if cell is string else cell[1] %}
               {% set hinted = loop.first and row.title %}
+              {% set index = loop.index0 %}
               {% set classes = ("cell-" ~ color if color else "") ~ (" with-hint" if hinted else "") %}
               <td{% if classes %} class="{{ classes }}"{% endif %}{% if hinted %} title="{{ row.title }}"{% endif %}>
                 {%- if loop.first and first_cell_is_html -%}
                   {{ text|safe }}
+                {%- elif row.hrefs.get(index) is string -%}
+                  {# 非首格也能挂单个链接：URL 在这里包一层 <a> #}
+                  <a href="{{ row.hrefs.get(index) }}" target="_blank">{{ text }}</a>
+                {%- elif row.hrefs.get(index) -%}
+                  {# 一串链接（管理员的"编辑/删除"）：每项的 text 与 url 都来自数据 #}
+                  {%- for link in row.hrefs.get(index) -%}
+                    <a href="{{ link.url }}">{{ link.text }}</a>{% if not loop.last %} {% endif %}
+                  {%- endfor -%}
                 {%- elif loop.first and row.href -%}
                   <a href="{{ row.href }}">{{ text }}</a>
                 {%- else -%}
