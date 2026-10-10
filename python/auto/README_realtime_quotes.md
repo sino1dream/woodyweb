@@ -116,6 +116,15 @@ Web 进程读不到 —— 两个进程的内存互不可见，多 worker 更不
 读取是两级：先看本进程内存，未命中再读表（`QuotesUpdater.get()` / `get_all()`）。
 这样既省查询，又保证多进程能共享。
 
+**这一列还带了五档盘口**：表上有个 `orderbook` 列（JSON 文本，买一到买五、
+卖一到卖五），抓取进程顺手写进去、页面读回来装填引用对象，
+于是「五档交易」表**不必在请求期联网**就能渲染。
+详见 `README_ui_column_migration.md` 的第四轮那一节。
+
+> 加列走 `sql/patch_realtimequote_orderbook.sql`（用 `sql/apply_patch.py` 执行）——
+> `schema.sql` 是 `CREATE TABLE IF NOT EXISTS`，不会给已存在的表补列。
+> 读写两侧都能在"列不存在"时退回原样（只认 MySQL 1054 这一个错码）。
+
 ### 3.3 涉及的文件
 
 | 文件 | 职责 |

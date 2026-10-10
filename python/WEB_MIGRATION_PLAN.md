@@ -335,9 +335,11 @@ Flask 路由
   已迁：`reference` / `pricepool` / `ah` / `fundest` / `trading` / `stock`
   六个段落 + 列定义地基。**🟡 档（第三轮）的两个**要点：
 
-  * `tradingparagraph` 是 `php/ui` 里**唯一依赖实时五档**的段落。库快照没有
-    买卖档位，所以它**默认不渲染**，需 `?live=1`（与 `/api/quotes?refresh=1`
-    同套路）；长期正解是把盘口写进快照表，那要动 schema，另算一步。
+  * `tradingparagraph` 是 `php/ui` 里**唯一依赖实时五档**的段落。写这一轮时
+    库快照没有买卖档位，所以它**默认不渲染**、需 `?live=1`；
+    **第四轮**（`README_ui_column_migration.md` 的第四轮那一节）已把盘口写进
+    快照表的 `orderbook` 列，现在默认就读库渲染，`?live=1` 退化为
+    "这一请求额外联网补一次"。
   * 按用户指令**删掉了 `strlen()*11` 的像素宽度估算** —— 它在 CSS 布局下
     没有意义，还依赖未迁移的 `LayoutGetDisplayWidth()` 与 `$_SESSION['mobile']`。
   * `stockparagraph` 只有 45 行，但它把 `GetMenuLink()` 的 HTML 塞在标题里；
@@ -428,8 +430,8 @@ Flask 路由
 
 ```powershell
 cd F:\woody\woodyweb\python
-python -B -m unittest discover -s auto -p "test_*.py"        # 700 个
-python -B -m unittest discover -s web\tests -p "test_*.py"   # 248 个
+python -B -m unittest discover -s auto -p "test_*.py"        # 722 个
+python -B -m unittest discover -s web\tests -p "test_*.py"   # 251 个
 ```
 
 注意：Web 层测试需要 Flask 与 PyMySQL，当前只装在系统 Python 3.7 上。  

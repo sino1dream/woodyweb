@@ -69,29 +69,27 @@ def _render_fund(symbol: str, group: str):
     )
 
 
-def _wants_live_order_book() -> bool:
-    """本请求是否允许**抓实时行情**去换五档盘口。
+def _wants_live_refresh() -> bool:
+    """本请求是否**额外联网补一次**五档盘口。
 
-    ## 为什么默认关
+    ## 默认已经能显示盘口了
 
-    五档盘口（``GetAskQuantity`` / ``GetBidPrice`` 那一组）**只在抓原始行情时才有** ——
-    ``realtimequote`` 快照表只存了最新价/昨收/名称五六个字段，没有买卖档位。
-    ``auto/refquote.py`` 的取舍是"抓取归 daemon，页面只读"，所以正常请求
-    **不联网**，五档表因此不渲染（``trading_service`` 检测到没有挂单量就返回
-    ``None``）。
+    ``realtimequote`` 快照表带 ``orderbook`` 列（五档买卖挂单），
+    由后台抓取进程每 60 秒写一次，页面正常读库即可 —— 不需要联网。
 
-    要看到它，显式要求一次：
+    那这个开关还剩什么用？两种情形：
+
+    1. daemon 还没跑过（或刚清库），快照里没有该符号的盘口；
+    2. 就想看"此刻"的挂单，不想等下一轮抓取。
+
+    这时显式要求一次：
 
     * 请求带 ``?live=1``；或
     * 环境变量 ``PALMMICRO_TRADING_LIVE_QUOTES=1``。
 
     这与 ``/api/quotes`` 的 ``?refresh=1`` 是同一套路（见 ``web/routes/quote.py``），
-    目的都是让"什么时候会联网"在代码里数得清楚。
-
-    ## 正解还没做
-
-    长期应该把盘口写进快照表（daemon 每 60 秒一次），页面照样读库。
-    那要动 schema，属于单独一步；在此之前用这个开关过渡。
+    目的都是让"什么时候会联网"在代码里数得清楚 ——
+    **默认请求一次都不联网**，联网只能是被显式要求的。
     """
     if request.args.get("live") in ("1", "true", "yes"):
         return True
@@ -105,8 +103,10 @@ def _build_trading(symbol: str) -> dict[str, Any] | None:
     ``EchoFundTradingParagraph($fund, …)`` 内部先 ``GetStockRef($fund)`` 取盘口，
     再用 ``$fund`` 自己的三档估值算溢价列。顺序不能反 —— 反过来就只剩三列空表。
 
-    **盘口没有数据就整段跳过**：不带 ``?live=1`` 时几乎必然如此（见
-    :func:`_wants_live_order_book`），这与详情页其它三张表的处理一致。
+    **盘口没有数据就整段跳过**：盘口来自快照表的 ``orderbook`` 列，
+    没抓到（或该品种本来就没有挂单数据）时就是这样，与详情页其它三张表的
+    处理一致。``?live=1`` 可以强迫本次请求联网补一次（见
+    :func:`_wants_live_refresh`）。
     """
     service = _get_trading_service()
     if service is None:
@@ -127,21 +127,27 @@ def _get_trading_service():
 
 
 def _get_trading_refs(symbol: str) -> list:
-    """建基金引用对象，并在要求时给它的场内行情对象补一次**五档**。"""
+    """建基金引用对象；盘口默认来自快照，``?live=1`` 时才额外联网补一次。
+
+    ``_build_qdii_refs()`` 内部走 ``refquote.load_quote_into`` 的读库路径，
+    快照里那列 ``orderbook`` 会被装填回引用对象（见 ``refquote.apply_order_book``），
+    所以**不带任何参数也有盘口** —— 前提是后台抓取进程跑过。
+    """
     builder = current_app.extensions.get("trading_refs_builder")
     if builder is not None:
         return builder([symbol])
     refs = _build_qdii_refs([symbol])
-    if refs and _wants_live_order_book():
+    if refs and _wants_live_refresh():
         _fill_order_book(refs[0])
     return refs
 
 
 def _fill_order_book(ref: Any) -> bool:
-    """给 ref 的行情对象补五档；返回是否补到。
+    """给 ref 的行情对象**联网**补一次五档；返回是否补到。
 
-    只用 ``apply_network``（``auto/refquote.py``）而不是 ``load_quote_into``，
-    因为这里要的就是"此刻的挂单"，快照里根本没有、读一百遍也没有。
+    用 ``apply_network``（``auto/refquote.py``）而不是 ``load_quote_into``：
+    这里要的就是"此刻的挂单"，读库一遍再抓一遍纯属浪费。
+    快照里**已经有**盘口时也会覆盖 —— 既然用户显式要求了，就按联网的算。
     """
     quote_ref = None
     for name in ("get_stock_ref", "GetStockRef"):

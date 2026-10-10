@@ -293,10 +293,13 @@ class FakeSnapshotStore:
         self.rows = []
 
     def save(self, stock_id, symbol, source_symbol, close, prev_close="", name="",
-             quote_date=None, quote_time=None, source="", fetched_at=None):
+             quote_date=None, quote_time=None, source="", fetched_at=None,
+             orderbook=None):
         self.rows.append({
             "stock_id": stock_id, "symbol": symbol, "close": close,
             "prev_close": prev_close, "quote_date": quote_date, "source": source,
+            # 盘口是后加的第十一个参数；假 store 照收，好让"盘口有没有写进去"可断言
+            "orderbook": orderbook,
         })
         return True
 

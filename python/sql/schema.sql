@@ -256,9 +256,52 @@ CREATE TABLE IF NOT EXISTS `realtimequote` (
   `source` varchar(32) CHARACTER SET latin1 COLLATE latin1_general_ci NOT NULL,
   -- 抓取时刻，页面据此判断这条行情有多新
   `fetched_at` datetime NOT NULL,
+  -- 五档盘口（JSON 文本），**可为空** —— 见下面的专门说明
+  `orderbook` text COLLATE utf8_unicode_ci,
   PRIMARY KEY (`id`),
   UNIQUE KEY `symbol` (`symbol`)
 ) ENGINE=MyISAM DEFAULT CHARSET=utf8 COLLATE=utf8_unicode_ci;
+
+-- ---------------------------------------------------------------------------
+-- realtimequote.orderbook：五档盘口为什么是**一列 JSON** 而不是 20 列
+--
+-- PHP 的 ``_onSinaDataCN()``（php/stock/stockref.php:316）把盘口存进四个平行数组：
+--
+-- .. code-block:: php
+--
+--     for ($i = 10; $i < 20; $i += 2) {
+--         $this->arBidQuantity[] = $ar[$i];
+--         $this->arBidPrice[]    = $ar[$i + 1];
+--         $this->arAskQuantity[] = $ar[$i + 10];
+--         $this->arAskPrice[]    = $ar[$i + 11];
+--     }
+--
+-- 也就是"买一到买五 / 卖一到卖五"，共 20 个值。拆成 20 列会碰到三件麻烦事：
+--
+-- 1. **缺档是有语义的**。PHP 的 ``GetAskQuantity($i)`` 在数组没那么长时返回
+--    ``false``，而 ``php/ui/tradingparagraph.php`` 正是靠这个假值决定"这一档
+--    **整行不渲染**"。摊平成列之后，"没有这一档"只能表示成空串或 NULL，
+--    读回来还得再判断一次，反而绕；
+-- 2. UPSERT 语句会膨胀到 30 列，而本表有 4 个读取入口
+--    （``quotestore`` / ``quoteupdater`` / ``stockdata`` / ``futurescli``），
+--    每加一个入口就多一处"漏字段"的风险；
+-- 3. 档位个数是数据源说了算（A 股五档，将来换源可能十档），
+--    一列 JSON 不用改表。
+--
+-- 所以这里存 JSON，值**保持数据源给的字符串**（与 PHP 一样不做数值化，
+-- "0" 与 0.0 的差别在渲染层有用）：
+--
+-- .. code-block:: json
+--
+--     {"bid_price": ["4.79", "4.78"], "bid_quantity": ["1200", "3800"],
+--      "ask_price": ["4.80", "4.81"], "ask_quantity": ["900", "1500"]}
+--
+-- 编解码只有一份实现：``quotestore.encode_orderbook()`` / ``decode_orderbook()``。
+-- 老库（本列还不存在）与坏 JSON 都按"没有盘口"处理，不影响原有字段。
+--
+-- 加列用 ``sql/patch_realtimequote_orderbook.sql`` —— 本文件是
+-- ``CREATE TABLE IF NOT EXISTS``，已存在的表不会被它改动。
+-- ---------------------------------------------------------------------------
 
 -- ---------------------------------------------------------------------------
 -- 中间层估值数值（Python 侧新增，PHP 没有这张表）

@@ -27,14 +27,16 @@
     {# url_for 会把 live=1 拼进查询串，别再手写 '?live=1'，
        否则会得到 '?live=1?live=1'。 #}
     {{ data_table(trading, "trading-table") }}
+    {# 盘口来自库快照（后台抓取进程每 60 秒写一次），所以默认就有；
+       live=1 是"这一请求额外联网补一次"，不是显示盘口的前提。 #}
     <p class="table-note">
-      盘口只有抓实时行情才有 ——
-      <a href="{{ url_for('fund.fund_page', symbol=fund.symbol, live=1) }}">点此刷新本页</a>。
+      盘口来自后台抓取进程写入的快照（每 60 秒一次）。
+      想看此刻的挂单，<a href="{{ url_for('fund.fund_page', symbol=fund.symbol, live=1) }}">点此联网刷新</a>。
     </p>
   {% else %}
     <p class="table-note">
-      暂无五档盘口数据（库快照不含买卖档位）。
-      <a href="{{ url_for('fund.fund_page', symbol=fund.symbol, live=1) }}">抓取实时行情后再看</a>。
+      暂无五档盘口数据（快照里还没有该符号的挂单，通常是抓取进程还没跑到）。
+      <a href="{{ url_for('fund.fund_page', symbol=fund.symbol, live=1) }}">立即抓一次实时行情</a>。
     </p>
   {% endif %}
 

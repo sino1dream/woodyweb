@@ -31,8 +31,12 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Mapping, Sequence
 
 import quotesource
+from quotestore import decode_orderbook, orderbook_from_lists
 from stockref import StockReference
 from stocksymbol import StockSymbol
+
+#: PHP ``define('TRADING_QUOTE_NUM', 5)``：五档。抓盘口时按这个档数向引用对象取值。
+ORDER_BOOK_LEVELS = 5
 
 # 相邻两批行情的最小间隔。与 PHP 一致（stockprefetch 的 NeedFile 默认
 # SECONDS_IN_MIN = 60，即每分钟最多取一次）。
@@ -59,6 +63,14 @@ class RecentQuote:
     time: str = ""         # 行情时间
     source: str = "sina"   # 数据来源标识，便于排查
     fetched_at: float = 0.0  # 取回时刻（epoch 秒）
+    # 五档盘口：``{"bid_price": [...], "bid_quantity": [...], "ask_price": [...], "ask_quantity": [...]}``。
+    # **空字典表示"这一次没有盘口信息"**（不是"盘口是空的"）—— 落库时写成 NULL，
+    # 读回来也不会去覆盖引用对象上已有的内容。编解码见 ``quotestore``。
+    orderbook: Dict[str, Any] = field(default_factory=dict)
+
+    def has_order_book(self) -> bool:
+        """这一条快照是否带了盘口。"""
+        return bool(self.orderbook)
 
     def age(self, now: float = None) -> float:
         """距取回已过多少秒。"""
@@ -81,6 +93,17 @@ class RecentQuote:
             "source": self.source,
             "age_seconds": round(self.age(), 1),
         }
+
+    def as_dict_with_order_book(self) -> Dict[str, Any]:
+        """``as_dict()`` 再带上五档盘口 —— 给诊断接口用（有才有，没有就不加 key）。
+
+        不直接改 ``as_dict()`` 的返回结构，是因为它是给列表页 JSON 用的：
+        那儿有十来只符号，多挂 20 个值纯属浪费。
+        """
+        data = self.as_dict()
+        if self.has_order_book():
+            data["order_book"] = dict(self.orderbook)
+        return data
 
 
 def quote_from_reference(
@@ -110,6 +133,29 @@ def quote_from_reference(
         time=reference.str_time or "",
         source=source_name,
         fetched_at=fetched_at,
+        orderbook=order_book_from_reference(reference),
+    )
+
+
+def order_book_from_reference(reference: Any, levels: int = None) -> dict:
+    """从引用对象取出五档盘口，形状见 ``quotestore.orderbook_from_lists``。
+
+    ## 为什么固定取 5 档、而不是"有多少取多少"
+
+    ``StockReference._on_sina_data_cn()`` 照抄了 PHP 的 ``for ($i = 10; $i < 20; $i += 2)``，
+    所以四个数组**恒为 5 项**，缺的那些位置是 ``False``（``_item()`` 越界返回值）。
+    ``False`` 与空串在渲染层同样是假值，因此这里按 5 档取值再让
+    ``orderbook_from_lists`` 把 ``False`` 折成空串，结果与 PHP 的数组逐位等价。
+
+    美股/港股那几套解析**不填盘口**，取出来全是 ``False`` ——
+    ``orderbook_from_lists`` 会因此返回 ``{}``（没有盘口），不会往库里写空 JSON。
+    """
+    count = ORDER_BOOK_LEVELS if levels is None else levels
+    return orderbook_from_lists(
+        [reference.get_bid_price(i) for i in range(count)],
+        [reference.get_bid_quantity(i) for i in range(count)],
+        [reference.get_ask_price(i) for i in range(count)],
+        [reference.get_ask_quantity(i) for i in range(count)],
     )
 
 
@@ -201,6 +247,7 @@ def _quote_from_row(row: dict, symbol: str, fetched_epoch: float) -> "RecentQuot
         time=_normalize_quote_time(row.get("quote_time")),
         source=str(row.get("source") or ""),
         fetched_at=fetched_epoch,
+        orderbook=decode_orderbook(row.get("orderbook")),
     )
 
 
@@ -481,6 +528,7 @@ class QuotesUpdater:
                     quote.time,
                     quote.source,
                     quote.fetched_at,
+                    quote.orderbook,
                 )
             except Exception as exc:
                 # 写库失败不影响内存缓存可用，但要让调用方看得见

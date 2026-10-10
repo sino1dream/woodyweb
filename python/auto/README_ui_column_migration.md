@@ -356,19 +356,21 @@ PHP 在加回调列时按"一个字符 11 像素"估宽度、再用屏幕宽度�
 与 `$_SESSION['mobile']`，把"有没有 session"采进列定义，
 会让同一个数据结构无法给 JSON API 征用。改用定宽 `TRADING_CALLBACK_WIDTH = 80`。
 
-#### 接线：`/fund/<symbol>?live=1`
+#### 接线：盘口默认来自快照，`?live=1` 只是"这一请求额外抓一次"
 
-**默认不渲染**。盘口只在抓原始行情时才有 —— `realtimequote` 快照表只有
-最新价/昨收/名称几个字段，没有买卖档位。而 `auto/refquote.py` 的取舍是
-"抓取归 daemon，页面只读"，所以正常请求**不联网**，表格因此不出现。
+写这段时盘口**只能靠抓实时行情**拿到，所以表格默认不渲染、要 `?live=1`。
+后来把盘口写进了快照表（`realtimequote.orderbook`，见下一节），
+**默认就有盘口了**，页面一次网都不用上。
 
-要看到它必须显式要求一次：`?live=1` 或环境变量 `PALMMICRO_TRADING_LIVE_QUOTES=1`。
-这与 `/api/quotes` 的 `?refresh=1` 同套路（见 `web/routes/quote.py`）。
+`?live=1` / `PALMMICRO_TRADING_LIVE_QUOTES=1` 剩下的用处只有两个：
 
-**长期正解还没做**：把盘口写进快照表（daemon 每 60 秒一次），页面照样读库。
-那要动 schema，属于单独一步。
+* daemon 还没跑过（或刚清库），快照里没有该符号的盘口；
+* 就想看"此刻"的挂单，不想等下一轮抓取。
 
-实测 `?live=1` 时 `SZ161130` 的渲染结果（13 行 = 表头 + 12 行）：
+这与 `/api/quotes` 的 `?refresh=1` 同套路（见 `web/routes/quote.py`）：
+**默认请求不联网**，联网只能是被显式要求的。
+
+实测**不带任何参数**访问 `/fund/SZ161130` 的渲染结果（13 行 = 表头 + 12 行）：
 
 ```text
 交易  价格    数量   官方溢价  参考溢价
@@ -439,6 +441,109 @@ PHP 的 `GetXueqiuLink()`（`php/externallink.php:131`）。名称格需要它�
 本项目连账号体系都还没迁。所以做成 `admin_link_builder` 注入回调：
 不注入就只有空表头，**现在先别编 URL**。
 
+## 六 quater、第四轮：把五档盘口写进快照表
+
+第三轮留了个尾巴：`tradingparagraph` 要的五档挂单**只在抓原始行情时才有**，
+`realtimequote` 快照表只有最新价/昨收/名称，于是页面要么不渲染、要么得靠
+`?live=1` 临时联网抓一次。这一轮把正解补上 —— **盘口进快照表，页面照旧读库**。
+
+### 落在哪一列：一列 JSON，而不是 20 列
+
+PHP 存的是四个平行数组（`php/stock/stockref.php:316`）：
+
+```php
+for ($i = 10; $i < 20; $i += 2) {         // 新浪 A 股行情的第 10~29 个字段
+    $this->arBidQuantity[] = $ar[$i];
+    $this->arBidPrice[]    = $ar[$i + 1];
+    $this->arAskQuantity[] = $ar[$i + 10];
+    $this->arAskPrice[]    = $ar[$i + 11];
+}
+```
+
+摊平成 20 列看着"更关系型"，但实际更糟：
+
+1. **缺档是有语义的**。PHP 的 `GetAskQuantity($i)` 在数组没那么长时返回 `false`，
+   `php/ui/tradingparagraph.php` 正是靠这个假值决定"这一档**整行不渲染**"。
+   摊平之后"没有这一档"只能表示成空串或 NULL，读回来还得再判一次；
+2. UPSERT 会膨胀到 30 列，而这张表有四个读取入口
+   （`quotestore` / `quoteupdater` / `stockdata` / `futurescli`），
+   每加一个入口就多一处漏字段的风险 —— 这个坑在上一轮已经踩过一次
+   （`_quote_from_row` 就是因为只有 `get_last_stored` 一份映射而走样）；
+3. 档位个数是数据源说了算（A 股五档，换源可能十档），一列 JSON 不用改表。
+
+所以 `realtimequote` 加了一列 `orderbook`（`text`，可为空），存：
+
+```json
+{"bid_price":["4.880","4.879"],"bid_quantity":["4400","1400"],
+ "ask_price":["4.884","4.885"],"ask_quantity":["4289","1100"]}
+```
+
+值**保持数据源给的字符串**，与 PHP 一样不做数值化 ——
+"0" 和 0.0 在渲染层不是一回事（见 `_php_truthy`）。
+
+### 加列是个补丁，不是改 `schema.sql`
+
+`schema.sql` 全是 `CREATE TABLE IF NOT EXISTS`，`build_schema.py` 重跑
+**也不会改动已存在的表**（这是刻意的：建表脚本不许动数据）。
+所以给旧库补列走 `sql/patch_realtimequote_orderbook.sql`，
+用新增的 `sql/apply_patch.py` 执行；它把 MySQL 的 1060（列已存在）
+当成"打过了"跳过，可以重复跑。
+
+### 读写两侧都要能退回"老库没有这一列"
+
+`RealtimeQuoteStore` 的 `save` / `load` / `load_all` 现在**先按带 `orderbook`
+的写法执行，撞上 1054（Unknown column）就退回十个字段的原写法**。
+理由很实在：盘口是附加信息，绝不能因为它让"价格写不进去"。
+回退只认 1054 这一个错码，别的错照常报失败（有测试钉住）。
+
+### 装填链路
+
+```text
+抓取进程  parse_symbol() → StockReference（五档已在 _on_sina_data_cn 里解析好）
+          → quote_from_reference() → RecentQuote.orderbook
+          → RealtimeQuoteStore.save() → realtimequote.orderbook（JSON）
+页面      source.get_stored_quote() → RecentQuote（含 orderbook）
+          → refquote.apply_snapshot() → apply_order_book() → 引用对象的四个数组
+          → trading_service 照旧渲染
+```
+
+两处刻意的语义：
+
+* **空字典 = 这一次没有盘口信息**，不是"盘口是空的"。
+  `apply_order_book` 遇到空字典**不动**引用对象 —— 拿"没有信息"去覆盖
+  "有信息"（比如请求期刚联网补过）只会把盘口弄丢；
+* **美股/港股/外汇/外盘期货那几套解析本来就不填盘口**，取出来是五个 `False`，
+  折成空串后等于全空，于是 `orderbook_from_lists` 返回 `{}`、库里写 NULL。
+  实测抓一轮之后只有 A 股/ETF 那几行有 JSON，与预期一致。
+
+### 页面这一侧的变化
+
+`?live=1` 从"显示盘口的前提"降级成"这一请求额外联网补一次"，
+`_wants_live_order_book()` 因此改名 `_wants_live_refresh()`。
+模板里那两句话也跟着改了（原来写的是"盘口只有抓实时行情才有"）。
+
+### 实测
+
+不带任何参数访问 `/fund/SZ161130`（15:00 收市后的快照，一次网都没上）：
+
+```text
+交易  价格    数量   官方溢价  参考溢价
+涨停  5.372         18.19%    17.91%
+卖5   4.889   7100   7.56%     7.31%
+… 卖4 → 卖1 …
+买1   4.880   4400   7.37%     7.11%
+… 买2 → 买5 …
+跌停  4.396         -3.28%    -3.51%
+```
+
+13 行 = 表头 + 12 行，与 PHP 的结构逐行对得上。
+
+### 测试
+
+新增 `auto/test_orderbook.py`（22 用例）：编解码（含"全空视为没有盘口"、
+坏 JSON 降级）、假库上的存/取与 1054 回退、引用对象装填。
+`auto` 722 用例、`web` 251 用例，两套解释器全绿。
+
 ## 七、已知偏差
 
 1. **涨跌幅配色与 PHP 原文相反**：本实现是"涨红跌绿"（已裁决，见第四节），
@@ -467,8 +572,11 @@ PHP 的 `GetXueqiuLink()`（`php/externallink.php:131`）。名称格需要它�
    `legacy_labels=True` 可复刻 PHP。同理 `EchoTableParagraphBegin()` 那个
    "表太宽就 `trigger_error` 并返回 false" 的守卫没迁 ——
    `LayoutGetDisplayWidth()` 属于布局层（第 5 步）。
-10. **五档表默认不渲染**：盘口只在抓实时行情时才有，库快照没有。
-    `?live=1` / `PALMMICRO_TRADING_LIVE_QUOTES=1` 才会去抓。见"第三轮"那一节。
+10. **五档表只有快照里有盘口才渲染**：盘口由后台抓取进程写进
+    `realtimequote.orderbook`（每 60 秒一轮），页面读库。
+    没抓到（或该品种本来就没有挂单数据，如美股、外汇、外盘期货）时整段跳过，
+    并显示一句说明。`?live=1` 是"这一请求额外联网补一次"，不是显示的前提。
+    见"第三轮"与"第四轮"那两节。
 11. **五档表的"轮动交易"链接恒为 `None`**：`GetRotationTradingLink()` 指向
     `rotationtrading` 页面（`woody/res/rotationtradingcn.php`，🔴 membership 域），
     本站还没有该页面。等那一页迁完，在 `default_trading_service_factory()`

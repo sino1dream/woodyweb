@@ -13,10 +13,122 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any, Mapping
 
 # 对应 PHP `_invalidHistoryData()` 的判空：空字符串或 'N/A' 都视为无效
 INVALID_FIELD_VALUES = ("", "N/A")
+
+# ---------------------------------------------------------------------------
+# 五档盘口（realtimequote.orderbook）
+#
+# 对应 PHP ``StockReference::_onSinaDataCN()``（php/stock/stockref.php:316）里的
+# 四个平行数组：arBidPrice / arBidQuantity / arAskPrice / arAskQuantity。
+# PHP 里"缺档"就是数组没那么长 —— ``GetAskQuantity($i)`` 取不到时返回 ``false``，
+# ``php/ui/tradingparagraph.php`` 正是靠这个假值决定"这一档整行不渲染"。
+# 所以这里**原样保留列表长度**，不补齐到 5 档：长度本身就是信息。
+# ---------------------------------------------------------------------------
+
+#: 盘口列名。
+ORDERBOOK_COLUMN = "orderbook"
+
+#: 盘口的四个平行列表，顺序与 PHP 的数组一一对应（买价、买量、卖价、卖量）。
+ORDERBOOK_KEYS = ("bid_price", "bid_quantity", "ask_price", "ask_quantity")
+
+#: MySQL 错误码 1054：Unknown column。老库还没打盘口补丁时会撞上。
+ER_BAD_FIELD_ERROR = 1054
+
+
+def empty_orderbook() -> dict:
+    """四个空列表 —— 表示"没有盘口信息"（区别于"有盘口但都是空的"）。"""
+    return {key: [] for key in ORDERBOOK_KEYS}
+
+
+def orderbook_from_lists(bid_prices=None, bid_quantities=None,
+                         ask_prices=None, ask_quantities=None) -> dict:
+    """把四个平行列表规整成盘口字典。
+
+    * 值一律转成**字符串**（与 PHP 一样保留数据源的原始文本，不做数值化）；
+    * ``None`` / ``False``（PHP 取不到档位时的返回值）转成空串 —— 空串在
+      ``web/services/trading_service._php_truthy()`` 里同样是假值，语义一致；
+    * **没有任何一格非空时返回 ``{}``**：这样"没有盘口"和"有盘口但没挂单"在上层
+      可以区分开（``refquote.apply_snapshot`` 只在非空时才覆盖引用对象）。
+      判空要**看格子内容**而不是列表长度 —— 美股/港股那几套解析不填盘口，
+      ``StockReference`` 里是五个 ``False``，转出来就是五个空串，
+      那跟"没盘口"是一回事，不该存成一坨空 JSON。
+    """
+    book = {
+        "bid_price": _stringify_list(bid_prices),
+        "bid_quantity": _stringify_list(bid_quantities),
+        "ask_price": _stringify_list(ask_prices),
+        "ask_quantity": _stringify_list(ask_quantities),
+    }
+    return book if _has_any_level(book) else {}
+
+
+def encode_orderbook(book: Any) -> Any:
+    """把盘口字典编成要写进库的 JSON 文本；没有盘口时返回 ``None``。
+
+    返回 ``None``（而不是 ``'{}'``）是为了让老库里那一行保持 NULL ——
+    "没抓到盘口"与"抓到了但没挂单"在排查时是两回事。
+    """
+    if not book:
+        return None
+    payload = {key: list(book.get(key) or ()) for key in ORDERBOOK_KEYS}
+    if not _has_any_level(payload):
+        return None
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+
+
+def decode_orderbook(text: Any) -> dict:
+    """把库里的 JSON 文本解回盘口字典。
+
+    **任何异常都降级成"没有盘口"**：列不存在（``None``）、空串、坏 JSON、
+    结构不是字典、缺 key，都不能让"读行情"这件事失败 —— 盘口只是附加信息，
+    主字段（价格/昨收）仍然有效。
+    """
+    if text is None or text == "":
+        return {}
+    if isinstance(text, (bytes, bytearray)):
+        try:
+            text = text.decode("utf-8")
+        except UnicodeDecodeError:
+            return {}
+    if isinstance(text, dict):
+        payload = text
+    else:
+        try:
+            payload = json.loads(str(text))
+        except (ValueError, TypeError):
+            return {}
+    if not isinstance(payload, dict):
+        return {}
+    book = {key: _stringify_list(payload.get(key)) for key in ORDERBOOK_KEYS}
+    return book if _has_any_level(book) else {}
+
+
+def _has_any_level(book: Mapping) -> bool:
+    """盘口里是否**至少有一格**非空（决定"值不值得存"）。"""
+    for key in ORDERBOOK_KEYS:
+        for value in book.get(key) or ():
+            if str(value or "").strip():
+                return True
+    return False
+
+
+def _stringify_list(values: Any) -> list:
+    """把一档一档的值转成字符串列表；``None``/``False`` 转成空串。"""
+    if values is None:
+        return []
+    if isinstance(values, (str, bytes)):
+        values = [values]
+    result = []
+    for value in values:
+        if value is None or value is False:
+            result.append("")
+        else:
+            result.append(str(value))
+    return result
 
 
 def is_invalid_field(value: Any) -> bool:
@@ -203,6 +315,58 @@ class MemoryQuoteStore(QuoteStore):
         return True
 
 
+#: 建库时就有的一列不缺；``orderbook`` 是后来加的（``sql/patch_realtimequote_orderbook.sql``）。
+_LEGACY_COLUMNS = ("symbol", "source_symbol", "price", "prev_price", "name",
+                   "quote_date", "quote_time", "source", "fetched_at")
+_ALL_COLUMNS = _LEGACY_COLUMNS + (ORDERBOOK_COLUMN,)
+
+_SELECT_SQL_WITH_BOOK = "SELECT %s FROM realtimequote" % ", ".join(_ALL_COLUMNS)
+_SELECT_SQL_LEGACY = "SELECT %s FROM realtimequote" % ", ".join(_LEGACY_COLUMNS)
+
+_INSERT_SQL_WITH_BOOK = (
+    "INSERT INTO realtimequote (id, symbol, source_symbol, price, prev_price, name, "
+    "quote_date, quote_time, source, fetched_at, orderbook) "
+    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
+    "ON DUPLICATE KEY UPDATE symbol = VALUES(symbol), source_symbol = VALUES(source_symbol), "
+    "price = VALUES(price), prev_price = VALUES(prev_price), name = VALUES(name), "
+    "quote_date = VALUES(quote_date), quote_time = VALUES(quote_time), "
+    "source = VALUES(source), fetched_at = VALUES(fetched_at), orderbook = VALUES(orderbook)"
+)
+_INSERT_SQL_LEGACY = (
+    "INSERT INTO realtimequote "
+    "(id, symbol, source_symbol, price, prev_price, name, quote_date, quote_time, source, fetched_at) "
+    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
+    "ON DUPLICATE KEY UPDATE symbol = VALUES(symbol), source_symbol = VALUES(source_symbol), "
+    "price = VALUES(price), prev_price = VALUES(prev_price), name = VALUES(name), "
+    "quote_date = VALUES(quote_date), quote_time = VALUES(quote_time), "
+    "source = VALUES(source), fetched_at = VALUES(fetched_at)"
+)
+
+
+def _error_code(exc: BaseException) -> Any:
+    """取数据库异常的错码；取不到返回 ``None``（不同驱动的 args 结构不一样）。"""
+    args = getattr(exc, "args", None)
+    if args and isinstance(args[0], int):
+        return args[0]
+    return None
+
+
+def _select_snapshots(cursor: Any, where: str = "", params: Any = ()) -> list:
+    """读 ``realtimequote``；老库没有 ``orderbook`` 列时自动退回不带列的写法。
+
+    回退后给每行补一个 ``orderbook=None``，这样上层只看这一个 key 就够了，
+    不必到处判断"这次到底有没有读到那一列"。
+    """
+    try:
+        cursor.execute(_SELECT_SQL_WITH_BOOK + where, params)
+        return [dict(row) for row in cursor.fetchall()]
+    except Exception as exc:
+        if _error_code(exc) != ER_BAD_FIELD_ERROR:
+            raise
+        cursor.execute(_SELECT_SQL_LEGACY + where, params)
+        return [dict(row, **{ORDERBOOK_COLUMN: None}) for row in cursor.fetchall()]
+
+
 class RealtimeQuoteStore:
     """实时行情快照的持久化（表 ``realtimequote``）。
 
@@ -219,33 +383,37 @@ class RealtimeQuoteStore:
 
     def save(self, stock_id: Any, symbol: str, source_symbol: str, price: Any,
              prev_price: Any = "", name: Any = "", quote_date: Any = None,
-             quote_time: Any = None, source: str = "sina", fetched_at: Any = None) -> bool:
-        """写入/更新一只符号的最新快照（按主键 UPSERT，一个符号只留一行）。"""
+             quote_time: Any = None, source: str = "sina", fetched_at: Any = None,
+             orderbook: Any = None) -> bool:
+        """写入/更新一只符号的最新快照（按主键 UPSERT，一个符号只留一行）。
+
+        ``orderbook`` 是 :func:`orderbook_from_lists` 形状的字典（五档买卖挂单）。
+        老库还没有 ``orderbook`` 列时自动退回不带该列的写法 —— 盘口是附加信息，
+        不该让"价格写不进去"这种事发生。
+        """
         if not stock_id:
             return False
+        params = (
+            stock_id,
+            symbol,
+            source_symbol or "",
+            str(price or ""),
+            str(prev_price or ""),
+            str(name or ""),
+            _coerce_date(quote_date),
+            _coerce_time(quote_time),
+            source or "",
+            _coerce_datetime(fetched_at),
+        )
         cursor = self.connection.cursor()
         try:
-            cursor.execute(
-                "INSERT INTO realtimequote "
-                "(id, symbol, source_symbol, price, prev_price, name, quote_date, quote_time, source, fetched_at) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
-                "ON DUPLICATE KEY UPDATE symbol = VALUES(symbol), source_symbol = VALUES(source_symbol), "
-                "price = VALUES(price), prev_price = VALUES(prev_price), name = VALUES(name), "
-                "quote_date = VALUES(quote_date), quote_time = VALUES(quote_time), "
-                "source = VALUES(source), fetched_at = VALUES(fetched_at)",
-                (
-                    stock_id,
-                    symbol,
-                    source_symbol or "",
-                    str(price or ""),
-                    str(prev_price or ""),
-                    str(name or ""),
-                    _coerce_date(quote_date),
-                    _coerce_time(quote_time),
-                    source or "",
-                    _coerce_datetime(fetched_at),
-                ),
-            )
+            try:
+                cursor.execute(_INSERT_SQL_WITH_BOOK, params + (encode_orderbook(orderbook),))
+            except Exception as exc:
+                if _error_code(exc) != ER_BAD_FIELD_ERROR:
+                    raise
+                # 列不存在（还没打补丁）：照旧写十个字段，盘口这次丢掉
+                cursor.execute(_INSERT_SQL_LEGACY, params)
         except Exception:
             # 快照写失败不应影响页面可用性：页面会退回 stockhistory 的收盘价
             try:
@@ -261,11 +429,7 @@ class RealtimeQuoteStore:
         """读出全部快照。"""
         cursor = self.connection.cursor()
         try:
-            cursor.execute(
-                "SELECT symbol, source_symbol, price, prev_price, name, "
-                "quote_date, quote_time, source, fetched_at FROM realtimequote"
-            )
-            return [dict(row) for row in cursor.fetchall()]
+            return [dict(row) for row in _select_snapshots(cursor)]
         finally:
             cursor.close()
 
@@ -273,13 +437,8 @@ class RealtimeQuoteStore:
         """按符号读一条快照；没有返回 ``None``。"""
         cursor = self.connection.cursor()
         try:
-            cursor.execute(
-                "SELECT symbol, source_symbol, price, prev_price, name, "
-                "quote_date, quote_time, source, fetched_at FROM realtimequote WHERE symbol = %s LIMIT 1",
-                (symbol,),
-            )
-            row = cursor.fetchone()
-            return dict(row) if row else None
+            rows = _select_snapshots(cursor, " WHERE symbol = %s LIMIT 1", (symbol,))
+            return dict(rows[0]) if rows else None
         finally:
             cursor.close()
 

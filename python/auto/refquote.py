@@ -18,7 +18,18 @@ PHP 的 ``MysqlReference`` 构造流程里，行情来自 ``LoadSinaData()`` —
 联网（兜底）                                取新浪原始文本，走 ``stockref`` 既有解析
 ========================================  ==========================================
 
-**为什么不把快照拼成原始文本再喂给解析器**：快照里存的就是拼装后的 40 多个字段，
+## 盘口（五档挂单）也走这两条路
+
+快照表的 ``orderbook`` 列存着买一到买五、卖一到卖五，
+读库时由 :func:`apply_order_book` 一并装回引用对象的四个数组，
+所以**页面不联网也能渲染五档表**。联网路径本来就会解析出盘口，不用额外处理。
+
+**空字典表示"这次没带盘口信息"**，此时不会去动引用对象上已有的内容 ——
+详见 :func:`apply_order_book` 的说明。
+
+## 为什么不把快照拼成原始文本再喂给解析器
+
+快照里存的就是拼装后的字段，
 把结构化数据序列化成文本、再解析回来，既绕又容易与新浪的字段顺序脱钩。
 直接装填更短、更可读。
 
@@ -147,7 +158,48 @@ def apply_snapshot(ref: Any, quote: Any) -> bool:
             pass
     else:
         ref.has_data = True
+
+    apply_order_book(ref, getattr(quote, "orderbook", None))
     return True
+
+
+#: 引用对象上的四个平行数组 <-> 盘口字典的四个 key（见 ``quotestore.ORDERBOOK_KEYS``）。
+_ORDER_BOOK_ATTRS = (
+    ("bid_prices", "bid_price"),
+    ("bid_quantities", "bid_quantity"),
+    ("ask_prices", "ask_price"),
+    ("ask_quantities", "ask_quantity"),
+)
+
+
+def apply_order_book(ref: Any, book: Any) -> bool:
+    """把快照里的五档盘口写回引用对象；写了返回 ``True``。
+
+    ## 为什么"快照没有盘口"时不去清空
+
+    ``orderbook`` 是空字典时表示**这次快照没带盘口信息**（老库的列还不存在、
+    或者这一路行情本来就没有挂单数据）。这时引用对象上可能已经有内容 ——
+    比如请求期刚联网补过一次 —— 拿"没有信息"去覆盖"有信息"只会把盘口弄丢。
+
+    所以只在**非空**时覆盖，与 :func:`apply_snapshot` 里价格字段的处理一致
+    （那边同样是"价格为空就不算装填成功"）。
+
+    ## 只认引用对象本来就有的属性
+
+    ``StockReference`` 的四个数组在 ``__init__`` 里就建好了；没有这些属性的对象
+    （比如只算估值的那一层引用）不该被凭空挂上，跳过即可 ——
+    它本来也不会去回答"买一价是多少"。
+    """
+    if not book:
+        return False
+    written = False
+    for attribute, key in _ORDER_BOOK_ATTRS:
+        values = book.get(key)
+        if values is None or not hasattr(ref, attribute):
+            continue
+        setattr(ref, attribute, [str(value or "") for value in values])
+        written = True
+    return written
 
 
 def apply_network(ref: Any, network: NetworkQuoteSource = None) -> bool:

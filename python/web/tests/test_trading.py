@@ -17,6 +17,8 @@ from web.bootstrap import install_paths  # noqa: E402
 
 install_paths()
 
+from quotestore import orderbook_from_lists  # noqa: E402
+from refquote import apply_order_book  # noqa: E402
 from web.services.trading_service import (  # noqa: E402
     TRADING_CALLBACK_WIDTH,
     TRADING_COLOR_FIRST,
@@ -454,6 +456,52 @@ class RotationLinkTest(unittest.TestCase):
         """默认工厂没有注入构造器 —— `/rotationtrading` 页面还没迁，不该编 URL。"""
         table = TradingService().fund_table(FundTradingTest.FakeFund(symbol="SZ162411"))
         self.assertIsNone(table["rotation_link"])
+
+
+class SnapshotOrderBookTest(unittest.TestCase):
+    """盘口从**库快照**装填回引用对象之后，服务层要照旧出表。
+
+    这是第四轮那根链条的收口：``realtimequote.orderbook`` → ``refquote.apply_order_book``
+    → ``trading_service``。少了中间任何一环，"页面不联网也能看到五档"就不成立。
+
+    **不连数据库**：装填用的是内存字典，形状与解码后的快照一致。
+    """
+
+    def _book(self, levels=5):
+        prices = ["%.3f" % (4.884 + 0.001 * i) for i in range(levels)]
+        quantities = ["%d" % (1000 * (i + 1)) for i in range(levels)]
+        return orderbook_from_lists(
+            ["%.3f" % (4.880 - 0.001 * i) for i in range(levels)],
+            quantities,
+            prices,
+            quantities,
+        )
+
+    def test_ref_filled_from_snapshot_renders_twelve_rows(self):
+        ref = FakeRef()          # 五档全空的假引用对象
+        self.assertTrue(apply_order_book(ref, self._book()))
+
+        rows = build_trading_rows(ref)
+
+        self.assertEqual(len(rows), 12)
+        self.assertEqual([row.cells[0] for row in rows][1], "卖5")
+        self.assertEqual([row.cells[0] for row in rows][-2], "买5")
+
+    def test_snapshot_without_order_book_leaves_the_table_absent(self):
+        """``{}`` 是"这次没带盘口信息" —— 表格照旧整段跳过，不是摆一张空表。"""
+        ref = FakeRef()
+        self.assertFalse(apply_order_book(ref, {}))
+        self.assertFalse(has_trading_quantity(ref))
+
+    def test_partial_book_renders_only_the_levels_we_have(self):
+        """只有两档挂单（收市后的真实情形）：涨停/跌停两行照旧，中间只出四行。"""
+        ref = FakeRef()
+        apply_order_book(ref, self._book(levels=2))
+
+        rows = build_trading_rows(ref)
+
+        self.assertEqual(len(rows), 2 + 2 * 2)
+        self.assertEqual([row.cells[0] for row in rows][1:-1], ["卖2", "卖1", "买1", "买2"])
 
 
 def _dt(text):

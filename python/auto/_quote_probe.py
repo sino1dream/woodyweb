@@ -161,10 +161,17 @@ def probe_realtime() -> int:
     )
     try:
         with connection.cursor() as cursor:
-            cursor.execute(
-                "SELECT symbol, source_symbol, price, prev_price, quote_time, source, fetched_at "
-                "FROM realtimequote ORDER BY symbol"
-            )
+            # orderbook 是后加的列；老库没有它时退回原写法（与 quotestore 一致）
+            try:
+                cursor.execute(
+                    "SELECT symbol, source_symbol, price, prev_price, quote_time, source, "
+                    "fetched_at, orderbook FROM realtimequote ORDER BY symbol"
+                )
+            except Exception:
+                cursor.execute(
+                    "SELECT symbol, source_symbol, price, prev_price, quote_time, source, "
+                    "fetched_at, '' AS orderbook FROM realtimequote ORDER BY symbol"
+                )
             rows = cursor.fetchall()
     finally:
         connection.close()
@@ -176,15 +183,36 @@ def probe_realtime() -> int:
 
     now = time.time()
     print("realtimequote 共 %d 行（当前 %s）" % (len(rows), _now_text()))
-    print("%-10s %-10s %-12s %-12s %-10s %-9s %s" % (
-        "符号", "源代码", "最新价", "昨收", "行情时间", "距今", "来源"))
+    print("%-10s %-10s %-12s %-12s %-10s %-9s %-6s %s" % (
+        "符号", "源代码", "最新价", "昨收", "行情时间", "距今", "盘口", "来源"))
     for row in rows:
         epoch = _parse_epoch(row["fetched_at"])
         age = "?" if epoch is None else "%.0fs" % (now - epoch)
-        print("%-10s %-10s %-12s %-12s %-10s %-9s %s" % (
+        print("%-10s %-10s %-12s %-12s %-10s %-9s %-6s %s" % (
             row["symbol"], row["source_symbol"], row["price"], row["prev_price"],
-            str(row["quote_time"]), age, row["source"]))
+            str(row["quote_time"]), age, _order_book_text(row.get("orderbook")), row["source"]))
     return 0
+
+
+def _order_book_text(value) -> str:
+    """盘口那一列显示成"几档"—— 排查"五档表为什么不显示"时先看这里。
+
+    空/坏值一律显示 ``-``：与页面的行为一致（没有盘口就不渲染那张表）。
+    """
+    if not value:
+        return "-"
+    try:
+        import json
+
+        payload = json.loads(str(value))
+    except (ValueError, TypeError):
+        return "-"
+    if not isinstance(payload, dict):
+        return "-"
+    levels = 0
+    for key in ("bid_price", "bid_quantity", "ask_price", "ask_quantity"):
+        levels = max(levels, len([item for item in (payload.get(key) or ()) if str(item or "")]))
+    return "%d档" % levels if levels else "-"
 
 
 def _now_text() -> str:
