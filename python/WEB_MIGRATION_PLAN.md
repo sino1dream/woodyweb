@@ -339,6 +339,59 @@ Flask 路由
   等一大片函数共用）是"涨红跌绿"。选后者：前者是孤例、后者是主流口径，  
   改动面也最小。  
   详见 `python/auto/README_ui_column_migration.md`。
+- **引用对象行情装填（P0）**：`refobj` 迁好了、列定义也迁好了，
+  但**行情注入点从没接上**，所以详情页「参考数据」表六格里只有名称有值
+  （价格/涨幅/日期/时间全空）。根因：`MysqlReference` 刻意"构造不联网"，
+  而本项目的行情在 `realtimequote`（daemon 写的）里，没有任何东西把它读进来。
+  新增 `refquote.py`（**先读库快照、再兜底联网**）与 `externallink.py`
+  （补首格外链；PHP 靠它在没有外链时退回符号文本，保证列不错位）。
+  `build_stock_references()` 从 `stockref.StockReference` 改走
+  `refobj.MysqlReference`，并接上 `source` 用于读快照。
+  途中被既有测试抓出一个真缺陷：第一版**构造期就联网**，而
+  `QdiiReference` 构造里还会算实时 EST，等于**每个请求都抓一遍新浪**；
+  已改成"构造只读快照、请求期才兜底"（`refquote.refresh_quotes()`）。
+  验收：三只基金的参考数据与生产端 `qdiicn.php` **逐格一致**
+  （`4.884 / 1.45% / 2026-10-09 / 15:00` 等）。
+  详见 `python/auto/README_refquote_migration.md`。
+- **补上跨层集成测试**：`web/tests/test_reference.py` 新增"真数据源 →
+  引用对象 → 六格全有值"。这一层以前缺测试，正是"整张表是空的"
+  能一路绿灯溜过去的原因（原有单测都在 service 边界打桩）。
+- **refobj 的 PHP 对照验证（P1）**：`refobj` + 渲染层约 2600 行新代码
+  **没走项目已有的对照方法**，单测覆盖的是"我给的行为"，抓不到"我理解错了 PHP"。
+  新增 `_php_refobj_compare.py` / `_php_refobj_check.php`，对照 9 个纯数学函数
+  （`QdiiGetCalibration` / `QdiiGetVal` / `QdiiGetPeerVal` /
+  `FundAdjustPosition` / `FundReverseAdjustPosition` / `StockGetPercentage` /
+  `StockCalcHedge` / 两个份额换算）：**98 例，0 意外差异**。
+  用例集里刻意放了 `4e-7 / 5e-7 / 6e-7` 三个值 —— `StockGetPercentage` 的
+  `> MIN_FLOAT_VAL`（`5e-7`）判据只有在这个量级才暴露 `>` 写成 `>=` 的错误。
+  另加 `--selftest`：在内存里把公式改错，断言对照抓得到（实测抓到 4 / 10 例），
+  避免"从不失败的对照脚本等于没有"。
+  途中三个坑：① PHP 注释里写 `?>` 会让解析器提前结束、源码被当 JSON 输出；
+  ② PHP 与 Python 的 `%.12E` 对同一个数给出 `E-9` / `E-09`，用数值拼 key 会让
+  87 个用例全部误报，改用**序号做 key**；③ 返回值比较也要按数值而非字符串。
+  详见 `python/auto/README_refobj_php_compare.md`。
+- **基金详情页补齐三样（本步）**：详情页原来只有「参考数据」1 行、没有 EST 表、
+  没有份额表。
+  ① **参考数据标的清单**：新增 `reference_symbols_for_fund()`，
+  对应 PHP `_qdiigroup.php` 的 `$arRef` + `$arLev` 装配
+  （基金 → 估值标的 → 杠杆标的（查 `fundpair`）→ 即期外汇 → 中间价）；
+  缺的符号**照实跳过**，不补空行。本演示库实际 4 行
+  （缺 `TQQQ`/`USDCNH`/`hf_NQ`：不在 `stock` 表，或 `fundpair` 没有"ETF → 指数"行）。
+  `externallink.py` 从"只认基金"扩成 `get_sina_stock_link()` 的**类型分发**，
+  **8 类 href 逐字对齐生产端** `sz161130cn.php`；其中中间价 `USCNY`
+  指向货币网、即期 `USDCNY` 指向新浪外汇页，区分点是 `is_forex()`。
+  ② **EST 表接线**：`fundest_service` 早已写好，缺的只是注入引用对象；
+  现在默认走 `refobj.QdiiReference` 现算（委托 `fundestcalc`，**没有第二套口径**，
+  所以 workbuddy 当初"怕重影"的顾虑不再成立）。实测 `SZ161130` 官方 EST
+  = `4.545196`，与净值一致。**实时 EST 仍为 None** —— 它要中间层的配对引用，
+  而 `FundPairReference` 未迁移，所以表头是 4 列而非生产端的 6 列。
+  ③ **基金份额表**：直接复用历史服务的 `shareshistory`（与
+  `/history/shareshistory/<sym>` 同一张表、同一个 PHP 段落），
+  并顺手把渲染抽成 `_history_table.html` 宏供两处共用。
+  途中修掉三个真 bug：`float('')` 让**整张参考数据表消失**（PHP `floatval('')`
+  给 0；已改走 `_php_floatval`）、`get_table([])` 返回 `None` 让详情页 500、
+  以及一个被 `except` 吞掉的缺 import。
+  详见 `python/auto/README_detail_page_sections.md`。
 
 远端分支 `origin/devin/1780933111-migrate-php-core-to-python` 已有  
 `python/core/stock_symbol.py` 和 `python/core/sina_fetcher.py`：
@@ -353,8 +406,8 @@ Flask 路由
 
 ```powershell
 cd F:\woody\woodyweb\python
-python -B -m unittest discover -s auto -p "test_*.py"        # 637 个
-python -B -m unittest discover -s web\tests -p "test_*.py"   # 140 个
+python -B -m unittest discover -s auto -p "test_*.py"        # 694 个
+python -B -m unittest discover -s web\tests -p "test_*.py"   # 148 个
 ```
 
 注意：Web 层测试需要 Flask 与 PyMySQL，当前只装在系统 Python 3.7 上。  
@@ -368,5 +421,7 @@ cd F:\woody\woodyweb\python\auto
 python -B _php_port_compare.py        # stocksymbol，6280 个用例
 python -B _php_numfmt_compare.py      # 数字/时间格式化，87 个用例
 python -B _php_prefetch_compare.py    # 预取判定，26800 个用例
+python -B _php_refobj_compare.py      # refobj 纯数学，98 个用例
+python -B _php_refobj_compare.py --selftest   # 自检：证明对照抓得到注入的错误
 python -B _php_rtrim0_fuzz.py 2000    # rtrim0 随机模糊
 ```

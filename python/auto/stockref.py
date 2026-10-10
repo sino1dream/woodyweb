@@ -436,11 +436,17 @@ class StockReference(StockSymbol):
 
     # -- 涨跌幅 -----------------------------------------------------------
     def get_percentage(self, divisor: float = None, dividend: float = None) -> float:
-        """对应 PHP ``GetPercentage()``：默认用昨收/现价计算涨跌幅。"""
+        """对应 PHP ``GetPercentage()``：默认用昨收/现价计算涨跌幅。
+
+        **同样要走 ``_php_floatval``**：只有现价、没有昨收的标的（实测 ``USCNY``）
+        ``str_prev_price`` 是空串，PHP 的 ``floatval('')`` 给 0，
+        而 ``float('')`` 抛 ``ValueError``。``stock_get_percentage`` 本身有
+        ``abs(divisor) > MIN_FLOAT_VAL`` 的保护，所以昨收为 0 时会正常返回 0.0。
+        """
         if divisor is None:
-            divisor = float(self.str_prev_price)
+            divisor = _php_floatval(self.str_prev_price)
         if dividend is None:
-            dividend = float(self.str_price)
+            dividend = _php_floatval(self.str_price)
         return stock_get_percentage(divisor, dividend)
 
     def get_percentage_string(self, divisor: float = None, dividend: float = None) -> str:
@@ -450,7 +456,7 @@ class StockReference(StockSymbol):
         """
         percentage = self.get_percentage(divisor, dividend)
         if divisor is None:
-            divisor = float(self.str_prev_price)
+            divisor = _php_floatval(self.str_prev_price)
         if abs(percentage * divisor) < (50.0 / pow(10, self.get_precision())):
             return "0"
         return str(percentage)
@@ -475,12 +481,18 @@ class StockReference(StockSymbol):
 
         PHP 的三个参数默认值都是 ``false``，语义是“没传就用现价/昨收”；
         这里用 ``None`` 表达同一件事。
+
+        **空值必须走 ``_php_floatval``（``floatval()`` 语义）而不是 ``float()``**：
+        有些标的（实测中间价 ``USCNY``）只有现价、没有昨收，
+        ``str_prev_price`` 是空串。PHP 的 ``floatval('')`` 给 ``0.0``，
+        而 Python 的 ``float('')`` 直接抛 ``ValueError`` —— 一个中间价就能让
+        整张参考数据表崩掉（``_build_reference`` 会把异常吞掉、整段消失）。
         """
         if disp is None:
-            disp = float(self.str_price)
-            prev = float(self.str_prev_price)
+            disp = _php_floatval(self.str_price)
+            prev = _php_floatval(self.str_prev_price)
         elif prev is None:
-            prev = float(self.str_price)
+            prev = _php_floatval(self.str_price)
         if not precision:
             precision = self.get_precision()
         return format_price(disp, prev, precision)

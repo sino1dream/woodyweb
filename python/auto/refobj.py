@@ -119,6 +119,16 @@ class MysqlReference(StockReference):
         self.stock_id = None
 
         self.load_data()
+        # 行情装填：**只读库快照，不联网**（见 :meth:`load_quote_data`）。
+        # **必须在 ``load_data()`` 之后**：子类的 ``load_data`` 可能已经把
+        # ``has_data`` 按"有没有净值"设过一次，这里以行情为准覆盖。
+        # 快照没有该符号时留空，联网兜底由请求期显式触发
+        # （``refquote.refresh_quotes``）—— 构造期联网会让每个请求都慢一拍。
+        self.quote_source = self.load_quote_data()
+        # 外链：PHP 在 ``LoadSinaFundData()`` 里 ``SetExternalLink(GetSinaFundLink())``。
+        # **必须有内容** —— 参考数据表首格就是它，为空会让整行少一格、列错位。
+        # 取不到外链时 ``get_sina_fund_link()`` 会退回纯符号文本（与 PHP 一致）。
+        self.set_external_link(self._build_external_link())
         if is_zero_string(self.get_price()):
             self.str_price = self.get_prev_price()
 
@@ -133,6 +143,49 @@ class MysqlReference(StockReference):
     def load_data(self) -> None:
         """对应 ``LoadData()``。基类不加载任何东西（PHP 里也只 ``SetHasData(false)``）。"""
         self.set_has_data(False)
+
+    # -- 行情装填 ---------------------------------------------------------
+    def load_quote_data(self) -> str:
+        """装填行情：**只读库快照**。
+
+        对应 PHP ``MysqlReference`` 构造流程里那次行情加载（PHP 是
+        ``LoadSinaData()``，每次请求同步抓新浪）。本项目部署形态不同 ——
+        已有 ``quoteupdatercli --daemon`` 把行情写进 ``realtimequote``，
+        所以构造期**只读快照**。
+
+        **为什么不在这里联网**：``QdiiReference`` 构造里还会算一次实时 EST，
+        若构造期联网，每个页面请求都会去抓一遍新浪（既慢又给站方添压力）。
+        联网兜底做成请求期显式调用 ``refquote.refresh_quotes()``。
+
+        返回 ``'snapshot'`` / ``'none'``，便于判断数据来源。
+        """
+        try:
+            from refquote import load_quote_into
+        except ImportError:
+            self.set_has_data(False)
+            return "none"
+        return load_quote_into(self, source=self.source)
+
+    def _build_external_link(self) -> str:
+        """首格那个外链；没有对应外链时退回符号文本。
+
+        走 :func:`externallink.get_sina_stock_link` 的**通用分发**（对应 PHP
+        ``GetSinaStockLink()``）：基金、A 股、港股、美股/美股指数、期货、外汇
+        各有各的 URL 形状。参考数据表会把这几类混在一张表里，所以必须按类型分派，
+        不能只认基金。
+
+        **首格必须有内容**：为空会让整行少一格、后面所有列错位（实测踩过）。
+        取不到外链时 ``get_sina_stock_link()`` 会退回纯符号文本（与 PHP 一致）。
+        """
+        symbol = self.get_symbol()
+        try:
+            from externallink import get_sina_stock_link
+        except ImportError:
+            return symbol
+        try:
+            return get_sina_stock_link(self)
+        except Exception:
+            return symbol
 
     # -- 取数兜底 ---------------------------------------------------------
     def _call(self, name: str, *args: Any) -> Any:
@@ -1037,6 +1090,10 @@ MysqlReference.GetChineseName = MysqlReference.get_chinese_name
 MysqlReference.GetStockId = MysqlReference.get_stock_id
 MysqlReference.GetFactor = MysqlReference.get_factor
 MysqlReference.GetPosition = MysqlReference.get_position
+#: ``GetStockLink()``：基金详情页「估值」表首格用的就是它
+#: （``fundestparagraph.php`` 里 ``$ref->GetStockLink()``）。
+#: 语义与 ``GetExternalLink()`` 相同，只是那边叫 external、这边叫 stock。
+MysqlReference.GetStockLink = MysqlReference.get_external_link
 
 FundReference.GetOfficialDate = FundReference.get_official_date
 FundReference.SetForex = FundReference.set_forex

@@ -30,6 +30,7 @@ from web.services.fund_list_service import (  # noqa: E402
     FundListService,
 )
 from web.services.fund_service import FundService  # noqa: E402
+from web.services.reference_service import reference_symbols_for_fund  # noqa: E402
 
 
 fund_bp = Blueprint("fund", __name__)
@@ -62,34 +63,101 @@ def _render_fund(symbol: str, group: str):
         group=group,
         fundest=_build_fundest(symbol),
         reference=_build_reference(symbol),
+        shares=_build_shares(symbol),
     )
+
+
+def _build_shares(symbol: str) -> dict[str, Any] | None:
+    """基金详情页的「基金场内份额」表（``php/ui/fundshareparagraph.php``）。
+
+    直接复用历史数据服务里的 ``shareshistory`` —— 它与 ``/history/shareshistory/<sym>``
+    那张表**是同一张**（PHP 那边也是同一个 ``EchoFundShareParagraph()``），
+    没有第二套算法。
+
+    **权限差异要注意**：生产端的独立页面 ``fundsharecn.php`` 要登录
+    （见 ``README_history_migration.md``），而详情页里这段是不带鉴权的。
+    本版跟随详情页（不鉴权），因为演示库里那份数据本来就只有 4 行样本。
+    """
+    service = _get_history_service()
+    if service is None:
+        return None
+    try:
+        table = service.get_table("shareshistory", symbol, 0, 10)
+    except Exception:
+        return None
+    return table if table.get("rows") else None
+
+
+def _get_history_service():
+    factory = current_app.extensions.get("history_service_factory")
+    return None if factory is None else factory()
 
 
 def _build_fundest(symbol: str) -> dict[str, Any] | None:
     """基金详情页的「估值」表（``php/ui/fundestparagraph.php``）。
 
-    **默认不渲染**，这是本版与 PHP 最大的一处不同，也是刻意的：
+    ## 与 PHP 的差别：实时那一档常常是空的
 
-    这张表要显示的是**三档**估值（官方 / 参考 / 实时），分别来自
-    ``GetOfficialNetValue()`` / ``GetFairNetValue()`` / ``GetRealtimeNetValue()``，
-    在 Python 侧必须由 ``refobj.QdiiReference`` 配 ``fundestcalc`` 的
-    estimator 填进去。而基金详情页现在只有一个
-    ``PalmmicroFundCalculator.est_net_value()`` 的结果（就是页面上那个
-    "估值净值"）—— 把它硬塞进「官方EST」列，等于**又造一条 EST 口径**。
+    表要显示的是三档估值（官方 / 参考 / 实时），它们由
+    ``refobj.QdiiReference`` 现算：
 
-    上一次出现两条口径并存的后果是：SZ161130 的官方 EST 从 4.59 变成 20245，
-    页面还不报错。所以这里只留注入口，等 estimator 接线那一步做完再打开。
+    * **官方 EST** —— ``fundestcalc.compute_official()``，即"官方净值出来之前的
+      那一刻估值"，实测 ``SZ161130`` 得 ``4.545196``，与官方净值一致；
+    * **参考 EST** —— ``GetFairNetValue()``，用**当前汇率**；
+    * **实时 EST** —— 需要中间层的**配对引用**（``GetRealtimeRef()`` →
+      期货/杠杆标的），而 ``FundPairReference`` 未迁移，所以现在恒为 ``None``。
 
-    注入方式：``create_app(fundest_refs_builder=...)``。
+    本版**照 PHP 的行为**：实时档取不到时该行少两格（PHP 那边只有 ``if``、
+    没有 ``else`` 补空，见 ``fundest_service`` 的 docstring 与它的测试）。
+    表头也按 PHP 扫一遍所有 ref 决定 —— 全是 ``None`` 时就不加那两列。
+
+    **为什么不再"怕两条口径并存"**：这里直接调 ``fundestcalc``（唯一实现），
+    没有第二套公式。之前那次"官方 EST 从 4.59 变 20245"的成因是
+    ``_qdii_value`` 写死取实时快照，已修并加了估值守卫。
     """
     builder = current_app.extensions.get("fundest_refs_builder")
-    if builder is None:
+    service = _get_fundest_service()
+    if service is None:
         return None
     try:
-        return current_app.extensions["fundest_service_factory"]().get_table(builder([symbol]))
+        refs = builder([symbol]) if builder is not None else _build_qdii_refs([symbol])
+        if not refs:
+            # 建不出引用对象（没数据库连接）时整段跳过 —— 不摆空表
+            return None
+        table = service.get_table(refs)
     except Exception:
-        # 估值算不出来不该让整个详情页挂掉
         return None
+    # ``get_table([])`` 会返回 ``None``，这里必须容住；之前直接 ``.get()``
+    # 会让详情页整个 500（实测踩到）。
+    if not table:
+        return None
+    return table if table.get("rows") else None
+
+
+def _build_qdii_refs(symbols: list) -> list:
+    """按符号建 ``refobj.QdiiReference``（含三档估值），失败了不放行空对象。
+
+    取不到数据库连接时返回空列表 —— 让上层整段跳过，而不是摆一张空表。
+    """
+    service = _get_reference_service()
+    source = getattr(service, "source", None)
+    if source is None:
+        return []
+
+    from refobj import build_qdii_reference
+
+    refs = []
+    for symbol in symbols:
+        try:
+            refs.append(build_qdii_reference(symbol, source=source))
+        except Exception:
+            continue
+    return refs
+
+
+def _get_fundest_service():
+    factory = current_app.extensions.get("fundest_service_factory")
+    return None if factory is None else factory()
 
 
 def _build_reference(symbol: str) -> dict[str, Any] | None:
@@ -98,14 +166,17 @@ def _build_reference(symbol: str) -> dict[str, Any] | None:
     **取不到行情时返回 ``None`` 而不是空表**：模板据此整段跳过。
     宁可少一块，也不要在页面上摆一张全空的表格 —— 那会让人以为是数据丢了。
 
-    只取基金本身这一个符号：PHP 的详情页还会带上估值标的与汇率，
-    但那两个目前要等 refobj 的 ``QdiiReference`` 接进页面后再补。
+    标的清单由 :func:`reference_symbols_for_fund` 给出：基金自己 + 估值标的 +
+    杠杆标的（查 ``fundpair``）+ 即期外汇 + 中间价，对应 PHP
+    ``_qdiigroup.php`` 里 ``$arRef`` 与 ``$arLev`` 的装配。
     """
     service = _get_reference_service()
     if service is None:
         return None
+    source = getattr(service, "source", None)
     try:
-        table = service.get_table(_get_reference_refs([symbol]))
+        symbols = reference_symbols_for_fund(symbol, source)
+        table = service.get_table(_get_reference_refs(symbols))
     except Exception:
         return None
     return table if table["rows"] else None
@@ -117,13 +188,19 @@ def _get_reference_service():
 
 
 def _get_reference_refs(symbols: list[str]):
-    """按符号建引用对象；未显式注入时走真实抓取（可能联网，已在上层兜底）。"""
+    """按符号建引用对象。
+
+    未显式注入 builder 时走真实路径：``refobj.MysqlReference`` +
+    **先读库快照、再兜底联网**的行情装填（见 ``auto/refquote.py``）。
+    ``source`` 由 reference service 提供，读快照要用它。
+    """
     builder = current_app.extensions.get("reference_refs_builder")
     if builder is not None:
         return builder(symbols)
     from web.services.reference_service import build_stock_references
 
-    return build_stock_references(symbols)
+    service = _get_reference_service()
+    return build_stock_references(symbols, source=getattr(service, "source", None))
 
 
 @fund_bp.route("/api/fund/<symbol>")

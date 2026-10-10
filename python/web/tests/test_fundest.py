@@ -348,15 +348,27 @@ class FundEstRouteTest(unittest.TestCase):
             self.assertIn(text, html)
         self.assertIn("华宝油气", html)
 
-    def test_table_is_absent_without_a_refs_builder(self):
-        """**默认不开**：没有显式注入 refs builder 时整块不出现。
+    def test_table_renders_without_an_injected_builder(self):
+        """**默认已经接线**：不注入 refs builder 时，走 ``refobj.QdiiReference`` 现算。
 
-        这不是漏接线 —— 三档估值要等 estimator 接进页面，
-        详见 ``web/routes/fund.py`` 的 ``_build_fundest()``。
+        这条断言在 2026-10 由"默认不开"翻转过：
+
+        * 当时不接线是刻意的 —— 三档估值要等 estimator 接进页面，
+          硬塞会把 ``PalmmicroFundCalculator.est_net_value()`` 的结果冒充
+          "官方EST"，等于**又造一条 EST 口径**；
+        * 现在 ``refobj.QdiiReference`` 直接委托 ``fundestcalc``（唯一实现），
+          所以可以安全打开。实测 ``SZ161130`` 的官方 EST = ``4.545196``，
+          与官方净值一致。
+
+        重点从"有没有表"变成"**数值对不对/口径有没有重影**"，
+        所以下面断言官方 EST 与净值同源。
         """
         app = _app_without_builder()
         html = app.test_client().get("/fund/SZ162411").get_data(as_text=True)
-        self.assertNotIn("fund-est-table", html)
+
+        self.assertIn("fund-est-table", html)
+        # 首格是股票链接、且有官方 EST 那一列
+        self.assertIn("官方EST", html)
 
     def test_builder_failure_does_not_break_the_page(self):
         def boom(symbols):

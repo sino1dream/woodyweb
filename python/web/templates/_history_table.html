@@ -1,0 +1,38 @@
+{# 历史数据表的渲染宏 —— 由 history.html 与 fund_detail.html 共用。
+
+   抽出来的理由：基金详情页也要放一张历史表（基金场内份额，对应 PHP
+   ``EchoFundShareParagraph()``），而它和 6 个历史页面的表结构完全一样。
+   复制一遍渲染逻辑会让"列色/单元格色是数据"这条约定出现两处实现。
+
+   数据形状见 ``web/services/history_service.py``：
+     columns: [{"text", "width", "color"}, ...]
+     rows:    [TableRow(cells=[str | (文本, 颜色名)], match=bool), ...]
+#}
+{% macro history_table(table, css_class="history-table") %}
+  <table class="data-table {{ css_class }}">
+    <thead>
+      <tr>
+        {# 列头文字与颜色都由服务层给出：颜色名对应 PHP 的 <font color> #}
+        {% for column in table.columns %}
+          <th{% if column.width %} style="width: {{ column.width }}px"{% endif %}>
+            {% if column.color %}<span class="col-{{ column.color }}">{{ column.text }}</span>{% else %}{{ column.text }}{% endif %}
+          </th>
+        {% endfor %}
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in table.rows %}
+        <tr{% if row.match %} class="match"{% endif %}>
+          {# 单元格要么是纯文本，要么是 [文本, 颜色名] #}
+          {% for cell in row.cells %}
+            {% if cell is string %}
+              <td>{{ cell }}</td>
+            {% else %}
+              <td class="cell-{{ cell[1] }}">{{ cell[0] }}</td>
+            {% endif %}
+          {% endfor %}
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+{% endmacro %}

@@ -292,3 +292,9 @@ h2 {
 /* 参考数据表首格的 tooltip：PHP 用 title=股票名 */
 .data-table td.with-hint { cursor: help; border-bottom: 1px dotted #999; }
 
+/* 整行底色：对应 PHP EchoTableColumn($ar, $strColor) 的 style="background-color:..."。
+   五档交易表（php/ui/tradingparagraph.php）用它区分涨停/跌停与买卖一档：
+   那边的 $strColor 落在 <td> 的 style 上，是底色而不是文字色。 */
+.data-table tr.bg-orange { background: #fdf1e0; }
+.data-table tr.bg-yellow { background: #fff9db; }
+

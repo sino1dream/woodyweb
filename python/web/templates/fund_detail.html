@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% from "_data_table.html" import data_table %}
+{% from "_history_table.html" import history_table %}
 {% block title %}{{ fund.name }} - 基金估值{% endblock %}
 {% block content %}
   <h1>{{ fund.name }}【{{ fund.symbol }}】</h1>
@@ -29,6 +30,15 @@
     <h2>参考数据</h2>
     {{ data_table(reference, "reference-table", first_cell_is_html=True) }}
     <p class="table-note">参考数据来自外部行情源，抓不到时对应行留空。</p>
+  {% endif %}
+
+  {% if shares %}
+    {# 与 /history/shareshistory/<sym> 是同一张表、同一个服务，不另写一套 #}
+    <h2>基金场内份额</h2>
+    {{ history_table(shares, "history-table share-table") }}
+    <p class="table-note">
+      <a href="{{ url_for('history.history_page', kind='shareshistory', symbol=fund.symbol) }}">查看全部份额记录</a>
+    </p>
   {% endif %}
 
   <h2>估值配置</h2>

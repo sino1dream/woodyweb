@@ -236,6 +236,19 @@ class TableRow:
     #: 第一格的 tooltip。对应 ``EchoTableColumn($ar, $strColor, $strFirstHint)``
     #: 的第三个参数：参考数据表把股票名挂在这一行的链接上（见 ``referenceparagraph.php``）。
     title: str = ""
+    #: **整行**底色名，对应 ``EchoTableColumn($ar, $strColor)`` 的第二个参数。
+    #:
+    #: PHP 那里是 ``style="background-color:xxx"``，即**底色**而不是文字色；
+    #: 五档交易表用它区分涨停/跌停（橙）与买卖一档（黄）。与 :attr:`cells`
+    #: 里那一格一格的文字色是两回事，所以单独一个字段，由模板渲染成
+    #: ``<tr class="bg-xxx">``。空串表示不染色。
+    background: str = ""
+    #: 第一格的链接地址；非空时模板把它渲染成 ``<a href>``。
+    #:
+    #: 对应 PHP 首格恒为 ``GetMyStockLink()`` / ``GetStockLink()`` 产出的 ``<a>``。
+    #: 这里只存 URL、不存 HTML：拼链接属于模板的职责（它才知道 ``url_for``），
+    #: 服务层通过注入的回调拿到 URL，见 ``web/services/stock_service.py``。
+    href: str = ""
 
     def add(self, value: Any, color: str = "") -> "TableRow":
         """追加一格。``color`` 为空表示普通文本。"""

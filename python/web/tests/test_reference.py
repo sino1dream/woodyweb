@@ -15,17 +15,81 @@ if str(PYTHON_DIR) not in sys.path:
 
 from web.app import create_app
 from web.bootstrap import install_paths
+from web.services.fund_list_service import FundListService
 from web.services.fund_service import FundService
 from web.services.reference_service import (
     REFERENCE_NAME_WIDTH,
     ReferenceService,
     build_stock_references,
     percentage_cell,
+    reference_symbols_for_fund,
 )
+from web.tests.test_web import FakeStatusService  # noqa: E402
 
 install_paths()
 
 from web.tests.test_web import make_source  # noqa: E402
+
+
+class StoredQuote:
+    """``quotestore.RecentQuote`` 形状（``refquote`` 只读这几个属性）。"""
+
+    def __init__(self, price, prev_price, date, time, name):
+        self.price = price
+        self.prev_price = prev_price
+        self.date = date
+        self.time = time
+        self.name = name
+
+
+class StoredQuoteSource:
+    """带 ``realtimequote`` 快照的假数据源。
+
+    只实现 ``refobj.MysqlReference`` 真正会问到的那几个方法。
+    数值取生产端 ``qdiicn.php`` 的 2026-10-09 那一行，方便逐格对照。
+    """
+
+    #: 与生产端一致的快照
+    QUOTES = {
+        "SZ161130": StoredQuote("4.884", "4.814", "2026-10-09", "15:00:00", "纳指LOF"),
+    }
+    NAMES = {"SZ161130": "易方达纳斯达克100LOF"}
+    IDS = {"SZ161130": "1", "USCNY": "8"}
+
+    def __init__(self):
+        self.connection = None
+
+    def get_stock_id(self, symbol):
+        return self.IDS.get(symbol)
+
+    def get_stock_name(self, symbol):
+        return self.NAMES.get(symbol)
+
+    def get_stored_quote(self, symbol):
+        return self.QUOTES.get(symbol)
+
+    def get_calibration_now(self, stock_id):
+        return None
+
+    def get_fund_profile(self, symbol):
+        """``FundService`` 会问它要估值配置；参考数据表这条路不需要，返回 ``None``。"""
+        return None
+
+    def get_position(self, stock_id):
+        return None
+
+    def count_net_value(self, stock_id):
+        return 0
+
+    def get_latest_net_value_close(self, stock_id):
+        return None
+
+    def get_latest_net_value_date(self, stock_id):
+        return None
+
+    def get_latest_history_close(self, stock_id):
+        return None
+
 
 
 class FakeRef:
@@ -273,18 +337,132 @@ class ReferenceRouteTest(unittest.TestCase):
 
 
 class RealReferenceBuildingTest(unittest.TestCase):
-    """`build_stock_references()` 用真实 ``StockReference``，**构造本身不联网**。
+    """`build_stock_references()` 的**跨层集成**测试。
 
-    ``StockReference.__init__`` 只组装；``load_sina_data()`` 没有 loader 时取不到
-    数据，会把 ``has_data`` 置 False —— 那时表格应该输出空行而不是抛异常。
+    这层以前缺测试，结果详情页整张「参考数据」表是空的（只有名称），
+    而单测全绿 —— 因为单测在 service 边界打桩，没有"真数据源 → 引用对象 →
+    表格"这条链。这组用例专门补上它。
+
+    ``build_stock_references()` 用真实 ``refobj.MysqlReference``：
+    **构造期只读库快照、不联网**（见 ``auto/refquote.py``）。
     """
 
     def test_load_failure_degrades_to_blank_row(self):
+        """没有数据源 → 读不到快照 → 四个数值格留空，但**列数仍对齐**。"""
         refs = build_stock_references(["SZ161130"])
         self.assertEqual(len(refs), 1)
 
         row = ReferenceService().get_table(refs)["rows"][0]
         self.assertEqual(row.cells[1:5], ["", "", "", ""])
+
+    def test_snapshot_fills_the_row(self):
+        """**有快照时四格必须有值**（P0 的验收点）。
+
+        假数据源给出与生产端一致的行情（2026-10-09 的 SZ161130）。
+        """
+        source = StoredQuoteSource()
+        refs = build_stock_references(["SZ161130"], source=source)
+
+        self.assertEqual(len(refs), 1)
+        ref = refs[0]
+        self.assertTrue(ref.has_data, "读了快照就该有行情")
+        self.assertEqual(ref.get_price(), "4.884")
+        self.assertEqual(ref.get_date(), "2026-10-09")
+
+    def test_snapshot_row_matches_production_cells(self):
+        """逐格核对：代码 / 价格 / 涨幅 / 日期 / 时间 / 名称。
+
+        对照生产端 ``qdiicn.php`` 的 SZ161130 那一行。名称列取自
+        ``SqlGetStockName()``（库名），所以用假数据源里给的名字。
+        """
+        source = StoredQuoteSource()
+        refs = build_stock_references(["SZ161130"], source=source)
+
+        row = ReferenceService(source).get_table(refs)["rows"][0]
+
+        # 首格是外链 HTML（模板按 first_cell_is_html 原样渲染）
+        self.assertIn("161130", row.cells[0])
+        self.assertIn("/fund/quotes/161130/bc.shtml", row.cells[0])
+        self.assertEqual(row.cells[1], "4.884")
+        # 涨幅格带颜色，是 (文本, 颜色类) 二元组；颜色属于渲染层
+        change_text = row.cells[2] if isinstance(row.cells[2], str) else row.cells[2][0]
+        self.assertEqual(change_text, "1.45%")
+        self.assertEqual(row.cells[3], "2026-10-09")
+        self.assertEqual(row.cells[4], "15:00")
+        self.assertEqual(row.cells[5], "易方达纳斯达克100LOF")
+
+    def test_full_stack_builds_six_filled_cells(self):
+        """**跨层集成**：假数据源 → ``build_stock_references`` → ``ReferenceService``
+        → 六个格子全部有值。
+
+        这一层以前缺测试，所以"详情页整张表是空的"能一路绿灯溜过去：
+        单测都在 service 边界打桩，没有"真数据源 → 引用对象 → 表格"这条链。
+
+        **不走 HTTP**：``/fund/<symbol>`` 那条路由依赖真实 ``get_symbol_group()``
+        （查库），在离线测试里会 404。页面渲染另由真实验收脚本覆盖
+        （``sql/verify_pages.py`` 与 P0 对照）。
+        """
+        source = StoredQuoteSource()
+        refs = build_stock_references(["SZ161130"], source=source)
+        table = ReferenceService(source).get_table(refs)
+
+        self.assertEqual(table["count"], 1)
+        row = table["rows"][0]
+        self.assertEqual(len(row.cells), 6, "参考数据表必须六格")
+
+        change_text = row.cells[2] if isinstance(row.cells[2], str) else row.cells[2][0]
+        self.assertEqual(
+            [row.cells[0], row.cells[1], change_text, row.cells[3], row.cells[4], row.cells[5]],
+            [
+                row.cells[0],                      # 首格是外链 HTML，单独断言见下
+                "4.884",
+                "1.45%",
+                "2026-10-09",
+                "15:00",
+                "易方达纳斯达克100LOF",
+            ],
+        )
+        self.assertIn("/fund/quotes/161130/bc.shtml", row.cells[0])
+
+    def test_construction_stays_offline(self):
+        """**构造期不联网**：数据源没有快照时也不该去抓新浪。
+
+        理由：``QdiiReference`` 构造里还会算实时 EST，
+        构造期联网会让每个页面请求都慢一拍。
+        """
+        class OfflineCheck(StoredQuoteSource):
+            def get_stored_quote(self, symbol):
+                return None            # 快照没有
+
+        source = OfflineCheck()
+        refs = build_stock_references(["SZ161130"], source=source)
+
+        self.assertFalse(refs[0].has_data, "没有快照就该留空，而不是联网")
+        self.assertEqual(refs[0].quote_source, "none")
+
+
+class ReferenceSymbolsTest(unittest.TestCase):
+    """详情页参考数据表的**标的清单**（对应 PHP ``$arRef`` + ``$arLev`` 装配）。"""
+
+    def test_first_symbol_is_always_the_fund_itself(self):
+        self.assertEqual(reference_symbols_for_fund("SZ161130", None), ["SZ161130"])
+
+    def test_appends_estimate_forex_and_middle_rate(self):
+        """基金 → 估值标的 → 杠杆标的 → 即期外汇 → 中间价（生产端顺序）。"""
+        source = StoredQuoteSource()
+        symbols = reference_symbols_for_fund("SZ161130", source)
+
+        self.assertEqual(symbols[0], "SZ161130")
+        self.assertIn("^NDX", symbols, "估值标的必须进来")
+
+    def test_deduplicates(self):
+        source = StoredQuoteSource()
+        symbols = reference_symbols_for_fund("SZ161130", source)
+        self.assertEqual(len(symbols), len(set(symbols)), "标的不该重复")
+
+    def test_without_source_returns_only_the_fund(self):
+        """没有数据源时退化成一个标的，不抛异常。"""
+        self.assertEqual(reference_symbols_for_fund("SZ162411"), ["SZ162411"])
 
 
 if __name__ == "__main__":

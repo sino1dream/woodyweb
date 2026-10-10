@@ -261,32 +261,174 @@ class ReferenceService:
             return ""
 
 
-def build_stock_references(symbols: Iterable[str], quote_loader: Any = None) -> list:
-    """为每个符号建一个 :class:`stockref.StockReference` 并**尽力**加载行情。
+def reference_symbols_for_fund(symbol: str, source: Any = None) -> list:
+    """一只 QDII 基金详情页「参考数据」表要放的**全部标的**（有序、去重）。
+
+    对应 PHP ``_qdiigroup.php:55-83`` 那段装配 + ``EchoCommonParagraphs()`` 的
+    ``EchoFundListParagraph()``：
+
+    .. code-block:: php
+
+        $arRef = [$stock_ref, $est_ref];                      // 基金 + 估值标的
+        if ($realtime_ref = $ref->GetRealtimeRef()) $arRef[] = $realtime_ref;
+        foreach ($arLev as $strSymbol) {                      // 杠杆标的（查 fundpair）
+            $leverage_ref = new FundPairReference($strSymbol);
+            $this->ar_leverage_ref[] = $leverage_ref;
+        }
+
+    生产端 ``sz161130cn.php`` 的参考数据表实测长这样（8 行）::
+
+        SZ161130  基金自己
+        ^NDX      估值标的
+        hf_NQ     实时标的（期货）
+        QQQ       杠杆标的
+        TQQQ      杠杆标的
+        USDCNH    即期外汇
+        USDCNY    即期外汇
+        USCNY     中间价
+
+    ## 本版的取舍：**有什么放什么**
+
+    缺的符号直接跳过，不补空行 —— 摆一行全空的数据比少一行更容易被误读成
+    "抓取挂了"。所以本演示库里只会出现有 `stock` 行的那些标的。
+
+    顺序按生产端：基金 → 估值标的 → 杠杆标的 → 外汇 → 中间价。
+    """
+    symbols = [symbol]
+    if source is None:
+        return symbols
+
+    est_symbol, forex_symbol, cny_symbol = _fund_reference_symbols(symbol, source)
+    _append(symbols, est_symbol)
+    for leverage in _leverage_symbols(est_symbol, source):
+        _append(symbols, leverage)
+    _append(symbols, forex_symbol)
+    _append(symbols, cny_symbol)
+    return symbols
+
+
+def _append(symbols: list, value: Any) -> None:
+    """去重追加；空值跳过。"""
+    if not value:
+        return
+    text = str(value)
+    if text not in symbols:
+        symbols.append(text)
+
+
+def _fund_reference_symbols(symbol: str, source: Any) -> tuple:
+    """取该基金的（估值标的, 即期外汇, 中间价）三个符号。
+
+    走 ``refobj`` 的地区表 —— 港股 QDII 用 ``HKCNY``/``fx_shkdcny``、
+    日本用 ``JPCNY``/``fx_sjpycny``，不能一律按美元处理。
+    """
+    try:
+        from refobj import build_qdii_reference
+        from fundcalc import qdii_est_symbol, qdii_hk_est_symbol, qdii_jp_est_symbol, qdii_eu_est_symbol
+    except ImportError:
+        return None, None, None
+
+    est_symbol = qdii_est_symbol(symbol)
+    for finder in (qdii_hk_est_symbol, qdii_jp_est_symbol, qdii_eu_est_symbol):
+        if est_symbol:
+            break
+        try:
+            est_symbol = finder(symbol)
+        except Exception:
+            est_symbol = None
+
+    forex_symbol = None
+    cny_symbol = None
+    try:
+        ref = build_qdii_reference(symbol, source=source)
+        cny_symbol = getattr(ref, "cny_symbol", None)
+        forex_symbol = getattr(ref, "forex_symbol", None)
+    except Exception:
+        pass
+    return est_symbol, forex_symbol, cny_symbol
+
+
+def _leverage_symbols(est_symbol: Any, source: Any) -> list:
+    """查 ``fundpair``：跟踪同一个估值标的的**杠杆/替代 ETF**。
+
+    对应 PHP ``GetFundPairSql()->GetSymbolArray($strEstSymbol)`` ——
+    ``fundpair`` 的列语义是 ``id`` = 本体、``stock_id`` = 跟踪标的，
+    所以"跟踪 ``^NDX`` 的 ETF"就是 ``WHERE stock_id = ^NDX``，取那些 ``id``。
+    """
+    if not est_symbol:
+        return []
+    connection = getattr(source, "connection", None)
+    if connection is None:
+        return []
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "SELECT s.symbol FROM fundpair f JOIN stock s ON s.id = f.id "
+            "WHERE f.stock_id = (SELECT id FROM stock WHERE symbol = %s) "
+            "ORDER BY s.symbol",
+            (str(est_symbol),),
+        )
+        return [str(row["symbol"]) for row in cursor.fetchall() if row["symbol"]]
+    except Exception:
+        return []
+    finally:
+        cursor.close()
+
+
+def build_stock_references(symbols: Iterable[str], quote_loader: Any = None,
+                           source: Any = None) -> list:
+    """为每个符号建一个引用对象，并**先读库快照、再兜底联网**装填行情。
 
     对应 PHP 页面里的 ``new StockReference($strSymbol)`` —— PHP 那时会同步抓新浪。
-    差别有两条，都是有意的：
 
-    1. **构造不联网**（``StockReference.__init__`` 只组装），加载是这里显式调用
-       ``load_sina_data()`` 的结果；
-    2. **加载失败不影响页面**。``load_sina_data()`` 取不到数据时把 ``has_data``
-       置为 ``False``，参考数据表会按 PHP 的 else 分支输出四个空串，
-       表格照样列数对齐。所以用 ``try`` 包住是保守做法 —— 页面不该因为
-       某个标的没抓到就整体报错。
+    ## 两条与本版有关的取舍
 
-    ``quote_loader`` 用来顶掉"取行情原始文本"这一步（测试用）。
+    1. **行情来源**：本项目的部署形态是"``quoteupdatercli --daemon`` 抓、页面读"，
+       所以优先读 ``realtimequote`` 快照；快照没有该符号才联网。
+       详见 ``auto/refquote.py``。
+    2. **加载失败不影响页面**。取不到行情时 ``has_data`` 为 ``False``，
+       参考数据表按 PHP 的 else 分支输出空串，表格列数照样对齐。
+       所以用 ``try`` 包住是保守做法 —— 页面不该因为某个标的没抓到就整体报错。
+
+    ``source`` 是数据源（要 ``get_stored_quote`` / ``get_stock_id``）；
+    ``quote_loader`` 保留给测试注入（传了就顶掉默认装填）。
     """
-    from stockref import StockReference
-
     refs = []
     for symbol in symbols:
-        ref = StockReference(symbol, quote_loader=quote_loader)
-        refs.append(_load_best_effort(ref))
+        refs.append(_build_one(symbol, source=source, quote_loader=quote_loader))
     return refs
 
 
-def _load_best_effort(ref: Any) -> Any:
-    """加载行情；失败就把 ``has_data`` 置为 ``False`` 并返回同一个对象。"""
+def _build_one(symbol: str, source: Any = None, quote_loader: Any = None) -> Any:
+    """建一个引用对象并尽力装填行情。
+
+    优先用 ``refobj.MysqlReference``（它带净值/仓位/校准值，是详情页需要的）；
+    ``refobj`` 不可用时退回 ``stockref.StockReference``（只有行情，字段更少）。
+    """
+    try:
+        from refobj import MysqlReference
+    except ImportError:
+        return _build_one_via_stockref(symbol, quote_loader)
+
+    try:
+        ref = MysqlReference(symbol, source=source)
+    except Exception:
+        return _build_one_via_stockref(symbol, quote_loader)
+
+    # 注入的 loader 顶掉默认装填结果（测试用）
+    if quote_loader is not None:
+        try:
+            ref.quote_source = quote_loader(ref)
+        except Exception:
+            pass
+    return ref
+
+
+def _build_one_via_stockref(symbol: str, quote_loader: Any = None) -> Any:
+    """回退实现：只有行情的瘦引用对象。"""
+    from stockref import StockReference
+
+    ref = StockReference(symbol, quote_loader=quote_loader)
     try:
         ref.load_sina_data()
     except Exception:
