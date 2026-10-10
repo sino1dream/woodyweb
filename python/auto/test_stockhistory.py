@@ -375,5 +375,515 @@ class ModuleIsImportCleanTest(unittest.TestCase):
                              "数值核心不该依赖 %s" % forbidden)
 
 
+class _FakeReference:
+    """最小 ref：只提供 ``StockHistory`` 用到的四个方法。"""
+
+    def __init__(self, symbol="SZ161130", stock_id=1, price="4.884",
+                 date="2026-10-09", time_zone="Asia/Shanghai"):
+        self._symbol = symbol
+        self._stock_id = stock_id
+        self._price = price
+        self._date = date
+        self._time_zone = time_zone
+
+    def get_symbol(self):
+        return self._symbol
+
+    def get_stock_id(self):
+        return self._stock_id
+
+    def get_price(self):
+        return self._price
+
+    def get_date(self):
+        return self._date
+
+    def get_time_zone(self):
+        return self._time_zone
+
+
+class _FakeHistorySql:
+    """假的历史表：按 PHP 语义返回**倒序**数据。
+
+    ``rows`` 是 ``[(date, adjclose), ...]``，调用方按时间**从新到旧**给。
+    """
+
+    def __init__(self, rows, ema=None):
+        self.rows = list(rows)
+        self.ema = dict(ema or {})
+        self.get_all_calls = []
+        self.from_date_calls = []
+
+    def get_all(self, stock_id, start=0, num=0):
+        self.get_all_calls.append((stock_id, start, num))
+        window = self.rows if num == 0 else self.rows[start:start + num]
+        return [{"date": date, "adjclose": close} for date, close in window]
+
+    def get_from_date(self, stock_id, date, num=0):
+        """``date <= ?``（不是 ``>=``）—— 与 PHP ``_buildWhereFromDate`` 一致。
+
+        这里刻意保留"容易写反"的注释：早期写成 ``>=`` 时只返回一行，
+        均线全部退化成同一个价格且不报错。
+        """
+        self.from_date_calls.append((stock_id, date, num))
+        kept = [(d, c) for d, c in self.rows if d <= str(date)]
+        if num:
+            kept = kept[:num]
+        return [{"date": d, "adjclose": c} for d, c in kept]
+
+    def get_close(self, stock_id, date):
+        return self.ema.get(str(date))
+
+
+class _FakeConnection:
+    """假连接：让 ``StockHistorySql`` 能真的跑起来（游标假、结果真）。
+
+    **刻意不 mock 掉 ``StockHistorySql``** —— 那样会把"SQL 拼错"这类问题
+    一起屏蔽掉。这里只替换游标，让查询走真实代码路径。
+    """
+
+    def __init__(self, tables):
+        #: ``{表名: {日期: close}}``
+        self.tables = tables
+        self.queries = []
+
+    def cursor(self):
+        return _FakeCursor(self)
+
+
+class _FakeCursor:
+    def __init__(self, connection):
+        self.connection = connection
+        self.sql = ""
+        self.params = ()
+        self._rows = []
+
+    def execute(self, sql, params=()):
+        self.sql = sql
+        self.params = params
+        self.connection.queries.append((sql, params))
+        self._rows = self._resolve(sql, params)
+
+    def _resolve(self, sql, params):
+        """只认两种查询：``SELECT `close` ... WHERE ... date = %s``。
+
+        按表名从 ``tables`` 里取；参数是 ``(stock_id, date)``。
+        """
+        import re
+
+        match = re.search(r"FROM `(\w+)`", sql)
+        if not match:
+            return []
+        table = match.group(1)
+        values = self.connection.tables.get(table, {})
+        if "`close`" in sql and "date` = %s" in sql:
+            date = str(params[1]) if len(params) > 1 else None
+            if date in values:
+                return [{"close": values[date]}]
+            return []
+        return []
+
+    def fetchone(self):
+        return self._rows[0] if self._rows else None
+
+    def fetchall(self):
+        return list(self._rows)
+
+    def close(self):
+        pass
+
+
+class _FakeSource:
+    """把 :class:`_FakeHistorySql` 挂成数据源。"""
+
+    def __init__(self, history, time_zone="Asia/Shanghai", ema_tables=None):
+        self.connection = _FakeConnection(dict(ema_tables or {}))
+        self._history = history
+        self._time_zone = time_zone
+
+    def get_time_zone(self):
+        return self._time_zone
+
+
+#: 一段固定的历史：**从新到旧**，跨周末与跨月各一次
+ROWS = [
+    ("2026-10-09", 99.5),    # 周五
+    ("2026-10-08", 99.0),
+    ("2026-10-07", 98.5),
+    ("2026-10-02", 98.0),    # 周五（上一周）
+    ("2026-10-01", 97.5),
+    ("2026-09-30", 97.0),    # 9 月最后一条 → 月线
+    ("2026-09-29", 96.5),
+    ("2026-09-28", 96.0),
+    ("2026-09-25", 95.5),    # 周五（再上一周）
+    ("2026-09-24", 95.0),
+]
+
+
+def _history(rows=None, ema=None):
+    """建假历史表。
+
+    **注意 ``ema`` 不参与历史行** —— EMA 走的是 ``stockema*`` 表（另一个
+    连接游标），早期这里把 ``ema`` 误当成 ``rows`` 传进
+    ``_FakeHistorySql``，导致历史只剩一条（``get_from_date`` 只回当天）。
+    """
+    return _FakeHistorySql(ROWS if rows is None else rows)
+
+
+def _build(rows=None, ema=None, now=None, after_hour=False, config=None,
+           price="4.884", date="2026-10-09", source_tz="Asia/Shanghai",
+           history=None):
+    import datetime
+
+    sql = history if history is not None else _history(rows, ema)
+    ref = _FakeReference(price=price, date=date)
+    # EMA 走真实 StockHistorySql + 假游标；ema 字典按"日期 -> 值"给
+    ema_tables = {
+        "stockema50": dict(ema or {}),
+        "stockema200": dict(ema or {}),
+    }
+    source = _FakeSource(sql, source_tz, ema_tables)
+    return sh.StockHistory(
+        ref,
+        source=source,
+        after_hour=after_hour,
+        now=now if now is not None else datetime.datetime(2026, 10, 9, 17, 0),
+        config=config,
+        history_sql=sql,
+    ), sql
+
+
+class IgnoreCurrentTradingDataTest(unittest.TestCase):
+    """``_ignoreCurrentTradingData()`` —— 收盘前不能用今天的数据。"""
+
+    def test_today_before_close_is_ignored(self):
+        self.assertTrue(sh.ignore_current_trading_data(
+            "2026-10-09", "2026-10-09 16:30"))
+
+    def test_today_after_close_is_usable(self):
+        self.assertFalse(sh.ignore_current_trading_data(
+            "2026-10-09", "2026-10-09 17:00"))
+
+    def test_older_date_is_always_usable(self):
+        """不是今天就跟收盘时间无关。"""
+        self.assertFalse(sh.ignore_current_trading_data(
+            "2026-10-08", "2026-10-09 10:00"))
+
+    def test_boundary_is_hour_16_inclusive(self):
+        """``IsStockTradingHourEnd()`` 是 ``GetHour() <= 16`` → 16:59 仍算未收盘。
+
+        照抄这个边界：16 点整与 16:30 都返回"未收盘"，17 点才算。
+        """
+        self.assertFalse(sh.is_stock_trading_hour_end("2026-10-09 16:00"))
+        self.assertFalse(sh.is_stock_trading_hour_end("2026-10-09 16:59"))
+        self.assertTrue(sh.is_stock_trading_hour_end("2026-10-09 17:00"))
+
+    def test_accepts_datetime(self):
+        import datetime
+
+        self.assertFalse(sh.is_stock_trading_hour_end(
+            datetime.datetime(2026, 10, 9, 15, 0)))
+        self.assertTrue(sh.is_stock_trading_hour_end(
+            datetime.datetime(2026, 10, 9, 18, 0)))
+
+
+class CalcStartDateTest(unittest.TestCase):
+    """``_calcStartDate()`` —— 为什么取最近 **2** 条。"""
+
+    def test_returns_newest_date_after_close(self):
+        instance, sql = _build()
+        self.assertEqual(instance.get_start_date(), "2026-10-09")
+        self.assertEqual(sql.get_all_calls, [(1, 0, 2)], "必须只取 2 条")
+
+    def test_skips_today_before_close_and_falls_back(self):
+        """市场还没收盘（当地 10 点）时，最新那条要被跳过、起点落到上一交易日。
+
+        这就是 PHP 取 **2** 条而不是 1 条的原因。
+        """
+        import datetime
+
+        instance, _ = _build(now=datetime.datetime(2026, 10, 9, 10, 0))
+        self.assertEqual(instance.get_start_date(), "2026-10-08")
+
+    def test_no_history_returns_none(self):
+        instance, _ = _build(rows=[])
+        self.assertIsNone(instance.get_start_date())
+
+    def test_php_alias(self):
+        instance, _ = _build()
+        self.assertEqual(instance._calcStartDate(), instance.get_start_date())
+
+
+class DayWeekMonthSlicingTest(unittest.TestCase):
+    """``_getDayWeekMonthData()`` —— 倒序遍历 + 两条判据的配合。"""
+
+    def test_daily_series_is_newest_first(self):
+        instance, _ = _build()
+        daily, _, _ = instance.get_day_week_month_data()
+        self.assertEqual(daily[0], 99.5, "最新在前")
+        self.assertEqual(daily[-1], 95.0)
+        self.assertEqual(len(daily), len(ROWS))
+
+    def test_weekly_picks_week_ends(self):
+        """2026-10-09 / 10-02 / 09-25 是各周最后一条（都是周五）。"""
+        instance, _ = _build()
+        _, weekly, _ = instance.get_day_week_month_data()
+        self.assertEqual(weekly, [99.5, 98.0, 95.5])
+
+    def test_monthly_picks_month_ends(self):
+        """跨月处取 09-30（9 月最后一条）；最新那条由"今天"分支决定。
+
+        第一条（10-09，周五）没有"下一天"，走 ``_isWeekEnd`` 的当前时间分支，
+        在 10-09 当天看它是周内最后一条；但 **10 月还没结束**，所以不进月线。
+        """
+        instance, _ = _build()
+        _, _, monthly = instance.get_day_week_month_data()
+        self.assertEqual(monthly, [97.0])
+
+    def test_from_date_is_called_with_start_date_and_620(self):
+        """``_configSMA()`` 期间已经算过一次，所以这里断言"至少一次且参数正确"。"""
+        instance, sql = _build()
+        instance.get_day_week_month_data()
+        self.assertTrue(sql.from_date_calls, "必须查过历史")
+        for call in sql.from_date_calls:
+            self.assertEqual(call, (1, "2026-10-09", sh.MAX_QUOTES_DAYS),
+                             "必须带 start_date 与 MAX_QUOTES_DAYS")
+
+    def test_without_start_date_series_is_empty(self):
+        instance, _ = _build(rows=[])
+        daily, weekly, monthly = instance.get_day_week_month_data()
+        self.assertEqual((daily, weekly, monthly), ([], [], []))
+
+
+class ConfigSmaTest(unittest.TestCase):
+    """``_configSMA()`` 与缓存 —— 关键是**不写文件**。"""
+
+    def test_keys_match_php_layout(self):
+        instance, _ = _build()
+        expected = {
+            "D5", "D10", "D20", "DBOLLUP", "DBOLLDN",
+            "W5", "W10", "W20", "WBOLLUP", "WBOLLDN",
+            "M5", "M10", "M20", "MBOLLUP", "MBOLLDN",
+            "EMA50", "EMA200",
+        }
+        self.assertEqual(set(instance.get_sma()), expected)
+
+    def test_next_values_are_stored_for_daily(self):
+        """``_cfg_set_SMAs`` 会给每个周期再存一个 ``i-1`` 的 T+1 值。"""
+        instance, _ = _build()
+        self.assertIsNotNone(instance.next_values["D5"])
+        # T+1 用的是 est_sma(quotes, 4)
+        daily, _, _ = instance.get_day_week_month_data()
+        self.assertAlmostEqual(instance.next_values["D5"], sh.est_sma(daily, 4))
+
+    def test_ema_next_and_after_hour_are_none(self):
+        """EMA 不做 T+1 推算（PHP ``arNext['EMA50'] = false``）。"""
+        instance, _ = _build(ema={"2026-10-09": 101.5})
+        self.assertIsNone(instance.next_values["EMA50"])
+        self.assertIsNone(instance.after_hour_values["EMA50"])
+
+    def test_ema_read_by_exact_date(self):
+        """``GetClose()`` 是按 ``start_date`` **精确取**，不是取最近一条。"""
+        instance, _ = _build(ema={"2026-10-08": 100.0})
+        self.assertIsNone(instance.get_sma()["EMA50"], "start_date 那天没有就为空")
+
+        instance, _ = _build(ema={"2026-10-09": 101.5})
+        self.assertAlmostEqual(instance.get_sma()["EMA50"], 101.5)
+
+    def test_second_build_with_same_start_date_reads_cache(self):
+        """第二次构造时配置里的 ``Date`` 相同 → 走读缓存分支。
+
+        实测手法：先用一份历史建好（写入配置），再改掉历史数据用**同一份配置**
+        建第二次 —— 若走了缓存，SMA 应保持第一次的值。
+        """
+        config = sh.ConfigSmaStore()
+        first, _ = _build(config=config)
+        first_d5 = first.get_sma()["D5"]
+
+        # 换一份完全不同的历史 + 同样的 start_date
+        other = [("2026-10-09", 1.0), ("2026-10-08", 2.0), ("2026-10-07", 3.0),
+                 ("2026-10-06", 4.0), ("2026-10-05", 5.0)]
+        second, _ = _build(rows=other, config=config)
+
+        self.assertEqual(config.read_var(sh.SMA_SECTION, "Date"), "2026-10-09")
+        self.assertAlmostEqual(second.get_sma()["D5"], first_d5,
+                               msg="start_date 未变时应读缓存、不重算")
+
+    def test_config_defaults_to_memory(self):
+        """默认配置是纯内存实现，不能碰文件系统。"""
+        instance, _ = _build()
+        self.assertIsInstance(instance.config, sh.ConfigSmaStore)
+        self.assertTrue(instance.config.snapshot())
+
+    def test_save_data_is_a_noop(self):
+        """``save_data()`` 保留是为了对齐 PHP 调用点，内存实现不该做任何事。"""
+        store = sh.ConfigSmaStore()
+        store.set_var("SMA", "D5", "1.0")
+        self.assertIsNone(store.save_data())
+        self.assertEqual(store.read_var("SMA", "D5"), "1.0")
+
+    def test_group_exists(self):
+        store = sh.ConfigSmaStore()
+        self.assertFalse(store.group_exists("SMA"))
+        store.set_var("SMA", "Date", "2026-10-09")
+        self.assertTrue(store.group_exists("SMA"))
+
+
+class NeedAfterHourEstTest(unittest.TestCase):
+    """``NeedAfterHourEst()`` —— 两个条件缺一不可。"""
+
+    def test_after_1520_with_stale_start_date(self):
+        import datetime
+
+        instance, _ = _build(now=datetime.datetime(2026, 10, 9, 15, 30))
+        self.assertTrue(instance.need_after_hour_est())
+
+    def test_before_1520_is_false(self):
+        import datetime
+
+        instance, _ = _build(now=datetime.datetime(2026, 10, 9, 15, 10))
+        self.assertFalse(instance.need_after_hour_est())
+
+    def test_boundary_is_1520_exclusive(self):
+        """``GetHourMinute() > 1520`` —— 15:20 整为假，15:21 为真。"""
+        import datetime
+
+        instance, _ = _build(now=datetime.datetime(2026, 10, 9, 15, 20))
+        self.assertFalse(instance.need_after_hour_est())
+        instance, _ = _build(now=datetime.datetime(2026, 10, 9, 15, 21))
+        self.assertTrue(instance.need_after_hour_est())
+
+    def test_start_date_equal_to_ref_date_is_false(self):
+        """起始日就是最新行情日 → 今天的数据已在序列里，不需要盘后补。"""
+        import datetime
+
+        instance, _ = _build(now=datetime.datetime(2026, 10, 9, 17, 0),
+                             date="2026-10-09")
+        self.assertEqual(instance.get_start_date(), "2026-10-09")
+        self.assertFalse(instance.need_after_hour_est())
+
+
+class AfterHourTest(unittest.TestCase):
+    """``after_hour=True`` 时的 ``_onTest()``。"""
+
+    def test_prepends_current_price(self):
+        """盘后估值要把**当天现价**并进序列再算。
+
+        现价 4.884 在时间上晚于全部历史，所以接在最前面 —— 这样 D5 是
+        "现价 + 最近 3 个历史"的均值（``avg-1 = 4`` 个）。
+
+        取 ``date="2026-10-10"`` 让"最新行情日"晚于起始日，
+        从而触发 ``NeedAfterHourEst()`` 的第二个条件。
+        """
+        import datetime
+
+        instance, _ = _build(after_hour=True, price="4.884", date="2026-10-10",
+                             now=datetime.datetime(2026, 10, 10, 16, 0))
+        self.assertTrue(instance.need_after_hour_est())
+        daily, _, _ = instance.get_day_week_month_data()
+        # 显式再取一次（_onTest 只在构造里跑），确认现价确实被并入
+        self.assertEqual(daily[0], 99.5, "未开 _prepend_price 时不含现价")
+        instance._prepend_price = True
+        try:
+            daily2, _, _ = instance.get_day_week_month_data()
+        finally:
+            instance._prepend_price = False
+        self.assertAlmostEqual(daily2[0], 4.884, msg="现价必须排在最前面")
+
+    def test_needs_after_hour_when_start_date_is_older(self):
+        import datetime
+
+        instance, _ = _build(after_hour=True, price="4.884", date="2026-10-10",
+                             now=datetime.datetime(2026, 10, 10, 16, 0))
+        self.assertTrue(instance.need_after_hour_est())
+        self.assertTrue(instance.after_hour_values.get("D5") is not None)
+
+    def test_after_hour_values_include_both_bollinger_bands(self):
+        import datetime
+
+        instance, _ = _build(after_hour=True, price="4.884", date="2026-10-10",
+                             now=datetime.datetime(2026, 10, 10, 16, 0))
+        for key in ("DBOLLUP", "DBOLLDN", "WBOLLUP", "MBOLLUP"):
+            self.assertIn(key, instance.after_hour_values)
+
+
+class BullBearTest(unittest.TestCase):
+    """``GetBullBear()``。"""
+
+    def test_bull_when_ema50_above_ema200(self):
+        instance, _ = _build(ema={"2026-10-09": 100.0})
+        # ema 表里 50 与 200 用同一份假数据不好区分，这里直接改字段
+        instance.sma["EMA50"] = 100.0
+        instance.sma["EMA200"] = 90.0
+        self.assertEqual(instance.get_bull_bear(), ("bull", "牛市"))
+
+    def test_bear_when_ema50_below_ema200(self):
+        instance, _ = _build()
+        instance.sma["EMA50"] = 80.0
+        instance.sma["EMA200"] = 95.0
+        self.assertEqual(instance.get_bull_bear(), ("bear", "熊市"))
+
+    def test_none_without_ema50(self):
+        instance, _ = _build()
+        instance.sma.pop("EMA50", None)
+        self.assertIsNone(instance.get_bull_bear())
+
+    def test_labels_are_chinese(self):
+        """文案是"牛市 / 熊市"，对应 PHP ``GetFontElement('牛市')``。"""
+        instance, _ = _build()
+        instance.sma["EMA50"] = 1.0
+        instance.sma["EMA200"] = 0.0
+        self.assertEqual(instance.get_bull_bear()[1], "牛市")
+
+
+class TimeZoneTest(unittest.TestCase):
+    """``market_now()`` —— 不动进程时区。"""
+
+    def test_localizes_to_market_time_zone(self):
+        """用 ``tzutil`` 折算，而不是 PHP 那样改进程默认时区。
+
+        ``stocksymbol.set_time_zone()`` 需要 ``time.tzset()``，Windows 上没有、
+        会直接抛错，所以本项目必须走这条显式折算的路。
+        """
+        import datetime
+
+        instance, _ = _build(now=datetime.datetime(2026, 10, 9, 17, 0),
+                             source_tz="America/New_York")
+        moment = instance.market_now()
+        self.assertIsNotNone(moment.tzinfo)
+
+    def test_naive_now_is_interpreted_as_market_local(self):
+        import datetime
+
+        instance, _ = _build(now=datetime.datetime(2026, 10, 9, 10, 0),
+                             source_tz="Asia/Shanghai")
+        self.assertEqual(instance.market_now().hour, 10)
+
+
+class ColorIntegrationTest(unittest.TestCase):
+    """``StockHistory`` 建完就应该有配色与纵轴标尺。"""
+
+    def test_colors_cover_every_sma_key(self):
+        instance, _ = _build(ema={"2026-10-09": 99.8})
+        self.assertEqual(set(instance.colors), set(instance.get_sma()))
+
+    def test_order_array_is_a_list_of_strings(self):
+        instance, _ = _build()
+        order = instance.get_order_array()
+        self.assertIsInstance(order, list)
+        for item in order:
+            self.assertIsInstance(item, str)
+
+    def test_get_color_returns_none_for_unknown_key(self):
+        instance, _ = _build()
+        self.assertIsNone(instance.get_color("NOT_A_KEY"))
+
+    def test_aliases(self):
+        instance, _ = _build()
+        self.assertEqual(instance.GetStartDate(), instance.get_start_date())
+        self.assertIs(instance.GetSMA(), instance.get_sma())
+        self.assertIs(instance.GetRef(), instance.stock_ref)
+
+
 if __name__ == "__main__":
     unittest.main()

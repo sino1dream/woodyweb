@@ -99,6 +99,18 @@ QUADRATICS = [
 #: 固定的"现在"，与 PHP 侧同一组
 FIXED_NOW = ["2026-10-09", "2026-10-11", "2026-10-31", "2026-11-01"]
 
+#: ``_ignoreCurrentTradingData`` 的"现在"（带时刻），与 PHP 侧同一组
+TRADING_NOW = [
+    "2026-10-09 10:00",     # 当天盘中
+    "2026-10-09 16:00",     # 边界：GetHour() == 16 → 仍算未收盘
+    "2026-10-09 16:59",     # 边界内最后一分钟
+    "2026-10-09 17:00",     # 收盘
+    "2026-10-09 23:30",
+    "2026-10-10 09:00",     # 次日
+]
+
+TRADING_DATES = ["2026-10-09", "2026-10-08", "2026-10-10"]
+
 SMA_SETS = {
     "daily_first": {
         "D5": "101.25", "D10": "99.5", "D20": "97.0",
@@ -162,6 +174,11 @@ def build_python_cases() -> dict:
             key = "[%d,%d]" % (now_index, date_index)
             cases["_isWeekEnd" + key] = sh.is_week_end(date_text, previous, now_text)
             cases["_isMonthEnd" + key] = sh.is_month_end(date_text, previous, now_text)
+
+    for now_index, now_text in enumerate(TRADING_NOW):
+        for date_index, date_text in enumerate(TRADING_DATES):
+            cases["_ignoreCurrentTradingData[%d,%d]" % (now_index, date_index)] = (
+                sh.ignore_current_trading_data(date_text, now_text))
 
     for name, sma in SMA_SETS.items():
         colors, order = sh.get_color_and_order_array(sma)
@@ -343,6 +360,39 @@ def selftest(reference: dict) -> int:
     print("  T+1 ：%s" % (next_bands,))
     if bands == next_bands:
         failures.append("两条布林式子结果相同 —— 很可能只迁了一式")
+
+    print("")
+    print("=== ⑤ 注入错误：把 _ignoreCurrentTradingData 的时间边界改成 15 点 ===")
+    original_trading = sh.is_stock_trading_hour_end
+
+    def wrong_trading(now):
+        # 故意错：应当是 hour <= 16
+        return sh._hour_of(now) > 15
+
+    sh.is_stock_trading_hour_end = wrong_trading
+    try:
+        broken3 = build_python_cases()
+    finally:
+        sh.is_stock_trading_hour_end = original_trading
+
+    caught3 = [key for key in reference
+               if key.startswith("_ignoreCurrentTradingData")
+               and not values_equal(reference[key], broken3.get(key))]
+    print("  抓到的用例数：%d" % len(caught3))
+    if not caught3:
+        failures.append("注入的时间边界错误没被抓到")
+    else:
+        print("  例：%s php=%r python=%r"
+              % (caught3[0], reference[caught3[0]], broken3[caught3[0]]))
+
+    print("")
+    print("=== ⑥ 收盘边界必须是 16:59 未收盘 / 17:00 收盘 ===")
+    at_1659 = sh.ignore_current_trading_data("2026-10-09", "2026-10-09 16:59")
+    at_1700 = sh.ignore_current_trading_data("2026-10-09", "2026-10-09 17:00")
+    print("  16:59 → ignore=%s（应为 True，还没收盘）" % at_1659)
+    print("  17:00 → ignore=%s（应为 False，已收盘）" % at_1700)
+    if not (at_1659 and not at_1700):
+        failures.append("收盘边界不对：应当 16:59 未收盘、17:00 收盘")
 
     print("")
     if failures:

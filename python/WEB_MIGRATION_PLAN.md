@@ -455,14 +455,33 @@ Flask 路由
   两条布林式子的差别是 `iAvg-1` vs `iAvg-2`、`factor` 的 `-4` vs `-8`、
   `sigma` 的 `/2` vs `/4` —— 抄错**不崩**，只是轨道慢慢偏，所以逐项对照。
 
-  对照：新增 `_php_sma_compare.py` + `_php_sma_check.php`，**436 例 0 意外差异**，
-  带 `--selftest`（注入 off-by-one 抓 20 例、注入 sigma 错误抓 5 例，
-  并断言两条布林式子结果必须不同）。
+  对照：新增 `_php_sma_compare.py` + `_php_sma_check.php`，**454 例 0 意外差异**，
+  带 `--selftest`（注入 off-by-one 抓 20 例、注入 sigma 错误抓 5 例、
+  注入收盘边界错误抓 2 例，并断言两条布林式子结果必须不同）。
 
   已知偏差：`GetNextTradingDayTick()` 走节假日表，本版简化为"下一个工作日"，
   仅节假日边界会差（180 个 `_isMonthEnd` 用例上没触发）。
 
-  测试：新增 `test_stockhistory.py` 46 例。全量 `auto` **774** / `web` **251**。
+  ⑦ **StockHistory 第二刀：查库与切片（2026-10-10）**：
+  `_calcStartDate`、`_ignoreCurrentTradingData`、`_getDayWeekMonthData`、
+  `_get_EMA`、`NeedAfterHourEst`、`_onTest` 全部落地。
+
+  ⚠️ **途中写错一处并被测试抓到**：`GetFromDate` 的判据是
+  ``date <= startDate``（`php/sql/sqldailyclose.php:41`），我第一版写成
+  ``date >= startDate`` —— 于是只返回一行，**所有均线退化成同一个价格且不报错**。
+  正确语义是"先算最新可用日期，再按它**往回**取 620 天"，
+  即 `start_date` 是**上界**。这条已加进对照（自检第 ⑤⑥ 项）。
+
+  另外 `IsStockTradingHourEnd()` 的边界是 `GetHour() <= 16` ——
+  **当地 16:59 仍算未收盘、17:00 才算**，不是 15:00 收盘价出来就算。
+
+  **配置改成可替换的内存实现**：PHP 的 `_configSMA()` 会
+  `$cfg->save_data()` 回写 INI，直译等于"渲染页面会写工作区文件"。
+  本版抽成 `ConfigSmaStore`，默认纯内存 —— 语义等价（缓存永不命中 = 永远重算，
+  结果相同），文件后端留待单独评审并发与测试隔离。
+
+  测试：`test_stockhistory.py` 从 46 例扩到 **85 例**。
+  全量 `auto` **813** / `web` **251**。
 
 远端分支 `origin/devin/1780933111-migrate-php-core-to-python` 已有  
 `python/core/stock_symbol.py` 和 `python/core/sina_fetcher.py`：

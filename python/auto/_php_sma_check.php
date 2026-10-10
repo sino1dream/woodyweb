@@ -34,6 +34,7 @@ $targets = array(
         '_estNextBollingerBands',
         '_isWeekEnd',
         '_isMonthEnd',
+        '_ignoreCurrentTradingData',
     ),
 );
 
@@ -99,16 +100,35 @@ $tmp = tempnam(sys_get_temp_dir(), 'sma') . '.php';
 file_put_contents($tmp, $header . implode("\n", $blocks) . "\n");
 require $tmp;
 
-// `GetNowYMD()` 会调 `$g_now_ymd->CheckTimeZone()`，而它只定义在切片范围外的
-// `NowYMD` 上。为了让"现在"可控（塞固定日期进去），子类补一个空实现 ——
-// 真实 `NowYMD::CheckTimeZone()` 的语义也只是"时区变了就刷新 localtime"。
-class FixedYMD extends StringYMD
+// `GetNowYMD()` 会调 `$g_now_ymd->CheckTimeZone()`，且
+// `_ignoreCurrentTradingData()` 会调 `$ymd->IsStockTradingHourEnd()` ——
+// 这两个方法都只定义在切片范围外的 `TickYMD` 上（真实的 `NowYMD` 就是
+// `extends TickYMD`，所以没问题）。这里照那个继承关系补一个固定时刻的类。
+class FixedYMD extends TickYMD
 {
+    public function __construct($strText)
+    {
+        // 接受 '2026-10-09' 或 '2026-10-09 16:30'
+        $parts = explode(' ', trim($strText));
+        $arYMD = explode('-', $parts[0]);
+        $hour = 0;
+        $minute = 0;
+        if (isset($parts[1]))
+        {
+            $arHM = explode(':', $parts[1]);
+            $hour = intval($arHM[0]);
+            $minute = isset($arHM[1]) ? intval($arHM[1]) : 0;
+        }
+        $iTick = mktime($hour, $minute, 0, intval($arYMD[1]), intval($arYMD[2]), intval($arYMD[0]));
+        parent::__construct($iTick);
+    }
+
     function CheckTimeZone() {}
 }
 
 foreach (array('_estSma', 'GetQuadraticEquationRoot', '_estBollingerBands',
-               '_estNextBollingerBands', '_isWeekEnd', '_isMonthEnd') as $needed)
+               '_estNextBollingerBands', '_isWeekEnd', '_isMonthEnd',
+               '_ignoreCurrentTradingData') as $needed)
 {
     if (!function_exists($needed)) { fwrite(STDERR, "$needed was not defined\n"); exit(3); }
 }
@@ -246,8 +266,29 @@ foreach ($fixedNow as $nowIndex => $nowText)
     }
 }
 
-// `_getColorAndOrderArray` 与 `MaxMin` 是类方法，这里用等价的独立函数复刻，
-// 逐个动作与 php/stockhis.php:174-205 / 504-548 对齐。
+// --- `_ignoreCurrentTradingData`：收盘前不能用今天的数据 ---------------------
+// 这一条单独对照是有原因的：它决定 `_calcStartDate()` 的返回值，而
+// `GetFromDate()` 是**按那个日期往回取**（`date <= start_date`）。
+// 早期把方向写成 `>=` 时只取回一行，所有均线退化成同一个价格且不报错。
+$nowCases = array(
+    '2026-10-09 10:00',     // 当天盘中
+    '2026-10-09 16:00',     // 边界：GetHour() == 16 → 仍算未收盘
+    '2026-10-09 16:59',     // 边界内最后一分钟
+    '2026-10-09 17:00',     // 收盘
+    '2026-10-09 23:30',
+    '2026-10-10 09:00',     // 次日
+);
+foreach ($nowCases as $nowIndex => $nowText)
+{
+    $GLOBALS['g_now_ymd'] = new FixedYMD($nowText);
+    foreach (array('2026-10-09', '2026-10-08', '2026-10-10') as $dateIndex => $dateText)
+    {
+        $out['_ignoreCurrentTradingData[' . $nowIndex . ',' . $dateIndex . ']']
+            = _ignoreCurrentTradingData($dateText) ? true : false;
+    }
+}
+
+// `_getColorAndOrderArray` 与 `MaxMin` 是类方法，这里用等价的独立函数复刻，// 逐个动作与 php/stockhis.php:174-205 / 504-548 对齐。
 class MaxMin
 {
     var $fMax;
