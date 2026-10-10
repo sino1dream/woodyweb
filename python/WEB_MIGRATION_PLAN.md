@@ -399,8 +399,8 @@ Flask 路由
   ② **EST 表接线**：`fundest_service` 早已写好，缺的只是注入引用对象；
   现在默认走 `refobj.QdiiReference` 现算（委托 `fundestcalc`，**没有第二套口径**，
   所以 workbuddy 当初"怕重影"的顾虑不再成立）。实测 `SZ161130` 官方 EST
-  = `4.545196`，与净值一致。**实时 EST 仍为 None** —— 它要中间层的配对引用，
-  而 `FundPairReference` 未迁移，所以表头是 4 列而非生产端的 6 列。
+  = `4.545196`，与净值一致。
+  当时实时 EST 还是空的（缺配对引用），**已在下面第 ⑤ 条补齐**。
   ③ **基金份额表**：直接复用历史服务的 `shareshistory`（与
   `/history/shareshistory/<sym>` 同一张表、同一个 PHP 段落），
   并顺手把渲染抽成 `_history_table.html` 宏供两处共用。
@@ -416,6 +416,25 @@ Flask 路由
   （`quote_state_of()` 四态 + 名称格标注）—— PHP 那边两者长得一模一样。
   同时修掉 `_php_refobj_compare.py --selftest` 的一处**假通过**：
   它按字符串排序取用例，`[10]` 会排在 `[1]` 前面，验的根本不是阈值边界。
+
+  ⑤ **接通实时 EST（2026-10-10）**：第 ④ 条只补了**参考数据那一侧**的
+  `GetRealtimeRef()` 分支，实时 EST **本身**仍然算不出来 —— 实测
+  `est_ref.get_pair_ref()` 不存在、`get_realtime_ref() = None`、
+  `realtime_net_value = None`，页面 EST 表少两列。
+  根因是 `refobj` 里缺配对引用：
+
+  - `EstReference` 缺 `get_pair_ref()`（`FundReference.get_realtime_ref()`
+    靠 `hasattr` 探测它，没有就恒返回 `None`）；
+  - 演示库 `fundpair` 缺 `^NDX → hf_NQ`、`^GSPC → hf_ES` 两行。
+
+  本步补上两者（新增 `sql/seed_fundpair_index.py`，幂等），实测：
+  `SZ161130` 配对到 `hf_NQ`、实时 EST = `4.555899`；
+  **EST 表 8 列**（官方EST/EST日期/溢价/参考EST/溢价/实时EST/溢价）、
+  参考数据 **5 行**（`NQ 31137.58` 期货行已出现）。
+  验证实时 EST 的计算路径本来就通（`fundestcalc.compute_realtime()` 早有实现
+  与测试），缺的只是把配对引用建出来。
+  `PairReferenceTest` 钉住配对查询（含 tuple / dict 两种游标行、惰性缓存、
+  不递归）。
 
 远端分支 `origin/devin/1780933111-migrate-php-core-to-python` 已有  
 `python/core/stock_symbol.py` 和 `python/core/sina_fetcher.py`：

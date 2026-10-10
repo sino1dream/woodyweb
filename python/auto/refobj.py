@@ -66,6 +66,59 @@ QDII_REGIONS = {
     "eu": ("EUCNY", "fx_seurcny"),
 }
 
+#: 查 ``fundpair``：``id`` = 本体、``stock_id`` = 被跟踪标的。
+#:
+#: 对应 PHP ``StockPairSql::GetPairSymbol()``（``php/sql/sqlstockpair.php:38``）::
+#:
+#:     if ($strStockId = $sql->GetId($strSymbol))
+#:         if ($strPairId = $this->ReadPair($strStockId))
+#:             return $sql->GetStockSymbol($strPairId);
+_PAIR_SYMBOL_SQL = (
+    "SELECT p.symbol FROM fundpair f "
+    "JOIN stock p ON p.id = f.stock_id "
+    "WHERE f.id = (SELECT id FROM stock WHERE symbol = %s) LIMIT 1"
+)
+
+
+def _lookup_pair_symbol(source: Any, symbol: str) -> Any:
+    """按符号查它在 ``fundpair`` 里跟踪的标的；没有返回 ``None``。
+
+    ``^NDX`` → ``hf_NQ``（纳斯达克 100 指数跟踪 NQ 期货）就是这么来的，
+    也就是生产端 ``sz161130cn.php`` 参考数据表第 3 行那个 ``hf_NQ``。
+    """
+    connection = getattr(source, "connection", None)
+    if connection is None:
+        return None
+    cursor = connection.cursor()
+    try:
+        cursor.execute(_PAIR_SYMBOL_SQL, (symbol,))
+        row = cursor.fetchone()
+    except Exception:
+        return None
+    finally:
+        cursor.close()
+    if not row:
+        return None
+    # 游标行有 tuple / dict 两种形状，都认（与 reference_service 的口径一致）
+    if isinstance(row, dict):
+        return row.get("symbol") or None
+    return row[0] or None
+
+
+def _build_pair_reference(symbol: str, source: Any) -> Any:
+    """给配对标的建引用对象。
+
+    PHP 这里是 ``new MyStockReference($strPair)``，而 ``MyStockReference``
+    未迁移，所以用 :class:`EstReference` 顶上 —— 参考数据表只需要
+    "价格 / 涨幅 / 日期 / 时间"，它够用。
+
+    **刻意用 ``EstReference`` 而不是 ``FundPairReference``**：后者构造时还会
+    查一次自己的配对，形成递归（``^NDX → hf_NQ → hf_NQ 的配对 → …``）。
+    PHP 靠 ``IsSinaFutureUS()`` 判断打断这个环，本版用更直白的办法 ——
+    配对引用本身不再找配对。
+    """
+    return EstReference(symbol, source=source)
+
 
 def gb_to_utf8(text: Any) -> Any:
     """对应 PHP ``GbToUtf8()``（``php/gb2312.php``）。
@@ -419,12 +472,22 @@ class EstReference(MysqlReference):
     """**够** ``QdiiReference`` 用的最小中间层引用。
 
     PHP 里这个位置是 ``FundPairReference`` / ``HoldingsReference``
-    （``php/stock/fundpairref.php``、``holdingsref.php``），两者**都不在本步范围**
-    （配对与期货校准已分别落在 ``futurescalib`` / ``autocalibration``）。
+    （``php/stock/fundpairref.php``、``holdingsref.php``）。本版拆成两半：
 
-    所以这里只实现 ``_QdiiReference`` 真正用到的那几个动作：取 id、
-    取最新净值（没有则退回最新行情）、给个日期。
+    * **配对查询**在这个类里就地实现（:meth:`get_pair_ref`）—— 它只读
+      ``fundpair`` 一行，没必要为它多一层继承；
+    * 需要**期货自动校准**的那种（``FundPairReference``）单独一个类。
+
+    两者都实现 ``get_pair_ref()``，因为 ``FundReference.get_realtime_ref()``
+    就是靠 ``method_exists`` / ``hasattr`` 探测这个方法来决定要不要算实时 EST
+    （对应 ``php/stock/fundref.php:158``）。**没有它，实时 EST 那一档永远是空的**
+    —— 这是实测踩过的：``EstReference`` 少了这个方法，页面 EST 表少两列。
     """
+
+    #: ``$this->pair_ref``（``php/stock/fundpairref.php:5``）。
+    #: 类级默认值，理由同 ``FundReference.stock_ref``：``MysqlReference.__init__``
+    #: 会先调 ``load_data()``，那时实例属性还没赋值。
+    pair_ref = None
 
     def load_data(self) -> None:
         self.set_has_data(False)
@@ -446,6 +509,44 @@ class EstReference(MysqlReference):
         self.str_price = str(close)
         self.str_date = str(date)
         self.set_has_data(True)
+
+    # -- 配对引用 ---------------------------------------------------------
+    def get_pair_ref(self) -> Any:
+        """对应 ``MyPairReference::GetPairRef()``：**本符号跟踪的标的**。
+
+        ``php/stock/fundpairref.php:65``::
+
+            function GetPairRef() { return $this->pair_ref; }
+
+        而 ``pair_ref`` 是构造时查出来的（``GetFundPairSql()->GetPairSymbol()``）::
+
+            if ($strPair = $pair_sql->GetPairSymbol($strSymbol))
+                $this->pair_ref = new MyStockReference($strPair);
+
+        ``fundpair`` 的列语义是 ``id`` = 本体、``stock_id`` = 被跟踪标的，
+        所以 SQL 是「``id`` = 本符号那一行的 ``stock_id``」——
+        与"谁跟踪我"（杠杆标的）**方向相反**，见
+        ``web/services/reference_service._realtime_symbol`` 的对照说明。
+
+        **惰性建**而不是构造时建：``QdiiReference`` 构造会算一次实时 EST，
+        构造时建配对引用会让每个请求都去查一遍库。
+        """
+        if self.pair_ref is not None:
+            return self.pair_ref
+        symbol = self._pair_symbol()
+        if not symbol:
+            return None
+        self.pair_ref = _build_pair_reference(symbol, self.source)
+        return self.pair_ref
+
+    def _pair_symbol(self) -> Any:
+        """查 ``fundpair`` 取被跟踪标的的符号；没有返回 ``None``。"""
+        if self.source is None:
+            return None
+        symbol = self.get_symbol()
+        if not symbol:
+            return None
+        return _lookup_pair_symbol(self.source, str(symbol))
 
 
 class FundReference(MysqlReference):

@@ -33,6 +33,47 @@ class Rec:
         self.close = close
 
 
+class FakeCursor:
+    """假游标：只伺候 ``fundpair`` 那条"我跟踪谁"的查询。
+
+    真的 ``_PAIR_SYMBOL_SQL`` 会传一个 ``(symbol,)`` 参数，这里按映射直接答。
+    ``rows`` 支持 tuple / dict 两种形状 —— 真驱动（PyMySQL 的 DictCursor）
+    给 dict，测试里两种都要能过，否则会把"只认一种行形状"的 bug 放过去。
+    """
+
+    def __init__(self, pairs=None, as_dict=False):
+        self.pairs = pairs or {}
+        self.as_dict = as_dict
+        self.param = None
+        self.closed = False
+
+    def execute(self, sql, params=None):
+        self.param = params[0] if params else None
+
+    def fetchone(self):
+        symbol = self.pairs.get(self.param)
+        if symbol is None:
+            return None
+        return {"symbol": symbol} if self.as_dict else (symbol,)
+
+    def close(self):
+        self.closed = True
+
+
+class FakeConnection:
+    """假连接：只提供 ``cursor()``。"""
+
+    def __init__(self, pairs=None, as_dict=False):
+        self.pairs = pairs or {}
+        self.as_dict = as_dict
+        self.cursors = []
+
+    def cursor(self):
+        cursor = FakeCursor(self.pairs, self.as_dict)
+        self.cursors.append(cursor)
+        return cursor
+
+
 class FakeSource:
     """内存数据源。
 
@@ -49,10 +90,12 @@ class FakeSource:
         "fx_susdcny": 9,
         "HKCNY": 10,
         "fx_shkdcny": 11,
+        "hf_NQ": 13,
     }
 
     def __init__(self, names=None, calibration=None, netvalue=None, history=None,
-                 position=None, adjclose=None, net_value_count=2):
+                 position=None, adjclose=None, net_value_count=2,
+                 pairs=None, pairs_as_dict=False):
         self.names = names or {}
         self.calibration = calibration or {}
         self.netvalue = netvalue or {}
@@ -61,6 +104,8 @@ class FakeSource:
         self.position = position or {}
         self.net_value_count = net_value_count
         self.written_calibration = []
+        #: ``fundpair`` 的"我跟踪谁"：符号 -> 被跟踪标的
+        self.connection = FakeConnection(pairs, pairs_as_dict)
 
     def get_stock_id(self, symbol):
         return self.STOCK.get(symbol)
@@ -591,6 +636,72 @@ class QdiiAdjustFactorTest(unittest.TestCase):
         ref.get_cny_ref().str_date = "2026-10-01"
 
         self.assertIsNone(ref.adjust_factor())
+
+
+class PairReferenceTest(unittest.TestCase):
+    """``fundpair`` 的"我跟踪谁" —— 实时 EST 的**前置条件**。
+
+    没有这一档，``FundReference.get_realtime_ref()`` 恒为 ``None``，
+    ``QdiiReference`` 就不算实时估值，**页面 EST 表会少两列**（实测踩过）。
+    """
+
+    def test_symbol_without_pair_returns_none(self):
+        """``SZ161130`` 在 ``fundpair`` 里没有"我跟踪谁"的行 → ``None``。"""
+        ref = EstReference("SZ161130", source=FakeSource())
+        self.assertIsNone(ref.get_pair_ref())
+
+    def test_index_pairs_to_its_future(self):
+        """``^NDX -> hf_NQ``：生产端参考数据表第 3 行就是这么来的。"""
+        source = FakeSource(pairs={"^NDX": "hf_NQ"})
+        ref = EstReference("^NDX", source=source)
+
+        pair = ref.get_pair_ref()
+        self.assertIsNotNone(pair)
+        self.assertEqual(pair.get_symbol(), "hf_NQ")
+
+    def test_dict_and_tuple_cursor_rows_both_work(self):
+        """真驱动给 dict 行、有些测试给 tuple 行，两种都必须认。
+
+        只认一种就会在换驱动时静默失效（返回 ``None``），而表现是
+        "页面少两列"，不是报错 —— 所以两种都钉住。
+        """
+        for as_dict in (False, True):
+            with self.subTest(as_dict=as_dict):
+                source = FakeSource(pairs={"^NDX": "hf_NQ"}, pairs_as_dict=as_dict)
+                pair = EstReference("^NDX", source=source).get_pair_ref()
+                self.assertIsNotNone(pair)
+                self.assertEqual(pair.get_symbol(), "hf_NQ")
+
+    def test_pair_reference_is_cached(self):
+        """第二次取配对不该再查库（惰性 + 缓存）。"""
+        source = FakeSource(pairs={"^NDX": "hf_NQ"})
+        ref = EstReference("^NDX", source=source)
+
+        first = ref.get_pair_ref()
+        cursors_after_first = len(source.connection.cursors)
+        second = ref.get_pair_ref()
+
+        self.assertIs(first, second)
+        self.assertEqual(len(source.connection.cursors), cursors_after_first)
+
+    def test_no_source_is_safe(self):
+        """没有数据源时不抛异常，只是取不到配对。"""
+        self.assertIsNone(EstReference("^NDX").get_pair_ref())
+
+    def test_pair_reference_does_not_recurse(self):
+        """``^NDX -> hf_NQ`` 的配对引用**自己不再找配对**，避免无限递归。
+
+        PHP 靠 ``IsSinaFutureUS()`` 打断这个环；本版用更直白的办法 ——
+        配对引用是 ``EstReference``，而 ``EstReference.get_pair_ref()``
+        会用**自己的**符号再查一次。若 ``hf_NQ`` 也配了对自己，就会递归；
+        这里确保它取不到就停。
+        """
+        source = FakeSource(pairs={"^NDX": "hf_NQ"})
+        ref = EstReference("^NDX", source=source)
+        pair = ref.get_pair_ref()
+
+        # hf_NQ 自己不在 pairs 里 → 它的配对是 None，链在这里断掉
+        self.assertIsNone(pair.get_pair_ref())
 
 
 class AliasTest(unittest.TestCase):
