@@ -393,6 +393,14 @@ Flask 路由
   以及一个被 `except` 吞掉的缺 import。
   详见 `python/auto/README_detail_page_sections.md`。
 
+  ④ **收尾一轮（2026-10-10）**：补上上面第 ① 条漏掉的 `GetRealtimeRef()`
+  那一档（`fundpair` 的反向读法，`_realtime_symbol()`），给零覆盖的
+  `_leverage_symbols()` 补了假 cursor 测试（连 tuple / dict 两种游标行都认），
+  并把参考表里「库里没有」与「没抓到行情」两种空行在页面上区分开
+  （`quote_state_of()` 四态 + 名称格标注）—— PHP 那边两者长得一模一样。
+  同时修掉 `_php_refobj_compare.py --selftest` 的一处**假通过**：
+  它按字符串排序取用例，`[10]` 会排在 `[1]` 前面，验的根本不是阈值边界。
+
 远端分支 `origin/devin/1780933111-migrate-php-core-to-python` 已有  
 `python/core/stock_symbol.py` 和 `python/core/sina_fetcher.py`：
 
@@ -407,7 +415,7 @@ Flask 路由
 ```powershell
 cd F:\woody\woodyweb\python
 python -B -m unittest discover -s auto -p "test_*.py"        # 694 个
-python -B -m unittest discover -s web\tests -p "test_*.py"   # 148 个
+python -B -m unittest discover -s web\tests -p "test_*.py"   # 168 个
 ```
 
 注意：Web 层测试需要 Flask 与 PyMySQL，当前只装在系统 Python 3.7 上。  

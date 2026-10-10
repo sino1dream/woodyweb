@@ -283,13 +283,28 @@ EchoTableColumn($ar, false, $strFirstHint);   // 名称降级成首格的 title 
 所以"别人有实时估值、自己没有"时，那一行会**少两格**，后面的单元格整体左移。
 本版照抄并暴露 `cell_count`，`RowLengthTest` 里放了"参考估值会补齐"的对照组。
 
-**这一档刻意没有接线到生产页面**，这是本轮最重要的一处"不做"：
+**~~这一档刻意没有接线到生产页面~~ —— 已于 2026-10-10 推翻**，见下：
 
-三档估值必须由 `refobj.QdiiReference` 配 `fundestcalc` 的 estimator 填。
-基金详情页现在只有一个 `PalmmicroFundCalculator.est_net_value()` 的结果，
-把它硬塞进「官方EST」列就是**又造一条 EST 口径** —— 上一次两条口径并存的后果
-是 SZ161130 的官方 EST 从 4.59 变成 20245 且页面不报错。
-所以只留 `create_app(fundest_refs_builder=...)` 注入口，等 estimator 接线那一步。
+> 原文：三档估值必须由 `refobj.QdiiReference` 配 `fundestcalc` 的 estimator 填。
+> 基金详情页现在只有一个 `PalmmicroFundCalculator.est_net_value()` 的结果，
+> 把它硬塞进「官方EST」列就是**又造一条 EST 口径** —— 上一次两条口径并存的
+> 后果是 SZ161130 的官方 EST 从 4.59 变成 20245 且页面不报错。
+> 所以只留 `create_app(fundest_refs_builder=...)` 注入口，等 estimator 接线那一步。
+
+后来实际接线了（见 `README_detail_page_sections.md`），原因是**重算了这笔账**：
+当初担心的"两条口径并存"，成因是 `_qdii_value()` 写死取实时快照 —— 那是
+`fundestcalc` 内部的 bug，已经连同估值守卫一起修掉。修完之后 `fundestcalc`
+就是唯一实现，详情页直接调它不会分化出口径，反而少一处
+"文档说支持、代码不支持"的落差。
+
+接线方式保留两条：
+
+* 显式注入 `create_app(fundest_refs_builder=...)` —— 测试与离线用；
+* 不注入时走 `_build_qdii_refs()`，用 `refobj.QdiiReference` 现算三档。
+
+**仍然没做的那一档**：实时 EST。它要 `GetRealtimeRef()` 的配对引用
+（`MyPairReference` 未迁移），所以恒为 `None`；按 PHP 的行为这一行会少两格
+（PHP 那边也只有 `if`、没有 `else` 补空）。
 
 ### 顺带抽出 `_data_table.html` 宏
 
@@ -315,8 +330,11 @@ EchoTableColumn($ar, false, $strFirstHint);   // 名称降级成首格的 title 
 5. **`GetArbitrageQuantity()` 未迁**（服务 porfolio 域，`GetStockHedge()` 未迁移）。
 6. **`RefEchoTableColumn()` 的 `title` 只实现了参考数据表那一条路径**
    （`$bWide` 时 PHP 传 `false`，不挂 tooltip）。
-7. **估值表（`fundest`）默认不接线到生产页面**：需要显式注入
-   `fundest_refs_builder`。原因见"第二轮"那一节 —— 避免造出第二条 EST 口径。
+7. **~~估值表（`fundest`）默认不接线到生产页面~~（已过期，2026-10-10）**：
+   现在不注入 `fundest_refs_builder` 也能渲染（走 `_build_qdii_refs`），
+   推翻过程见"第二轮"那一节。**仍然没做的是实时 EST 那一档**：
+   它依赖未迁移的 `MyPairReference`，恒为 `None`。
+   真做这档之前要把这行记录也一并改掉 —— 它现在是唯一还在说"不接线"的地方。
 8. **配对表（`ah`）的 ref 数据源未迁**：`MyPairReference` 缺失时行会退化成
    只有首格（宽屏时加行情五格），与 PHP 里"配对标的缺失"的表现一致，但**数据不全**。
 9. **`pricepool` 的 `transpose` 是真转置**，与 PHP 同名参数（只换标签）不同；

@@ -138,14 +138,23 @@ GetSinaFundLink()   -> get_sina_fund_link()
 没有"真数据源 → 引用对象 → 表格"这条链，所以"整张表是空的"能一路绿灯溜过去。
 
 全量：`auto` **689 个**、`web` **144 个**（P0 之前是 661 / 140）。
+2026-10-10 收尾一轮后测得 `auto` **694** / `web` **168**。
 
 ## 八、已知偏差与后续
 
-1. **只接了基金的外链**（`GetSinaFundLink`）。股票/外汇/美股那几条
-   （`GetSinaStockLink` / `GetSinaForexLink` / `GetSinaUsStockLink`）未迁，
-   非基金符号会退回纯符号文本；
-2. **详情页缺三样生产端有的东西**：估值标的与汇率两个引用对象
-   （PHP 的详情页参考表有三行，本版只有基金自己一行）、
-   多个 EST 表（官方/参考/实时 EST 与溢价）、基金份额表；
+1. **~~只接了基金的外链~~（已过期，2026-10-10）**：本 P0 落地的同时补上了
+   `auto/externallink.py`，现在有 `GetSinaStockLink` / `GetSinaFundLink` /
+   `GetSinaUsStockLink` / `GetSinaFutureLink` / `GetSinaForexLink` /
+   `GetForexMiddleLink` 六条，`MysqlReference._build_external_link()` 按符号
+   类型分发（一张参考表会把基金、A 股、港股、美股指数、外汇混在一起，
+   只认基金是不够的）。**仍然没迁**：雪球、东财、CME 那几条，以及
+   `php/ui/htmlelement.php` 的其余部分 —— 那是刻意的范围取舍，不是遗漏；
+2. **~~详情页缺三样生产端有的东西~~ —— 这条已于 2026-10-10 结掉三样中的两样**：
+   参考数据表的标的清单（`reference_symbols_for_fund`）与 EST 估值表
+   （`_build_fundest`）都已接线（见 `README_detail_page_sections.md`）。
+   仍缺的是**实时 EST 那一档** —— 它要 `GetRealtimeRef()` 的配对引用，
+   而 `MyPairReference` 未迁移，所以恒为 `None`；
+   基金份额表也已经补上（复用 `shareshistory`）。
+   剩下没做的只有第 3 条的联网兜底接线；
 3. **联网兜底没有接进路由**。`refresh_quotes()` 已就绪，但页面目前
    只用快照；接进去要同时决定"什么时候允许联网"（建议仅登录用户或限流）。

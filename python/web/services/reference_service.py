@@ -71,6 +71,62 @@ REFERENCE_NAME_WIDTH = 270
 #: 这里只保留文本，倾斜与灰色交给 CSS。
 REFERENCE_SESSION_COLOR = "gray"
 
+# -- 一行「为什么没有数据」的状态 ----------------------------------------
+#
+# PHP **完全没有这个区分** —— ``GetStockReferenceArray()`` 的 else 分支统一输出
+# 四个空串，页面上「stock 表里没这个符号」和「表里有、但快照没抓到」长得一模一样。
+# 演示库实测两边各有一个活样本：
+#
+#   ``^NDX``    stock 表有（id=6），``realtimequote`` 没有它 → 抓取进程没覆盖到
+#   ``USDCNY``  stock 表里压根没有（符号来自 fundcalc 的地区配置）
+#
+# 前者是运维问题（后台抓取没跑到），后者是符号配置与库不一致。都写成一排空格会
+# 让人以为是数据丢了，所以本版在「名称」那格标出来。
+
+#: 有行情，正常渲染
+REFERENCE_STATE_OK = "ok"
+#: 库里有这个符号，但没抓到行情快照
+REFERENCE_STATE_NO_QUOTE = "no-quote"
+#: 库里没有这个符号
+REFERENCE_STATE_NO_SYMBOL = "no-symbol"
+#: 问不到（没给数据源，或查询抛异常）—— 不敢下结论，只说"没行情"
+REFERENCE_STATE_UNKNOWN = "unknown"
+
+#: 没数据时挂在「名称」格上的说明文字（灰色）
+REFERENCE_STATE_NOTES = {
+    REFERENCE_STATE_NO_QUOTE: "无行情快照",
+    REFERENCE_STATE_NO_SYMBOL: "库里无此符号",
+    REFERENCE_STATE_UNKNOWN: "无行情",
+}
+
+
+def quote_state_of(source: Any, ref: Any) -> str:
+    """判定这一行为什么没有数据，返回 :data:`REFERENCE_STATE_*` 之一。"""
+    if ref_has_data(ref):
+        return REFERENCE_STATE_OK
+
+    # MysqlReference 构造时已经存过 stock_id；有值就说明库里有这一行
+    if getattr(ref, "stock_id", None):
+        return REFERENCE_STATE_NO_QUOTE
+
+    getter = getattr(source, "get_stock_id", None)
+    if getter is None:
+        # 没有数据源可问（纯离线测试），不下结论
+        return REFERENCE_STATE_UNKNOWN
+    try:
+        known = bool(getter(ref.get_symbol()))
+    except Exception:
+        return REFERENCE_STATE_UNKNOWN
+    return REFERENCE_STATE_NO_QUOTE if known else REFERENCE_STATE_NO_SYMBOL
+
+
+def _named_note(name: str, note: str) -> str:
+    """把说明挂在名称后面；连名称都没有时就只显示说明。
+
+    写出来是这样两种：``纳斯达克100指数（无行情快照）`` / ``库里无此符号``。
+    """
+    return "%s（%s）" % (name, note) if name else note
+
 
 def percentage_cell(text: Any) -> tuple:
     """把涨跌幅文本转成 ``(文本, 颜色)`` 单元格。
@@ -235,9 +291,13 @@ class ReferenceService:
             row.add(cell)
 
         name = self._name_of(ref)
+        note = self._note_of(ref)
         if description:
             row.title = name
             row.add((_cell(description), REFERENCE_SESSION_COLOR))
+        elif note:
+            # 中间四格全是空格，唯一的解释机会就是「名称」这一格
+            row.add((_named_note(name, note), REFERENCE_SESSION_COLOR))
         else:
             row.add(name)
 
@@ -248,6 +308,13 @@ class ReferenceService:
     def _name_of(self, ref: Any) -> str:
         """转调 :func:`stock_name_of`。"""
         return stock_name_of(self.source, ref)
+
+    def _note_of(self, ref: Any) -> str:
+        """没数据时挂在名称格上的说明；有行情时返回空串。"""
+        state = quote_state_of(self.source, ref)
+        if state == REFERENCE_STATE_OK:
+            return ""
+        return REFERENCE_STATE_NOTES.get(state, REFERENCE_STATE_NOTES[REFERENCE_STATE_UNKNOWN])
 
     @staticmethod
     def _session_of(ref: Any) -> str:
@@ -275,6 +342,7 @@ def reference_symbols_for_fund(symbol: str, source: Any = None) -> list:
             $leverage_ref = new FundPairReference($strSymbol);
             $this->ar_leverage_ref[] = $leverage_ref;
         }
+        $this->CreateGroup(array_merge($arRef, $this->ar_leverage_ref));
 
     生产端 ``sz161130cn.php`` 的参考数据表实测长这样（8 行）::
 
@@ -287,12 +355,16 @@ def reference_symbols_for_fund(symbol: str, source: Any = None) -> list:
         USDCNY    即期外汇
         USCNY     中间价
 
+    实时标的与杠杆标的都在 ``fundpair`` 这一张表上，但读法方向相反，
+    对照说明见 :func:`_realtime_symbol`。
+
     ## 本版的取舍：**有什么放什么**
 
-    缺的符号直接跳过，不补空行 —— 摆一行全空的数据比少一行更容易被误读成
-    "抓取挂了"。所以本演示库里只会出现有 `stock` 行的那些标的。
+    缺的符号仍然进列表（不像以前那样先查一遍 stock 表再跳过），因为"这个符号
+    应该存在但库里没有"本身就是一条诊断信息 —— 由
+    :func:`quote_state_of` 在页面上标成「库里无此符号」，比悄悄少一行更诚实。
 
-    顺序按生产端：基金 → 估值标的 → 杠杆标的 → 外汇 → 中间价。
+    顺序按生产端：基金 → 估值标的 → 实时标的 → 杠杆标的 → 外汇 → 中间价。
     """
     symbols = [symbol]
     if source is None:
@@ -300,6 +372,7 @@ def reference_symbols_for_fund(symbol: str, source: Any = None) -> list:
 
     est_symbol, forex_symbol, cny_symbol = _fund_reference_symbols(symbol, source)
     _append(symbols, est_symbol)
+    _append(symbols, _realtime_symbol(est_symbol, source))
     for leverage in _leverage_symbols(est_symbol, source):
         _append(symbols, leverage)
     _append(symbols, forex_symbol)
@@ -348,31 +421,119 @@ def _fund_reference_symbols(symbol: str, source: Any) -> tuple:
     return est_symbol, forex_symbol, cny_symbol
 
 
-def _leverage_symbols(est_symbol: Any, source: Any) -> list:
-    """查 ``fundpair``：跟踪同一个估值标的的**杠杆/替代 ETF**。
+#: 「谁跟踪我」：``fundpair`` 里 ``stock_id`` = 估值标的的那些行的 ``id``。
+#: 对应 ``GetFundPairSql()->GetSymbolArray($strEstSymbol)``
+#: （``php/sql/sqlstockpair.php:8``，注意它最后 ``sort($arSymbol)``）。
+_LEVERAGE_SQL = (
+    "SELECT s.symbol FROM fundpair f JOIN stock s ON s.id = f.id "
+    "WHERE f.stock_id = (SELECT id FROM stock WHERE symbol = %s) "
+    "ORDER BY s.symbol"
+)
 
-    对应 PHP ``GetFundPairSql()->GetSymbolArray($strEstSymbol)`` ——
-    ``fundpair`` 的列语义是 ``id`` = 本体、``stock_id`` = 跟踪标的，
-    所以"跟踪 ``^NDX`` 的 ETF"就是 ``WHERE stock_id = ^NDX``，取那些 ``id``。
+#: 「我跟踪谁」：``fundpair`` 里 ``id`` = 估值标的那一行的 ``stock_id``。
+#: 对应 ``GetFundPairSql()->GetPairSymbol($strSymbol)``
+#: （``php/sql/sqlstockpair.php:38``）。
+_PAIR_SYMBOL_SQL = (
+    "SELECT s.symbol FROM fundpair f JOIN stock s ON s.id = f.stock_id "
+    "WHERE f.id = (SELECT id FROM stock WHERE symbol = %s) LIMIT 1"
+)
+
+
+def _fundpair_query(source: Any, sql: str, params: tuple) -> list:
+    """在 ``fundpair`` 上跑一条单列查询，返回符号字符串列表。
+
+    抽出来是因为「实时标的」与「杠杆标的」读的是同一张表、同一个方向相反的坑，
+    只留一处游标样板更容易保证两边一致。
+
+    **这里为什么用兜底 return []**：``fundpair`` 在演示库里只有 3 行、且很多
+    分支查不到东西，而这张表的作用只是"参考数据里多几行"。查不出来不该让整个
+    详情页挂掉 —— PHP 那边 ``SqlGetStockSymbol()`` 查不到也只是返回 ``false``。
     """
-    if not est_symbol:
-        return []
     connection = getattr(source, "connection", None)
     if connection is None:
         return []
     cursor = connection.cursor()
     try:
-        cursor.execute(
-            "SELECT s.symbol FROM fundpair f JOIN stock s ON s.id = f.id "
-            "WHERE f.stock_id = (SELECT id FROM stock WHERE symbol = %s) "
-            "ORDER BY s.symbol",
-            (str(est_symbol),),
-        )
-        return [str(row["symbol"]) for row in cursor.fetchall() if row["symbol"]]
+        cursor.execute(sql, params)
+        rows = cursor.fetchall()
     except Exception:
         return []
     finally:
         cursor.close()
+
+    symbols = []
+    for row in rows:
+        symbol = _row_symbol(row)
+        if symbol:
+            symbols.append(symbol)
+    return symbols
+
+
+def _row_symbol(row: Any) -> str:
+    """从一行里取第一个字段。
+
+    pymysql 的 ``DictCursor`` 返回 dict，普通 cursor 返回 tuple，两种都得认 ——
+    只认一种的话换个游标类型就会**静默全变空**，比直接报错还难查。
+    """
+    try:
+        value = row["symbol"] if isinstance(row, dict) else row[0]
+    except (KeyError, IndexError, TypeError):
+        return ""
+    return str(value) if value else ""
+
+
+def _realtime_symbol(est_symbol: Any, source: Any) -> Any:
+    """实时标的（通常是境外期货）。对应 ``php/stock/fundref.php:158``。
+
+    PHP 那句很短，但套了两层：
+
+    .. code-block:: php
+
+        function GetRealtimeRef() {
+            return method_exists($this->est_ref, 'GetPairRef') ? $this->est_ref->GetPairRef() : false;
+        }
+
+    ``est_ref`` 是 ``MyPairReference``（``php/stock/fundpairref.php:6``），
+    它在**构造时**就去查配对表：
+
+    .. code-block:: php
+
+        if ($strPair = $pair_sql->GetPairSymbol($strSymbol))
+            $this->pair_ref = new MyStockReference($strPair);
+
+    而 ``GetPairSymbol()`` 落到 SQL 上就是「``fundpair`` 里 ``id`` = 该符号
+    那一行的 ``stock_id``」。
+
+    ## 与 :func:`_leverage_symbols` 的方向正好相反
+
+    同一张表、两种读法：
+
+    * 杠杆标的 —— **谁跟踪我**（``stock_id = 估值标的`` 的那些 ``id``）；
+    * 实时标的 —— **我跟踪谁**（``id = 估值标的`` 的那个 ``stock_id``）。
+
+    搞反了就会把"跟踪这个指数的 ETF"当成"这个指数跟踪的期货"，页面照样出得来、
+    只是数据全错（``php/sql/sqlpair.php`` 的 ``ReadPair`` / ``GetIdArray``
+    分别对应这两条 SQL，可以对照着看）。
+
+    生产端 ``SZ161130`` 参考表第 3 行的 ``hf_NQ`` 就是这么来的 ——
+    ``^NDX`` 配对到纳斯达克 100 期货。演示库的 ``fundpair`` 里没有
+    ``id = ^NDX`` 的行，所以实时标的取不到，这一档暂时是空的。
+    """
+    if not est_symbol:
+        return None
+    found = _fundpair_query(source, _PAIR_SYMBOL_SQL, (str(est_symbol),))
+    return found[0] if found else None
+
+
+def _leverage_symbols(est_symbol: Any, source: Any) -> list:
+    """查 ``fundpair``：跟踪同一个估值标的的**杠杆/替代 ETF**。
+
+    对应 PHP ``GetFundPairSql()->GetSymbolArray($strEstSymbol)``。
+    列语义见 :func:`_realtime_symbol` 里那段对照 —— 这边是"谁跟踪我"。
+    """
+    if not est_symbol:
+        return []
+    return _fundpair_query(source, _LEVERAGE_SQL, (str(est_symbol),))
 
 
 def build_stock_references(symbols: Iterable[str], quote_loader: Any = None,

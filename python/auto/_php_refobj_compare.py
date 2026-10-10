@@ -195,6 +195,25 @@ def values_equal(php_value, py_value, tolerance: float = 1e-9) -> bool:
     return left == right
 
 
+def _php_float(value) -> float:
+    """把一个 PHP 返回值当数字读；异常串（``#ERR:…``）或非数字算 0。
+
+    ``string`` 也能进 PHP 的返回值（``strval(0.0)`` 给 ``'0'``），
+    所以这里先走 ``float()`` 再兜异常。
+    """
+    if isinstance(value, bool):
+        return 0.0
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = value if isinstance(value, str) else ""
+    if text.startswith(ERR_PREFIX):
+        return 0.0
+    try:
+        return float(text)
+    except ValueError:
+        return 0.0
+
+
 def call(func, *args):
     """统一调用入口：异常归一成 ``'#ERR:<类名>'``，与 PHP 侧同构。"""
     try:
@@ -344,10 +363,25 @@ def selftest(reference: dict) -> int:
 
     print("")
     print("=== ④ 边界：MIN_FLOAT_VAL 两侧必须被区分 ===")
-    percent_keys = [k for k in sorted(reference) if k.startswith("StockGetPercentage")]
-    first_three = [reference[k] for k in percent_keys[:3]]
-    print("  前三个百分比用例的 PHP 值：%s" % first_three)
-    if len(set(str(v) for v in first_three)) == 1:
+    # **按数值序号取用例，不能用 sorted(reference)**
+    #
+    # 键名是 ``StockGetPercentage[10]`` 这种带方括号的字符串，而
+    # ``'0' < ']'``（48 < 93），所以字典序里 ``[10]`` 排在 ``[1]`` **前面**。
+    # 原先写 ``sorted(reference)[:3]`` 拿到的其实是 case 0 / 10 / 11
+    # （``(4e-7,1.0)`` / ``(1.0,2.0)`` / ``(-1.0,2.0)``），跟阈值毫无关系 ——
+    # 这条自检一直通过，仅仅因为那三个值碰巧互不相同。
+    boundary = [reference["StockGetPercentage[%d]" % index] for index in (0, 1, 2)]
+    labels = ("4e-7 (阈值下)", "5e-7 (恰等阈值)", "6e-7 (阈值上)")
+    for label, value in zip(labels, boundary):
+        print("  %-18s -> %s" % (label, value))
+
+    # 真正的判据是 ``abs($divisor) > MIN_FLOAT_VAL``：写成 ``>=`` 的话
+    # case 1 就不再返回 0。所以这里直接钉住"恰等阈值 = 0、刚刚超过 ≠ 0"。
+    if _php_float(boundary[1]) != 0.0:
+        failures.append("恰等于阈值时 PHP 应返回 0（`>` 而非 `>=`），实际 %s" % boundary[1])
+    if _php_float(boundary[2]) == 0.0:
+        failures.append("刚超过阈值时 PHP 应算出百分比，实际还是 0")
+    if len(set(str(v) for v in boundary)) == 1:
         failures.append("阈值两侧的用例结果相同，说明用例集没有区分度")
 
     print("")
