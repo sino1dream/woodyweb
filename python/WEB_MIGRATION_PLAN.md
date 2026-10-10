@@ -436,6 +436,34 @@ Flask 路由
   `PairReferenceTest` 钉住配对查询（含 tuple / dict 两种游标行、惰性缓存、
   不递归）。
 
+  ⑥ **StockHistory 数值核心（2026-10-10，第一刀）**：`php/stockhis.php` 586 行里
+  **纯算数**的那部分 —— `_estSma`、`GetQuadraticEquationRoot`、
+  `_estBollingerBands`、`_estNextBollingerBands`、`_isWeekEnd`、`_isMonthEnd`、
+  `MaxMin`、`_getColorAndOrderArray`，落在 `python/auto/stockhistory.py`。
+
+  分刀的理由：`StockHistory` 的构造同时做"算数 / 查库 / **回写配置文件** / 渲染"
+  四件事，第 3 件有外部可见副作用，不能和纯数值混在一起迁。
+
+  三个必须照抄的地方（都已在 `README_stockhistory_migration.md` 记明）：
+
+  - **数组是最新在前**（`ORDER BY date DESC`），`_estSma` 取的是**开头**那几个；
+  - **`_estSma` 的元素个数与除数都是 `avg - 1`** —— `est_sma(x, 5)` 是最近
+    **4** 个的均值。看着像 off-by-one，改掉会让所有均线偏移；
+  - **`GetDayOfWeek()` 是 `date('w')`**（周日 = 0 … 周六 = 6），不是 ISO 的
+    1-7；`_isWeekEnd`/`_isMonthEnd` 的比较依赖它，换成 `weekday()` 会静默错一天。
+
+  两条布林式子的差别是 `iAvg-1` vs `iAvg-2`、`factor` 的 `-4` vs `-8`、
+  `sigma` 的 `/2` vs `/4` —— 抄错**不崩**，只是轨道慢慢偏，所以逐项对照。
+
+  对照：新增 `_php_sma_compare.py` + `_php_sma_check.php`，**436 例 0 意外差异**，
+  带 `--selftest`（注入 off-by-one 抓 20 例、注入 sigma 错误抓 5 例，
+  并断言两条布林式子结果必须不同）。
+
+  已知偏差：`GetNextTradingDayTick()` 走节假日表，本版简化为"下一个工作日"，
+  仅节假日边界会差（180 个 `_isMonthEnd` 用例上没触发）。
+
+  测试：新增 `test_stockhistory.py` 46 例。全量 `auto` **774** / `web` **251**。
+
 远端分支 `origin/devin/1780933111-migrate-php-core-to-python` 已有  
 `python/core/stock_symbol.py` 和 `python/core/sina_fetcher.py`：
 
@@ -449,7 +477,7 @@ Flask 路由
 
 ```powershell
 cd F:\woody\woodyweb\python
-python -B -m unittest discover -s auto -p "test_*.py"        # 722 个
+python -B -m unittest discover -s auto -p "test_*.py"        # 774 个
 python -B -m unittest discover -s web\tests -p "test_*.py"   # 251 个
 ```
 
@@ -465,6 +493,8 @@ python -B _php_port_compare.py        # stocksymbol，6280 个用例
 python -B _php_numfmt_compare.py      # 数字/时间格式化，87 个用例
 python -B _php_prefetch_compare.py    # 预取判定，26800 个用例
 python -B _php_refobj_compare.py      # refobj 纯数学，98 个用例
+python -B _php_sma_compare.py         # StockHistory 数值核心，436 个用例
 python -B _php_refobj_compare.py --selftest   # 自检：证明对照抓得到注入的错误
+python -B _php_sma_compare.py --selftest      # 同上（含"两条布林式子必须不同"）
 python -B _php_rtrim0_fuzz.py 2000    # rtrim0 随机模糊
 ```
