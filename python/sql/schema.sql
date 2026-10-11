@@ -109,6 +109,34 @@ CREATE TABLE IF NOT EXISTS `calibrationhistory` (
 ) ENGINE=MyISAM DEFAULT CHARSET=utf8 COLLATE=utf8_unicode_ci;
 
 -- ---------------------------------------------------------------------------
+-- 期货理论溢价：DailyCloseSql('futurepremium')（php/sql/sqldailyclose.php:270）
+--
+-- 这是 ``smaparagraph`` 的 ``EchoFutureSmaParagraph()`` 要用的一张表
+-- （``php/ui/smaparagraph.php:192``）。它存的是**年化利率的百分点**：
+--
+-- .. code-block:: php
+--
+--     $fRate = floatval($strClose) / 100.0;     // 5.00625 → 0.0500625
+--     return 1.0 + $fRate * $iDay / 365.0;
+--
+-- 即"离交割还有几天，按这个年化利率算下来该有多少溢价"。
+-- 一个符号一行（``GetCloseNow`` / ``GetDateNow`` 都取**最近一条**），
+-- 所以这里跟 ``fundest`` 一样只建索引，不做历史归档。
+--
+-- 列结构与 ``fundest`` 一致（DailyCloseSql 的建表是同一套），
+-- 没有 ``time`` 列 —— 利率一天一个值，时刻没有意义。
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `futurepremium` (
+  `id` int(10) unsigned NOT NULL AUTO_INCREMENT,
+  `stock_id` int(10) unsigned NOT NULL,
+  `date` date NOT NULL,
+  `close` double(13,6) NOT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `date` (`date`,`stock_id`),
+  KEY `stock_id` (`stock_id`)
+) ENGINE=MyISAM DEFAULT CHARSET=utf8 COLLATE=utf8_unicode_ci;
+
+-- ---------------------------------------------------------------------------
 -- 估值缓存：DailyTimeSql('fundest')，比 calibrationhistory 少一个 num 列
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS `fundest` (

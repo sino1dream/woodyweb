@@ -66,6 +66,7 @@ def _render_fund(symbol: str, group: str):
         fundest=_build_fundest(symbol),
         reference=_build_reference(symbol),
         shares=_build_shares(symbol),
+        sma=_build_sma(symbol),
     )
 
 
@@ -188,6 +189,65 @@ def _build_shares(symbol: str) -> dict[str, Any] | None:
     except Exception:
         return None
     return table if table.get("rows") else None
+
+
+def _build_sma(symbol: str) -> dict[str, Any] | None:
+    """基金详情页的「均线」表（``php/ui/smaparagraph.php``）。
+
+    ## 用哪个入口：``EchoQdiiSmaParagraph`` 还是 ``EchoFutureSmaParagraph``
+
+    ``woody/res/php/_qdiigroup.php`` 里两个都调了（第 97 与第 103 行）：
+
+    .. code-block:: php
+
+        EchoQdiiSmaParagraph($ref);          // 中间层标的的均线 + 基金估值对照列
+        ...
+        EchoFutureSmaParagraph($ref);        // 有期货溢价时再加一张"理论价"表
+
+    所以本版**两张都要建**，放进一个 dict 交给模板：
+
+    * ``qdii`` —— 中间层（``^NDX``）的均线，回调列是基金自己的估值；
+    * ``future`` —— 同一批均线，但回调列换算成**期货理论价**
+      （要 ``futurepremium`` 表里有利率才出得来）。
+
+    ## 取不到数据就整段跳过
+
+    ``SmaService`` 在两种情况下返回 ``None``：建不出 ``StockHistory``、
+    或**所有均线都是 0**（后者是刻意偏离 PHP 的守卫，见
+    :func:`~web.services.sma_service._has_any_level`）。
+    演示库里 ``^NDX`` 一行历史都没有，所以这两张表现在都是不显示的 ——
+    那正是守卫要的效果，比摆一张全 0 的表强。
+    """
+    service = _get_sma_service()
+    if service is None:
+        return None
+    refs = _get_sma_refs(symbol)
+    if not refs:
+        return None
+    ref = refs[0]
+    source = getattr(_get_reference_service(), "source", None)
+    try:
+        future = service.future_table(ref, source=source)
+    except Exception:
+        future = None
+    return {"qdii": service.qdii_table(ref), "future": future}
+
+
+def _get_sma_service():
+    factory = current_app.extensions.get("sma_service_factory")
+    return None if factory is None else factory()
+
+
+def _get_sma_refs(symbol: str) -> list:
+    """建中间层引用对象；``sma_refs_builder`` 是给测试用的注入口。
+
+    与 :func:`_get_trading_refs` 同款做法：默认走真实数据库，测试里由
+    ``create_app(sma_refs_builder=...)`` 顶替，这样均线接线也能**不连库**验证。
+    """
+    builder = current_app.extensions.get("sma_refs_builder")
+    if builder is not None:
+        return builder([symbol])
+    return _build_qdii_refs([symbol])
 
 
 def _get_history_service():

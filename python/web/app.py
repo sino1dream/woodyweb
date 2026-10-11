@@ -34,6 +34,7 @@ from web.services.history_service import (
 from web.services.fundest_service import FundEstService, default_fundest_service_factory
 from web.services.reference_service import ReferenceService, default_reference_service_factory
 from web.services.status_service import default_status_service_factory
+from web.services.sma_service import SmaService, default_sma_service_factory
 from web.services.stock_service import StockService, default_stock_service_factory
 from web.services.trading_service import TradingService, default_trading_service_factory
 
@@ -59,6 +60,9 @@ def create_app(
     trading_service_factory: Any = None,
     trading_refs_builder: Any = None,
     stock_service_factory: Any = None,
+    sma_service_factory: Any = None,
+    sma_history_factory: Any = None,
+    sma_refs_builder: Any = None,
 ) -> Flask:
     """创建 Flask 应用，允许测试注入服务工厂。"""
     app = Flask(__name__)
@@ -116,6 +120,17 @@ def create_app(
     app.extensions["stock_service_factory"] = (
         stock_service_factory or default_stock_service_factory
     )
+
+    # 均线表（php/ui/smaparagraph.php）。数值来自 auto/stockhistory.py，
+    # 本服务只负责摆表。可注入 sma_service_factory 整块替换（测试用假
+    # StockHistory 就走这个口子）。
+    app.extensions["sma_service_factory"] = (
+        sma_service_factory or default_sma_service_factory
+    )
+    if sma_history_factory is not None:
+        app.extensions["sma_history_factory"] = sma_history_factory
+    if sma_refs_builder is not None:
+        app.extensions["sma_refs_builder"] = sma_refs_builder
 
     init_app(app)
     register_blueprints(app)

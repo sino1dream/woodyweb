@@ -12,7 +12,7 @@
 | 2 | **查库与切片** —— 起点、日/周/月三套序列 | `_calcStartDate`、`_ignoreCurrentTradingData`、`_getDayWeekMonthData`、`NeedAfterHourEst`、`_onTest` | ✅ 第二刀 |
 | 2b | **EMA** —— 查 `stockema50/200` | `_get_EMA` | ✅ 第二刀 |
 | 3 | **配置** —— 缓存 SMA 结果 | `_configSMA` → INIFile | 🟡 接口已建，**默认内存**，文件后端待评审 |
-| 4 | **渲染** —— 表格与回调 | `php/ui/smaparagraph.php`（225 行） | ⛔ 未做 |
+| 4 | **渲染** —— 表格与回调 | `php/ui/smaparagraph.php`（225 行） | ✅ 已完成，见 `README_sma_paragraph_migration.md` |
 
 第 3 件单独隔出来的理由：PHP 的 `_configSMA()` 会 `$cfg->save_data()`
 **回写配置文件**——直译过来就是"渲染一个页面会写工作区文件"：
@@ -361,6 +361,9 @@ python -B _php_sma_compare.py --selftest   # 证明它抓得到注入的错误
 3. 测试里怎么避免污染工作区（临时目录？还是干脆永远用内存？）。
 
 **第 4 刀 —— `smaparagraph.php`**（225 行）：纯渲染（列头 + 回调）。
-到这一步要处理的是 `_callbackQdiiSma` / `_callbackFundPairSma` /
-`_callbackAhPairSma` / `_callbackFutureSma` 四个回调，以及
-`EchoFutureSmaParagraph` 里的期货理论溢价（走 `futurepremium` 表）。
+`_callbackQdiiSma` / `_callbackFundPairSma` / `_callbackAhPairSma` /
+`_callbackFutureSma` 四个回调，以及 `EchoFutureSmaParagraph` 里的期货理论溢价
+（走 `futurepremium` 表）—— **已做完**，落在
+`python/web/services/sma_service.py`、`python/auto/pairestimate.py`、
+`python/auto/futurepremium.py`，记录见
+`python/auto/README_sma_paragraph_migration.md`。

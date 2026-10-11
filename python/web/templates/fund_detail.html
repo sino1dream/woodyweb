@@ -20,6 +20,23 @@
      列头的颜色、单元格的颜色都是数据，不再像 PHP 那样 echo <font color>。
      首格在 PHP 里恒为 GetExternalLink() / GetStockLink() 产出的 <a> 标签，
      所以 first_cell_is_html=True 只对这两张表打开。 #}
+  {# 均线表（php/ui/smaparagraph.php）。两张表的行是一样的，差别在回调列：
+     qdii 那张的回调列是基金自己的估值，future 那张换算成期货理论价。
+     数值全部由 auto/stockhistory.py 算好，这里只渲染。 #}
+  {% if sma and sma.qdii %}
+    <h2>均线</h2>
+    {% if sma.qdii.memo and sma.qdii.memo.start_date %}
+      <p class="table-note">{{ sma.qdii.memo.start_date }}数据{% if sma.qdii.memo.bull_bear %}
+        <strong>{{ sma.qdii.memo.bull_bear }}</strong>{% endif %}</p>
+    {% endif %}
+    {{ data_table(sma.qdii, "sma-table") }}
+  {% endif %}
+  {% if sma and sma.future %}
+    {% if not (sma.qdii) %}<h2>均线</h2>{% endif %}
+    <p class="table-note">{{ sma.future.premium_text }}</p>
+    {{ data_table(sma.future, "sma-future-table") }}
+  {% endif %}
+
   {% if trading %}
     <h2>五档交易</h2>
     <p class="table-note">{{ trading.title }}{% if trading.rotation_link %}

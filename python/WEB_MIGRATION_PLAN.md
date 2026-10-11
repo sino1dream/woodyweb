@@ -144,8 +144,13 @@ Flask 路由
    到 `/fund/<symbol>`）。**第 2 轮**：`pricepoolparagraph` → `auto/pricepool.py`、  
    `ahparagraph` → `web/services/pair_service.py`、`fundestparagraph` →  
    `web/services/fundest_service.py`，并抽出 `web/templates/_data_table.html` 宏。  
-   **仍未迁**：`tradingparagraph`、`stockparagraph`、`smaparagraph`、  
-   `portfolioparagraph`、`stockgroup` / `fundpurchase` / `transaction` / `comment`。
+   **第 3 轮**：`tradingparagraph` → `web/services/trading_service.py`、
+   `stockparagraph` → `web/services/stock_service.py`（含五档盘口进快照表）。
+   **第 4 轮**：`smaparagraph` → `web/services/sma_service.py`，外加两个
+   支撑模块 `auto/pairestimate.py`（配对双向估算）与
+   `auto/futurepremium.py`（期货理论溢价，走 `futurepremium` 表）。  
+   **仍未迁**：`portfolioparagraph`、`stockgroup` / `fundpurchase` /
+   `transaction` / `comment`。
 5. `php/layout.php`、`php/menu.php`、`php/stocklink.php`：站点布局和导航。
 
 第 1、2、3 步已经落地：
@@ -483,6 +488,47 @@ Flask 路由
   测试：`test_stockhistory.py` 从 46 例扩到 **85 例**。
   全量 `auto` **813** / `web` **251**。
 
+  ⑧ **均线段落 `smaparagraph.php`（2026-10-11，第 4 刀）**：225 行里的
+  四个回调（`_callbackQdiiSma` / `_callbackFundPairSma` / `_callbackAhPairSma` /
+  `_callbackFutureSma`）与 `EchoFutureSmaParagraph` 的期货理论溢价全部落地，
+  落在 `web/services/sma_service.py` + `auto/pairestimate.py` +
+  `auto/futurepremium.py`。详见 `python/auto/README_sma_paragraph_migration.md`。
+
+  分三个模块而不是一个的理由：段落里塞了两类**不属于渲染**的东西 ——
+  配对双向估算（`EstFromPair`/`EstToPair`，`MyPairReference` 那一档还没迁）
+  和期货溢价（带时区副作用与 `futurepremium` 读表）。`pairestimate` 特意做成
+  **自由函数 + 鸭子类型**，这样 `MyPairReference` 落地时 `sma_service` 不用改。
+
+  四个必须照抄的点：
+
+  - **`memo` 用 `is False` 严格判断**：PHP 是 `if ($str === false)`，所以
+    `EchoFundPairSmaParagraphs()` 传进来的**空串不会被默认 memo 顶掉** ——
+    那决定了一组配对标的并排展示时只有第一张表带标题；
+  - **列数组里第 3 与第 5 列是同一个 `TableColumnPremium` 实例**，
+    列头因此长得一样。看着像笔误，去重就与生产端不一致；
+  - **没有 T+1 时 `else` 分支显式补两个 `''`** —— 行是变长的，
+    少追加一格会让整行错位；
+  - **又一次遇到 `'0'` 假值**（`_getSmaCallbackPriceDisplay`），
+    一律走 `_php_truthy()`；值是 0 时**那一格照样要画出来**。
+
+  期货溢价三处不照抄：`date_default_timezone_set()` 是**不恢复的**全局副作用
+  （改成显式折算到美东）；天数差是"零点对零点"、跨夏令时是 **68.0417 天**
+  而不是整 68；`round()` 在 PHP 是四舍五入、Python 是银行家舍入，
+  所以走 `futurepremium.php_round()`。
+
+  ⚠️ **一处有意偏离 PHP**：PHP 遇到"没有历史数据"时会摆一整张**全是 0** 的
+  均线表（`_calcStartDate()` 拿不到日期，后面一串 `_estSma()` 全算出 0）。
+  演示库 `^NDX` 一行历史都没有、`stockema50/200` 两张表也是空的，
+  所以加了一道守卫：全部档位都是 PHP 假值时**整段跳过**。
+  没有为此"造 200 天假历史"——`sql/_clean_seed_history.py` 确立的约定是
+  合成值一旦显示就会被误当成真实历史。
+
+  对照：新增 `_php_pairest_compare.py`（13 例）与
+  `_php_futurepremium_compare.py`（13 例），都带 `--selftest`。
+  测试：`test_pairestimate.py` 15 例、`test_futurepremium.py` 21 例、
+  `test_sma.py` 31 例、`test_sma_route.py` 5 例。
+  全量 `auto` **849** / `web` **287**。
+
 远端分支 `origin/devin/1780933111-migrate-php-core-to-python` 已有  
 `python/core/stock_symbol.py` 和 `python/core/sina_fetcher.py`：
 
@@ -496,8 +542,8 @@ Flask 路由
 
 ```powershell
 cd F:\woody\woodyweb\python
-python -B -m unittest discover -s auto -p "test_*.py"        # 774 个
-python -B -m unittest discover -s web\tests -p "test_*.py"   # 251 个
+python -B -m unittest discover -s auto -p "test_*.py"        # 849 个
+python -B -m unittest discover -s web\tests -p "test_*.py"   # 287 个
 ```
 
 注意：Web 层测试需要 Flask 与 PyMySQL，当前只装在系统 Python 3.7 上。  
@@ -513,6 +559,8 @@ python -B _php_numfmt_compare.py      # 数字/时间格式化，87 个用例
 python -B _php_prefetch_compare.py    # 预取判定，26800 个用例
 python -B _php_refobj_compare.py      # refobj 纯数学，98 个用例
 python -B _php_sma_compare.py         # StockHistory 数值核心，436 个用例
+python -B _php_pairest_compare.py     # 配对双向估算，13 个用例
+python -B _php_futurepremium_compare.py   # 期货理论溢价，13 个用例
 python -B _php_refobj_compare.py --selftest   # 自检：证明对照抓得到注入的错误
 python -B _php_sma_compare.py --selftest      # 同上（含"两条布林式子必须不同"）
 python -B _php_rtrim0_fuzz.py 2000    # rtrim0 随机模糊
