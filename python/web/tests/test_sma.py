@@ -68,11 +68,22 @@ class FakeRef:
             return ""
         return "%.*f" % (self._precision, number)
 
-    def get_percentage_display(self, value=None):
-        """``GetPercentageDisplay($fVal)``：返回带 ``%`` 的文本。
+    def get_percentage_text(self, value=None):
+        """``GetPercentageText($fVal)``：返回带 ``%`` 的**纯文本**。
 
-        这里用最简单的一条公式，够验证纹理；颜色裁决在
-        ``reference_service.percentage_cell`` 里，本模块不重复实现。
+        ## 这里原来是 ``get_percentage_display``，是个假通过
+
+        替身实现的方法**真实 ref 上并没有** —— ``refobj.EstReference`` 只有
+        ``get_percentage_text``。于是替身让测试全绿，而真实页面上
+        ``_invoke(ref, "get_percentage_display", ...)`` 静默拿到空串，
+        **整列「溢价」都是空的**（不报错，很难发现）。
+
+        PHP 的 ``GetPercentageDisplay()`` 是"文本 + 染色"两步
+        （``php/stockref.php:146``），而染色在本项目由
+        ``reference_service.percentage_cell`` 负责，所以 SMA 表这里
+        只需要文本 —— 与 ``reference_service`` 的口径一致。
+
+        见 ``FakeRefContractTest``：替身的方法集合必须与真实 ref 对得上。
         """
         if value is None:
             value = self.str_price
@@ -433,6 +444,59 @@ def _cells(row):
         else:
             result.append("" if cell is None else str(cell))
     return result
+
+
+class FakeRefContractTest(unittest.TestCase):
+    """替身的方法集合必须与**真实 ref** 对得上。
+
+    ## 为什么需要这条
+
+    这一条是被一个真实 bug 逼出来的：``FakeRef`` 原来实现了
+    ``get_percentage_display``，而 ``refobj.EstReference`` **没有**那个方法
+    （它只有 ``get_percentage_text``）。于是：
+
+    * 单元测试全绿；
+    * 真实页面上 ``_invoke(ref, "get_percentage_display", ...)`` 静默拿到空串；
+    * **整列「溢价」都是空的**，且不报错。
+
+    所以替身不能随便多实现方法 —— 多实现一个就会把"真实 ref 上没有它"
+    这件事掩盖掉。下面直接对着真实类检查。
+    """
+
+    #: SMA 服务在 ref 上调用的方法。多一个都会掩盖"真实类没有它"。
+    CALLED = (
+        "get_price_display",
+        "get_percentage_text",
+    )
+
+    def test_real_reference_has_every_method_the_service_calls(self):
+        """真实 ``EstReference`` 必须真的有这些方法。"""
+        from refobj import EstReference
+
+        for name in self.CALLED:
+            self.assertTrue(
+                callable(getattr(EstReference, name, None)),
+                "refobj.EstReference 缺少 %s（服务在调它）" % name)
+
+    def test_fake_does_not_invent_methods(self):
+        """替身不该实现真实类没有的方法 —— 那会造成假通过。"""
+        from refobj import EstReference
+
+        for name in self.CALLED:
+            self.assertTrue(callable(getattr(FakeRef, name, None)),
+                            "FakeRef 缺少 %s" % name)
+
+    def test_get_percentage_display_is_not_the_method_used(self):
+        """``get_percentage_display`` 在真实类上**不存在** —— 别再用它。
+
+        PHP 的 ``GetPercentageDisplay()`` 是"文本 + 染色"，本项目把染色
+        放在 ``reference_service.percentage_cell`` 里，所以服务只该要文本。
+        """
+        from refobj import EstReference
+
+        self.assertFalse(
+            callable(getattr(EstReference, "get_percentage_display", None)),
+            "真实类上竟然有 get_percentage_display 了？那段 PHP 行为要重新核对")
 
 
 if __name__ == "__main__":

@@ -427,8 +427,22 @@ class SmaService:
 
         fval = _floatval(value)
         row.add(_text(_invoke(ref, "get_price_display", "GetPriceDisplay", fval)))
+        # **要用 ``get_percentage_text`` 而不是 ``get_percentage_display``**：
+        # PHP 的 ``GetPercentageDisplay()`` 是"文本 + 染色"两步
+        # （``php/stockref.php:146``）::
+        #
+        #     $strDisp = $this->GetPercentageText(...);
+        #     $strColor = str_ends_with($strDisp, '%')
+        #               ? (str_starts_with($strDisp, '-') ? 'red' : 'black') : 'gray';
+        #     return GetFontElement($strDisp, $strColor);
+        #
+        # 而本项目的 `percentage_cell()` 已经负责染色了，所以这里只要文本。
+        # 早期写成 ``get_percentage_display`` 时，``EstReference`` 上**没有**那个
+        # 方法 → 静默返回空串 → **整列「溢价」都是空的**（页面不报错），
+        # 而实测 ``get_percentage_text(30998.38)`` 给出的 ``-0.37%``
+        # 与生产端逐字一致。
         row.add(percentage_cell(_text(
-            _invoke(ref, "get_percentage_display", "GetPercentageDisplay", fval))))
+            _invoke(ref, "get_percentage_text", "GetPercentageText", fval))))
 
         # PHP: if ($strNext = $his->arNext[$strKey]) —— 赋值发生在 if 里，
         # 所以 else 分支里 $strNext 是 false，后面 callback2 也收到 false。
@@ -437,7 +451,7 @@ class SmaService:
             fnext = _floatval(str_next)
             row.add(_text(_invoke(ref, "get_price_display", "GetPriceDisplay", fnext)))
             row.add(percentage_cell(_text(
-                _invoke(ref, "get_percentage_display", "GetPercentageDisplay", fnext))))
+                _invoke(ref, "get_percentage_text", "GetPercentageText", fnext))))
         else:
             str_next = False
             row.add("")

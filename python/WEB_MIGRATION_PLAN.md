@@ -564,6 +564,57 @@ Flask 路由
   测试：`test_smaconfig.py` 26 例、`test_sma_route.py` 新增 7 例。
   全量 `auto` **877** / `web` **294**。
 
+  ⑩ **指数历史种子（2026-10-11）**：SMA 表代码早就完成，但**页面上一�直看不到**。
+  根因是数据**自锁**：daemon 的 `collect_symbols_from_source()` 从
+  `stockhistory` **反推**要抓哪些符号，所以"没有历史 → 进不了抓取集合 →
+  永远没有历史"。而 `^NDX` 正是 QDII 的**估值标的**
+  （`EchoQdiiSmaParagraph()` 用的就是它）。
+
+  新增 `auto/indexhistory.py`（新浪美股日线 jsonp 接口）+
+  `sql/seed_index_history.py`（幂等），给 `^NDX` / `^GSPC` 各补 **800 天**历史
+  （2023-08-03 ~ 2026-10-09），并顺带算 `EMA50` / `EMA200` ——
+  `GetBullBear()` 是**直接查** `stockema*` 表的，不是算出来的，那两张表原来
+  是空的，所以页面上不会出现"牛市/熊市"。
+
+  数据来源可核：新浪 `^NDX 2026-10-09 = 30883.15` 与生产端参考数据表
+  **逐字一致**；`QQQ 2026-10-08 = 747.58` 与生产端 `QQQnetvalueclosetable`
+  也一致。Yahoo 已全面 403（`navsource.py` 记过）；东财 `push2his` 指数接口
+  也能用，但新浪这条与生产端同源，优先用。
+
+  **原计划的第一步"改代码加指数白名单"实际不需要做** —— 种子一种下去，
+  daemon 就自动把两个指数收进抓取集合（10 个符号）。这比维护一份白名单更好：
+  机制本身自持续。
+
+  ⚠️ **途中修掉一个真 bug**：`SmaService._row()` 调用
+  `ref.get_percentage_display()`，而 `refobj.EstReference` **没有那个方法**
+  （它只有 `get_percentage_text`）→ `_invoke` 静默返回空串 →
+  **整列「溢价」都是空的**，页面不报错。PHP 的 `GetPercentageDisplay()`
+  是"文本 + 染色"两步（`php/stockref.php:146`），而染色在本项目由
+  `reference_service.percentage_cell()` 负责，所以 SMA 表只要文本。
+
+  **这个 bug 测试抓不到**：`test_sma.py` 的 `FakeRef` 多实现了一个真实类上
+  没有的方法，造成典型的"替身假通过"。已补 `FakeRefContractTest` ——
+  直接对着 `refobj.EstReference` 检查"服务调用的每个方法它都有"，并显式断言
+  `get_percentage_display` **不该**存在。
+
+  验收（对照生产端 `sz161130cn.php`）：
+
+  ```
+  参考数据 ^NDX 行   30883.15 / 0.51% / 17:16     与生产端逐字一致
+  均线表  5日        30998.38 / -0.37%            生产端 30998.43 / -0.37%
+  均线表  20日       30376.32 / 1.67%             生产端 30376.34 / 1.67%
+  均线表  牛熊分界   27925.8  / 10.59%            生产端 27926.18 / 10.59%
+  顶部「牛市」       有
+  页面体积           21 KB → 55 KB
+  ```
+
+  参考数据表从 4 行 → **7 行**（多了有价的 `^NDX`）。
+
+  遗留：`TQQQ` 行仍空（它自己没有 `stockhistory`，同 `^NDX` 的解法）；
+  `USDCNH`/`USDCNY` 行仍空（库里即期符号是 `fx_susdcny`，属"符号口径"
+  问题，要先决定参考表显示哪个）。详见
+  `python/auto/README_index_history_seed.md`。
+
 远端分支 `origin/devin/1780933111-migrate-php-core-to-python` 已有  
 `python/core/stock_symbol.py` 和 `python/core/sina_fetcher.py`：
 
@@ -578,7 +629,7 @@ Flask 路由
 ```powershell
 cd F:\woody\woodyweb\python
 python -B -m unittest discover -s auto -p "test_*.py"        # 877 个
-python -B -m unittest discover -s web\tests -p "test_*.py"   # 294 个
+python -B -m unittest discover -s web\tests -p "test_*.py"   # 297 个
 ```
 
 注意：Web 层测试需要 Flask 与 PyMySQL，当前只装在系统 Python 3.7 上。  
