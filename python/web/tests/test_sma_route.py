@@ -12,9 +12,15 @@
 2. 期货那张表的**理论溢价**说明文字出现在页面上 —— 那是
    ``EchoFutureSmaParagraph`` 独有的，走 ``futurepremium`` 表；
 3. 没有历史数据时整段跳过，页面上不出现空表。
+
+``SmaConfigBackendTest`` 另钉一件事：**配置后端默认不落盘**
+（``auto/smaconfig.py``，那三节设计取舍的开关就在这一处）。
 """
 
+import os
+import shutil
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -168,6 +174,152 @@ class FundDetailSmaRouteTest(unittest.TestCase):
         html = app.test_client().get("/fund/SZ162411").get_data(as_text=True)
 
         self.assertNotIn("sma-table", html)
+
+
+class SmaConfigBackendTest(unittest.TestCase):
+    """配置存放处的开关：**不开就不落盘**（``auto/smaconfig.py``）。
+
+    PHP 的 ``_configSMA()`` 每次都 ``save_data()`` 回写工作区文件。直译过来
+    就是"渲染一个页面写一次磁盘"，所以本版把它做成显式开关，默认关闭。
+    这里钉的是**开关本身**，文件读写的细节在 ``auto/test_smaconfig.py``。
+    """
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="sma-route-cfg-")
+        self.addCleanup(shutil.rmtree, self.root, True)
+        self._saved = os.environ.get("PALMMICRO_SMA_CACHE_DIR")
+        self.addCleanup(self._restore)
+        os.environ.pop("PALMMICRO_SMA_CACHE_DIR", None)
+
+    def _restore(self):
+        if self._saved is None:
+            os.environ.pop("PALMMICRO_SMA_CACHE_DIR", None)
+        else:
+            os.environ["PALMMICRO_SMA_CACHE_DIR"] = self._saved
+
+    def test_default_factory_uses_memory(self):
+        """没设目录 → 内存实现，一个字节都不写。"""
+        from web.services.sma_service import default_sma_service_factory
+
+        service = default_sma_service_factory()
+        store = service._config_factory("^NDX")
+        self.assertEqual(type(store).__name__, "ConfigSmaStore")
+        self.assertFalse(hasattr(store, "path"), "内存实现不该有路径")
+
+    def test_default_factory_uses_files_once_the_dir_is_set(self):
+        """设了 ``PALMMICRO_SMA_CACHE_DIR`` → 走文件后端，路径按 PHP 的规则拼。"""
+        from web.services.sma_service import default_sma_service_factory
+
+        os.environ["PALMMICRO_SMA_CACHE_DIR"] = self.root
+        service = default_sma_service_factory()
+        store = service._config_factory("^NDX")
+
+        self.assertEqual(type(store).__name__, "ConfigSmaFileStore")
+        self.assertEqual(store.path,
+                         os.path.join(self.root, "config", "_ndx.txt"))
+
+    def test_the_switch_is_read_per_request_not_at_import_time(self):
+        """环境变量每次构造才读 —— 改了不用重启进程，测试也能来回切。"""
+        from web.services.sma_service import default_sma_service_factory
+
+        service = default_sma_service_factory()
+        self.assertEqual(type(service._config_factory("^NDX")).__name__,
+                         "ConfigSmaStore")
+
+        os.environ["PALMMICRO_SMA_CACHE_DIR"] = self.root
+        self.assertEqual(type(service._config_factory("^NDX")).__name__,
+                         "ConfigSmaFileStore")
+
+    def test_config_reaches_stockhistory(self):
+        """``SmaService`` 把存放处交给 ``StockHistory`` —— 接线别断在半路。"""
+        import smaconfig
+        from web.services import sma_service as module
+        from web.services.sma_service import SmaService
+
+        factory = smaconfig.file_store_factory(self.root)
+        service = SmaService(config_factory=factory)
+
+        seen = {}
+        original = module.StockHistory
+
+        def recorder(ref, after_hour=False, config=None, **kwargs):
+            seen["config"] = config
+            return original(ref, after_hour=after_hour, config=config, **kwargs)
+
+        module.StockHistory = recorder
+        try:
+            service._build_history(FakeQdiiRef())
+        finally:
+            module.StockHistory = original
+
+        self.assertIsNotNone(seen.get("config"))
+        self.assertEqual(seen["config"].path,
+                         os.path.join(self.root, "config", "_ndx.txt"))
+
+    def test_custom_history_factory_owns_the_config(self):
+        """注入了 ``history_factory`` 时服务**不再插手** config —— 构造归调用方。"""
+        import smaconfig
+        from web.services import sma_service as module
+        from web.services.sma_service import SmaService
+
+        service = SmaService(history_factory=lambda ref, wide: FakeHistory(
+            sma=make_sma(), ref=FakeQdiiRef()),
+            config_factory=smaconfig.file_store_factory(self.root))
+
+        seen = {}
+        original = module.StockHistory
+
+        def recorder(*args, **kwargs):
+            seen["called"] = True
+            return original(*args, **kwargs)
+
+        module.StockHistory = recorder
+        try:
+            service._build_history(FakeQdiiRef())
+        finally:
+            module.StockHistory = original
+
+        self.assertNotIn("called", seen, "自定义工厂接管后不该再造 StockHistory")
+
+    def test_broken_config_factory_falls_back_to_memory(self):
+        """找存放处失败不该让整段 500 —— 退回内存即可。"""
+        from web.services.sma_service import SmaService
+
+        def boom(ref):
+            raise RuntimeError("磁盘满了")
+
+        service = SmaService(config_factory=boom)
+        self.assertIsNone(service._config_of(FakeQdiiRef()))
+
+    def test_rendering_the_page_writes_nothing(self):
+        """端到端：默认配置下渲染一整页，**临时目录里一个文件都没有**。
+
+        这条是给"将来有人顺手把 root 默认值改成 CWD"准备的警报。
+        刻意把 CWD 也切到临时目录 —— 那样一来无论猜哪个目录都会留下痕迹。
+        """
+        from web.app import create_app
+        from web.services.fund_service import FundService
+        from web.services.sma_service import SmaService
+        from web.tests.test_web import make_source
+
+        app = create_app(
+            {"TESTING": True},
+            fund_service_factory=lambda: FundService(make_source()),
+            sma_service_factory=lambda: SmaService(
+                history_factory=lambda ref, wide: FakeHistory(
+                    sma=make_sma(), ref=FakeQdiiRef())),
+            sma_refs_builder=lambda symbols: [FakeQdiiRef()],
+        )
+
+        cwd = os.getcwd()
+        os.chdir(self.root)
+        try:
+            html = app.test_client().get("/fund/SZ162411").get_data(as_text=True)
+        finally:
+            os.chdir(cwd)
+
+        self.assertIn("sma-table", html, "先确认确实渲染了均线表")
+        self.assertEqual(os.listdir(self.root), [])
 
 
 if __name__ == "__main__":

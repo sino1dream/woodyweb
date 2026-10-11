@@ -529,6 +529,41 @@ Flask 路由
   `test_sma.py` 31 例、`test_sma_route.py` 5 例。
   全量 `auto` **849** / `web` **287**。
 
+  ⑨ **SMA 缓存的文件后端（2026-10-11，单独评审）**：`php/class/ini_file.php`
+  的 `INIFile` + `php/stockhis.php:365 _configSMA()`。第二刀已把配置换成
+  可替换的接口、**默认纯内存**；本刀回答当初挂着的三个问题：
+
+  1. **路径从哪来** —— `MyStockReference` 看着是依赖，其实只贡献一个
+     `strConfigName`，而它是 `GetSymbol()` 的**纯函数**，Python 侧早已算好
+     同一条规则，不用等那一档迁完。真正缺的是 `root`（PHP 用
+     `$_SERVER['DOCUMENT_ROOT']`，常驻进程里没有）→ 改成显式输入，
+     拿不到就退回内存；
+  2. **并发写** —— PHP 自己就是 `fopen($f,'w')` 无锁。坏结果有两种：
+     "读到半个文件"用**原子替换**（同目录临时文件 + `os.replace`）治掉；
+     "丢更新"**不治**，因为内容是 `(symbol, start_date)` 的纯函数，
+     最坏只是多算一遍，写错数据不可能，不值得背 `fcntl`/`msvcrt` 两套 API；
+  3. **测试隔离** —— 默认内存 + 临时目录 + **绝不拿 CWD 当 root**（有测试把
+     CWD 切到临时目录再渲染，断言事后是空的）。
+
+  新增模块 `python/auto/smaconfig.py`（`stockhistory.py` 被
+  `ModuleIsImportCleanTest` 钉着不许出现 `open(`，落盘只能单列）。
+  文件格式与 PHP 互通，`[段]\n键=值\n`，**保留未知段**。
+
+  两处新增的偏离：PHP 的 `save_data()` 用 `for(reset($g); $key=key($g);
+  next($g))` 遍历，**碰到 falsy 键名就停**（会写出空文件），不复制；
+  `parse_data()` 只取 `explode('=')[1]`（值里带 `=` 会被截断），原样保留。
+  另外真库验证时发现：无历史时 PHP 会写 `Date=` + 一串 0，且下次 `'' == ''`
+  判定**命中** —— 演示库 `^NDX` 一开开关就每请求落一份垃圾，加了"没有起始
+  日期就不写"的守卫。
+
+  **默认仍是内存**：要启用得显式设 `PALMMICRO_SMA_CACHE_DIR`。待评审的
+  三条取舍（默认内存可接受吗 / 要不要换成进程内 LRU / 目录要不要接进
+  `web/config.py`）见 `python/auto/README_sma_config_backend.md` 第七节。
+
+  对照：`_php_smaconfig_compare.py` 15 例 0 意外差异，自检 3/3。
+  测试：`test_smaconfig.py` 26 例、`test_sma_route.py` 新增 7 例。
+  全量 `auto` **877** / `web` **294**。
+
 远端分支 `origin/devin/1780933111-migrate-php-core-to-python` 已有  
 `python/core/stock_symbol.py` 和 `python/core/sina_fetcher.py`：
 
@@ -542,8 +577,8 @@ Flask 路由
 
 ```powershell
 cd F:\woody\woodyweb\python
-python -B -m unittest discover -s auto -p "test_*.py"        # 849 个
-python -B -m unittest discover -s web\tests -p "test_*.py"   # 287 个
+python -B -m unittest discover -s auto -p "test_*.py"        # 877 个
+python -B -m unittest discover -s web\tests -p "test_*.py"   # 294 个
 ```
 
 注意：Web 层测试需要 Flask 与 PyMySQL，当前只装在系统 Python 3.7 上。  
@@ -561,6 +596,7 @@ python -B _php_refobj_compare.py      # refobj 纯数学，98 个用例
 python -B _php_sma_compare.py         # StockHistory 数值核心，436 个用例
 python -B _php_pairest_compare.py     # 配对双向估算，13 个用例
 python -B _php_futurepremium_compare.py   # 期货理论溢价，13 个用例
+python -B _php_smaconfig_compare.py       # 配置路径与 INI 格式，15 个用例
 python -B _php_refobj_compare.py --selftest   # 自检：证明对照抓得到注入的错误
 python -B _php_sma_compare.py --selftest      # 同上（含"两条布林式子必须不同"）
 python -B _php_rtrim0_fuzz.py 2000    # rtrim0 随机模糊

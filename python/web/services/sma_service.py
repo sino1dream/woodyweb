@@ -57,6 +57,7 @@ install_paths()
 from historytable import TableRow  # noqa: E402
 from futurepremium import future_sma_value, ref_get_future_premium  # noqa: E402
 from pairestimate import est_from_pair, est_to_pair  # noqa: E402
+import smaconfig  # noqa: E402
 from stockhistory import StockHistory  # noqa: E402
 from uicolumn import (  # noqa: E402
     STOCK_DISP_PREMIUM,
@@ -151,12 +152,17 @@ class SmaService:
 
     def __init__(self, wide: bool = False, is_admin: bool = False,
                  history_factory: Callable[..., Any] = None,
-                 warning_source: Any = None) -> None:
+                 warning_source: Any = None,
+                 config_factory: Callable[..., Any] = None) -> None:
         self.wide = bool(wide)
         #: 对应 ``DebugIsAdmin()``。默认 False —— 管理员专属的链接<｜hy_place▁holder▁no▁813｜>接线。
         self.is_admin = bool(is_admin)
         self._history_factory = history_factory
         self._warning_source = warning_source
+        #: ``符号 -> 配置存放处``。``None`` 时 ``StockHistory`` 用自己的内存实现。
+        #: 见 ``auto/smaconfig.py`` —— 文件后端**默认不启用**（要显式设目录），
+        #: 这个口子的存在只是让"要不要落盘"变成一处可替换的决策。
+        self._config_factory = config_factory
 
     # -- 对外：三种段落 ---------------------------------------------------
     def sma_table(self, ref: Any, memo: Any = False, cb_ref: Any = False,
@@ -341,9 +347,25 @@ class SmaService:
         try:
             if factory is not None:
                 return factory(ref, self.wide)
-            return StockHistory(ref, after_hour=self.wide)
+            return StockHistory(ref, after_hour=self.wide,
+                                config=self._config_of(ref))
         except Exception:
             # 没有数据源/建不出历史：整段跳过，页面不该因此 500
+            return None
+
+    def _config_of(self, ref: Any) -> Any:
+        """给这个符号找个配置存放处；没有 ``config_factory`` 就返回 ``None``。
+
+        :attr:`_config_factory` 为 ``None`` 时不传 ``config``，由
+        ``StockHistory`` 自己用内存实现 —— 于是"渲染页面不落盘"是**默认行为**，
+        不是需要处处小心的约定。
+        """
+        if self._config_factory is None:
+            return None
+        try:
+            return self._config_factory(ref)
+        except Exception:
+            # 找存放处失败不该让整段 500 —— 退回内存（StockHistory 的缺省）
             return None
 
     def _columns(self, after_hour: bool, cb_ref: Any,
@@ -670,5 +692,12 @@ def default_sma_service_factory() -> SmaService:
     ``wide`` 默认 False：PHP 的 ``LayoutUseWide()`` 属于未迁移的布局层，
     在能判断"是不是宽屏"之前，保守地不加"盘后"那一列 ——
     少一列只是信息少，多一列则是编造。
+
+    ## 配置存放处：默认内存
+
+    ``smaconfig.file_store_factory()`` 返回"按符号给一个存放处"的可调用，**但
+    它读不到目录时就恒给内存实现** —— 所以不开 ``PALMMICRO_SMA_CACHE_DIR``
+    就等于没开文件后端，一个字节都不写盘。理由见 ``auto/smaconfig.py``
+    模块 docstring 的三节。
     """
-    return SmaService(wide=False)
+    return SmaService(wide=False, config_factory=smaconfig.file_store_factory())

@@ -207,13 +207,33 @@ def _sina_symbol_file_stem(symbol: str) -> str:
     return stem
 
 
-def sina_quote_file_name(symbol: str, root: str = "debug", section: str = "sina") -> str:
-    """对应 ``DebugGetSinaFileName()``：``debug/sina/<符号>.txt``。
+def symbol_file_name(symbol: str, root: str = "debug", section: str = "sina") -> str:
+    """对应 ``DebugGetSymbolFile($strSection, $strSymbol)``。
 
-    PHP 里这些路径基于站点根目录推导；Web 化之后由调用方给出 ``root``，
-    默认沿用 PHP 的 ``debug`` 目录名。
+    PHP 有三个包装器（``DebugGetSinaFileName`` / ``DebugGetYahooFileName`` /
+    ``DebugGetConfigFileName``），拼的都是 ``<root>/<section>/<符号>.txt``，
+    所以这里只留一个通用函数，那三个按 section 分派即可。
+
+    PHP 的 ``root`` 来自 ``$_SERVER['DOCUMENT_ROOT'].'/debug'``；Web 化之后
+    没有文档根目录这个概念，改由调用方给 —— **默认是相对路径 ``debug``**，
+    谁要落盘谁负责传绝对路径（见 ``smaconfig.py``）。
     """
     return os.path.join(root, section, _sina_symbol_file_stem(symbol) + ".txt")
+
+
+def sina_quote_file_name(symbol: str, root: str = "debug", section: str = "sina") -> str:
+    """对应 ``DebugGetSinaFileName()`` —— 保留原名，内部走通用拼装。"""
+    return symbol_file_name(symbol, root=root, section=section)
+
+
+def config_file_name(symbol: str, root: str = "debug") -> str:
+    """对应 ``DebugGetConfigFileName()``：``<root>/config/<符号>.txt``。
+
+    对应 PHP 那句 ``$this->strConfigName = DebugGetConfigFileName($this->GetSymbol());``
+    （``php/stock/stockref.php:38``）—— 注意它**只是符号的纯函数**，
+    并不需要 ``MyStockReference`` 本身。
+    """
+    return symbol_file_name(symbol, root=root, section="config")
 
 
 # ---------------------------------------------------------------------------

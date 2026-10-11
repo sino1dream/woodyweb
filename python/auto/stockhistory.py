@@ -941,8 +941,23 @@ class StockHistory:
         * 不等或没有该段落 → 重算并写回（``_saveConfigSMA``）。
 
         两种情况都会再取 EMA50 / EMA200。
+
+        ## 一处有意偏离：拿不到起始日期时**不写缓存**
+
+        ``_calcStartDate()`` 在没有可用历史时返回 ``None``（PHP 是 ``false``）。
+        此时 PHP 照样写：``Date=``（空）+ 一串 0，而下次请求 ``'' == ''``
+        判定为**命中**，于是把这张全是 0 的表当缓存读回去。
+
+        本版在这个分支直接跳过缓存：没有日期就没有 key，写下去的东西既不能
+        命中也没有意义。落到文件后端上，这条尤其重要 —— 否则**每个请求都会
+        往磁盘写一份垃圾**（演示库里 ``^NDX`` 正好没有历史，一开开关就中招）。
         """
         current = self.start_date
+        if not current:
+            self._get_ema(50)
+            self._get_ema(200)
+            return
+
         if self.config.has_section(SMA_SECTION):
             stored = self.config.read_var(SMA_SECTION, "Date")
             if stored == current:

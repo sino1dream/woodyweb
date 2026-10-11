@@ -728,6 +728,27 @@ class ConfigSmaTest(unittest.TestCase):
         store.set_var("SMA", "Date", "2026-10-09")
         self.assertTrue(store.group_exists("SMA"))
 
+    def test_no_start_date_means_no_cache_is_written(self):
+        """没有起始日期就没法给缓存做 key —— **不写**。
+
+        PHP 在这个分支照样写 ``Date=``（空）+ 一串 0，而下次 ``'' == ''``
+        判定命中，于是把那张全是 0 的表当缓存读回去。本版跳过：
+        落到文件后端上，这条决定"每个请求会不会往磁盘写一份垃圾"。
+        """
+        config = sh.ConfigSmaStore()
+        instance, _ = _build(rows=[], config=config)
+
+        self.assertIsNone(instance.get_start_date())
+        self.assertFalse(config.group_exists("SMA"),
+                         "没有日期就不该留下一个写不进去也读不出的段落")
+        self.assertEqual(config.snapshot(), {})
+
+    def test_no_start_date_still_reads_ema(self):
+        """跳过缓存不等于跳过后面 —— EMA 那两步照做（PHP 也是无条件做）。"""
+        instance, _ = _build(rows=[])
+        self.assertIn("EMA50", instance.get_sma())
+        self.assertIn("EMA200", instance.get_sma())
+
 
 class NeedAfterHourEstTest(unittest.TestCase):
     """``NeedAfterHourEst()`` —— 两个条件缺一不可。"""

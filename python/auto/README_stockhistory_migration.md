@@ -351,14 +351,13 @@ python -B _php_sma_compare.py --selftest   # 证明它抓得到注入的错误
 
 ## 十三、下一刀要做什么
 
-**第 3 刀 —— 配置的文件后端**（单独评审）。本版已经把接口建好、默认走内存
-（第八节），要接真实 INI 文件时需要先明确：
+**第 3 刀 —— 配置的文件后端** —— **已做完**，落在 `python/auto/smaconfig.py`。
+上面那三个问题的答案（路径从哪来 / 并发写 / 测试隔离）连同两处新增的偏离，
+记在 **`python/auto/README_sma_config_backend.md`**（单独评审）。
 
-1. 文件路径怎么来 —— PHP 用 `$this->stock_ref->strConfigName`，而
-   `MyStockReference` 未迁；
-2. 并发下多个请求同时写同一份配置会不会互相覆盖（PHP 每请求一进程，
-   天然没有这个问题；常驻进程下有）；
-3. 测试里怎么避免污染工作区（临时目录？还是干脆永远用内存？）。
+一句话：接口建好了、文件后端也实现了，但**默认仍然是内存** —— 要启用得显式
+设 `PALMMICRO_SMA_CACHE_DIR`。该文档第七节列了三条待你拍板的取舍
+（默认内存可接受吗 / 要不要换成进程内 LRU / 缓存目录要不要接进 `web/config.py`）。
 
 **第 4 刀 —— `smaparagraph.php`**（225 行）：纯渲染（列头 + 回调）。
 `_callbackQdiiSma` / `_callbackFundPairSma` / `_callbackAhPairSma` /
