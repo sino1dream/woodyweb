@@ -219,9 +219,31 @@ class MysqlReference(StockReference):
             return "none"
         return load_quote_into(self, source=self.source)
 
+    @property
+    def connection(self) -> Any:
+        """数据库连接（从数据源转发）。
+
+        ## 为什么要有这个属性
+
+        本项目里"引用对象 → 数据库连接"一直走``ref.source.connection``
+        （``_count_net_value`` / ``load_daily_sql_data`` 都是这么写的）。
+        但有些消费方（例如 ``StockHistory``）拿到的只是"一个引用对象"，
+        并不知道数据源在哪，于是会写成 ``getattr(ref, "connection", None)``
+        —— 那**永远拿到 ``None``**，查询被静默跳过。
+
+        实测踩到过：``SmaService._build_history()`` 建 ``StockHistory`` 时
+        没传 ``source``，``StockHistory`` 回退到 ``self.source = ref``，
+        于是 ``ref.connection`` 为空 → 均线全是 0 → 页面上的均线表整段消失。
+        **不报错**，只是没有表。
+
+        所以在这里把连接转发出来：数据源挂在 ``self.source`` 上，
+        引用对象就把 ``connection`` 暴露给"只拿到 ref"的调用方。
+        数据源没有连接（比如纯内存的假源）时返回 ``None``。
+        """
+        return getattr(self.source, "connection", None)
+
     def _build_external_link(self) -> str:
         """首格那个外链；没有对应外链时退回符号文本。
-
         走 :func:`externallink.get_sina_stock_link` 的**通用分发**（对应 PHP
         ``GetSinaStockLink()``）：基金、A 股、港股、美股/美股指数、期货、外汇
         各有各的 URL 形状。参考数据表会把这几类混在一张表里，所以必须按类型分派，
