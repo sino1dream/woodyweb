@@ -149,8 +149,14 @@ Flask 路由
    **第 4 轮**：`smaparagraph` → `web/services/sma_service.py`，外加两个
    支撑模块 `auto/pairestimate.py`（配对双向估算）与
    `auto/futurepremium.py`（期货理论溢价，走 `futurepremium` 表）。  
+   **第 5 轮**：`calibrationhistoryparagraph` → `web/services/calibration_service.py`
+   （详情页两张「校准记录」，复用历史服务而不是重写取数），以及
+   `_qdiigroup.php` 的 `_tradingUserDefined` → `web/services/qdii_trading_column.py`
+   （五档表最后一列「换算价」），附 PHP 逐项对照 5 例全一致。  
+   详见 `python/auto/README_calibration_record.md` 与
+   `python/auto/README_qdii_trading_column.md`。
    **仍未迁**：`portfolioparagraph`、`stockgroup` / `fundpurchase` /
-   `transaction` / `comment`。
+   `transaction` / `comment`、以及 `_qdiigroup.php` 的 `_callbackFundListHedge`。
 5. `php/layout.php`、`php/menu.php`、`php/stocklink.php`：站点布局和导航。
 
 第 1、2、3 步已经落地：

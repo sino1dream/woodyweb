@@ -157,13 +157,18 @@ class TradingService:
         self.source = source
 
     # -- EchoFundTradingParagraph ------------------------------------------
-    def fund_table(self, fund: Any, callback: Callable[..., Any] = None) -> Any:
+    def fund_table(self, fund: Any, callback: Callable[..., Any] = None,
+                   callback_width: int = TRADING_CALLBACK_WIDTH) -> Any:
         """对应 ``EchoFundTradingParagraph($fund, $callback = false)``。
 
         ``callback`` 同时承担两件事 —— **不传参**时返回列头文本、
         **传价格**时返回该行那一格的文本。这是 PHP 里
         ``call_user_func($callback)`` 与 ``call_user_func($callback, $strPrice)``
         的同构写法。
+
+        ``callback_width`` 见 :meth:`_table`：回调列宽度按内容挑，
+        默认那个值是给"短文本"的，QDII 那列要用
+        :data:`qdii_trading_column.PAIR_ESTIMATE_WIDTH`。
 
         溢价列的追加是**嵌套**的（不是并列）：有官方估值才加"官方溢价"列，
         有参考估值才再加"参考溢价"，有实时估值才再加"实时溢价"。顺序拷自 PHP。
@@ -212,7 +217,8 @@ class TradingService:
         else:
             title = base_title
 
-        return self._table(columns, est_prices, ref, callback=callback, title=title, fund=fund)
+        return self._table(columns, est_prices, ref, callback=callback, title=title,
+                           fund=fund, callback_width=callback_width)
 
     # -- EchoFundPairTradingParagraph --------------------------------------
     def pair_table(self, ref: Any) -> Any:
@@ -260,14 +266,20 @@ class TradingService:
     # -- 内部 --------------------------------------------------------------
     def _table(self, columns: list, est_prices: Sequence, ref: Any,
                callback: Callable[..., Any] = None, title: str = "",
-               fund: Any = None) -> Any:
-        """ ``if (_checkTradingQuantity($ref)) return;`` 之后那段通用渲染流程。"""
+               fund: Any = None,
+               callback_width: int = TRADING_CALLBACK_WIDTH) -> Any:
+        """ ``if (_checkTradingQuantity($ref)) return;`` 之后那段通用渲染流程。
+
+        ``callback_width`` 让调用方能给回调列挑宽度：不同页面的回调列内容长度
+        差别很大（``_qdiigroup.php`` 那列要塞 ``^GSPC|SH|SPY价格``），
+        统一用默认值会挤成一团。
+        """
         if not has_trading_quantity(ref):
             # PHP 在这里整段 return —— 没有挂单量就不摆表（避免一张全空的盘口）
             return None
 
         if callback is not None:
-            columns.append(column_base(_text(callback()), TRADING_CALLBACK_WIDTH))
+            columns.append(column_base(_text(callback()), callback_width))
 
         rows = build_trading_rows(ref, est_prices, callback=callback, now=self._now_of(ref))
         if not rows:

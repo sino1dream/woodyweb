@@ -67,6 +67,7 @@ def _render_fund(symbol: str, group: str):
         reference=_build_reference(symbol),
         shares=_build_shares(symbol),
         sma=_build_sma(symbol),
+        calibration=_build_calibration(symbol),
     )
 
 
@@ -108,6 +109,15 @@ def _build_trading(symbol: str) -> dict[str, Any] | None:
     没抓到（或该品种本来就没有挂单数据）时就是这样，与详情页其它三张表的
     处理一致。``?live=1`` 可以强迫本次请求联网补一次（见
     :func:`_wants_live_refresh`）。
+
+    ## 最右边那一列是 QDII 特有的「换算价」列
+
+    PHP ``_qdiigroup.php:96`` 传了一个回调 ``'_tradingUserDefined'``，
+    在五档表右边再补一列：把每一档基金价格换算成中间层标的与各杠杆标的的价格。
+    本版由 :mod:`web.services.qdii_trading_column` 提供同构的 callable。
+
+    **拿不到中间层标的就不补这一列**，而不是补一列空数据 —— 此时退回
+    ``tradingparagraph.php`` 的通用形态，与其它四个段落的处理一致。
     """
     service = _get_trading_service()
     if service is None:
@@ -116,10 +126,116 @@ def _build_trading(symbol: str) -> dict[str, Any] | None:
         refs = _get_trading_refs(symbol)
         if not refs:
             return None
-        table = service.fund_table(refs[0])
+        callback, width = _build_trading_column(refs[0])
+        table = service.fund_table(refs[0], callback=callback,
+                                   callback_width=width)
     except Exception:
         return None
     return table if table else None
+
+
+def _build_trading_column(fund: Any) -> tuple:
+    """建五档表最后一列的回调；拿不到就返回 ``(None, 默认宽度)``。
+
+    与 EST / 参考数据那几段保持同一种装配顺序：先从自己身上取中间层标的，
+    再去 ``fundpair`` 查谁跟踪它。查不到（``fundpair`` 里没记录）会得到空列表，
+    这时回调仍然可用 —— 那一列只有中间层标的那一格（``^NDX价格``）。
+    """
+    default_width = _default_callback_width()
+    est_symbol = _est_symbol_of(fund)
+    if not est_symbol:
+        return None, default_width
+    try:
+        from web.services.qdii_trading_column import (
+            PAIR_ESTIMATE_WIDTH,
+            build_leverage_references,
+            build_trading_column,
+        )
+
+        source = getattr(_get_reference_service(), "source", None)
+        refs = build_leverage_references(est_symbol, source)
+        callback = build_trading_column(fund, refs)
+    except Exception:
+        return None, default_width
+    return callback, PAIR_ESTIMATE_WIDTH
+
+
+def _default_callback_width() -> int:
+    """回调列的默认宽度（``trading_service.TRADING_CALLBACK_WIDTH``）。"""
+    from web.services.trading_service import TRADING_CALLBACK_WIDTH
+
+    return TRADING_CALLBACK_WIDTH
+
+
+def _est_symbol_of(fund: Any) -> Any:
+    """基金的中间层标的符号；取不到返回 ``None``（此时不补那一列）。"""
+    est_ref = getattr(fund, "get_est_ref", None)
+    if not callable(est_ref):
+        return None
+    try:
+        ref = est_ref()
+    except Exception:
+        return None
+    if ref is None:
+        return None
+    getter = getattr(ref, "get_symbol", None)
+    if not callable(getter):
+        return None
+    try:
+        return getter()
+    except Exception:
+        return None
+
+
+def _build_calibration(symbol: str) -> dict[str, Any] | None:
+    """基金自己的「校准记录」表（``php/ui/fundestparagraph.php:157``）。
+
+    PHP 在 ``echoFundEstParagraph`` 之后紧接着调用
+    ``EchoCalibrationHistoryParagraph($ref, 0, 1)`` —— 只显示**最近一条**，
+    作用是回答"这只基金的估值系数最近一次是什么时候标的定的"。
+
+    完整记录在 ``/history/calibrationhistory/<符号>``，同一套取数逻辑，
+    见 :class:`~web.services.calibration_service.CalibrationService` 的说明。
+    """
+    service = _get_calibration_service()
+    if service is None:
+        return None
+    try:
+        return service.table(symbol)
+    except Exception:
+        return None
+
+
+def _calibration_of(ref: Any) -> dict[str, Any] | None:
+    """某个引用对象的校准记录（``smaparagraph.php:218`` 那个位置用）。
+
+    那边传的是 ``$ref->GetEstRef()`` —— **中间层标的**（``^GSPC``）而不是基金，
+    所以表格少了"净值 / 对冲值"两列（``IsFundA()`` 为假）。
+    """
+    service = _get_calibration_service()
+    if service is None or ref is None:
+        return None
+    symbol = ""
+    for name in ("get_symbol", "GetSymbol"):
+        getter = getattr(ref, name, None)
+        if callable(getter):
+            try:
+                symbol = str(getter() or "")
+            except Exception:
+                symbol = ""
+            if symbol:
+                break
+    if not symbol:
+        return None
+    try:
+        return service.table(symbol)
+    except Exception:
+        return None
+
+
+def _get_calibration_service():
+    factory = current_app.extensions.get("calibration_service_factory")
+    return None if factory is None else factory()
 
 
 def _get_trading_service():
@@ -230,7 +346,11 @@ def _build_sma(symbol: str) -> dict[str, Any] | None:
         future = service.future_table(ref, source=source)
     except Exception:
         future = None
-    return {"qdii": service.qdii_table(ref), "future": future}
+    # smaparagraph.php:218 —— EchoFutureSmaParagraph 在算出期货溢价之后，
+    # **先**摆一张中间层标的的校准记录，再摆均线表。取不到就 None（不影响均线表）。
+    calibration = _calibration_of(ref.get_est_ref()) if future else None
+    return {"qdii": service.qdii_table(ref), "future": future,
+            "calibration": calibration}
 
 
 def _get_sma_service():

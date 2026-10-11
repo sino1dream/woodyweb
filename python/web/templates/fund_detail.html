@@ -32,6 +32,11 @@
     {{ data_table(sma.qdii, "sma-table") }}
   {% endif %}
   {% if sma and sma.future %}
+    {# smaparagraph.php:218 —— 期货均线表之前，先摆中间层标的的校准记录。
+       注意这张表的对象是中间层（^GSPC）而不是基金，所以没有"净值 / 对冲值"两列。 #}
+    {% if sma.calibration %}
+      {{ data_table(sma.calibration, "calibration-table calibration-est-table") }}
+    {% endif %}
     {% if not (sma.qdii) %}<h2>均线</h2>{% endif %}
     <p class="table-note">{{ sma.future.premium_text }}</p>
     {{ data_table(sma.future, "sma-future-table") }}
@@ -61,6 +66,21 @@
     <h2>估值</h2>
     {{ data_table(fundest, "fund-est-table", first_cell_is_html=True) }}
     <p class="table-note">官方 / 参考 / 实时三档估值，缺哪档就不显示哪两列。</p>
+  {% endif %}
+
+  {# 校准记录（php/ui/calibrationhistoryparagraph.php）：fundestparagraph.php:157
+     把它摆在估值表之后，只显示最近一条。与 /history/calibrationhistory/<sym>
+     是同一套取数，不是第二套算法。 #}
+  {% if calibration %}
+    <h2>校准记录</h2>
+    {{ data_table(calibration, "calibration-table") }}
+    <p class="table-note">
+      {% if calibration.link %}
+        <a href="{{ calibration.link.url }}">{{ calibration.link.text }}</a>
+      {% endif %}
+      最近一次自动校准的结果{% if calibration.total and calibration.total > calibration.count %}（共 {{ calibration.total }} 条）{% endif %}。
+      对冲值 = 校准值 ÷ 仓位，黄金 / 白银类基金还要乘品种倍数。
+    </p>
   {% endif %}
 
   {% if reference %}
