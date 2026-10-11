@@ -30,3 +30,7 @@ __pycache__/
 *.log
 .DS_Store
 Thumbs.db
+
+# 四、本机数据库快照（改数据前的安全网，随机器而异，不该进版本库）
+# _snapshots 目录下是 mysqldump 出来的整库副本，动辄几百 KB。
+python/sql/_snapshots/
