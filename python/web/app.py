@@ -58,6 +58,18 @@ def _history_page_link(symbol: Any, kind: Any) -> Any:
     return url_for("history.history_page", kind=kind, symbol=symbol)
 
 
+def _fund_list_link(symbol: Any, kind: Any) -> Any:
+    """给 ``qdii_fund_list`` 用的链接构造器：按 ``kind`` 决定指向哪一页。
+
+    ``kind == 'fund'`` 是「跟踪」列（``$ref->GetMyStockLink()``，指向标的自己的
+    详情页）；其余是历史页（这里是 ``calibrationhistory``）。
+    两种都在服务层外拼，理由同 :func:`_history_page_link`。
+    """
+    if kind == "fund":
+        return url_for("fund.fund_page", symbol=symbol)
+    return url_for("history.history_page", kind=kind, symbol=symbol)
+
+
 def _error_response(message: str, status: int):
     """按请求类型返回 JSON 或 HTML 错误。"""
     if request.path.startswith("/api/"):
@@ -83,6 +95,8 @@ def create_app(
     sma_history_factory: Any = None,
     sma_refs_builder: Any = None,
     calibration_service_factory: Any = None,
+    fundlist_link_builder: Any = None,
+    fundlist_refs_builder: Any = None,
 ) -> Flask:
     """创建 Flask 应用，允许测试注入服务工厂。"""
     app = Flask(__name__)
@@ -159,6 +173,12 @@ def create_app(
         calibration_service_factory
         or (lambda: default_calibration_service_factory(_history_page_link))
     )
+
+    # QDII 详情页的「基金指数对照表」：列里的两个链接（标的详情页 / 校准历史页）
+    # 要 url_for 才拼得出来，所以像上面那样在装配层注入。
+    app.extensions["fundlist_link_builder"] = fundlist_link_builder or _fund_list_link
+    # ``$arLev`` 默认查 ``fundpair``；测试可以直接给一批引用对象。
+    app.extensions["fundlist_refs_builder"] = fundlist_refs_builder
 
     init_app(app)
     register_blueprints(app)

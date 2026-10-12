@@ -68,6 +68,7 @@ def _render_fund(symbol: str, group: str):
         shares=_build_shares(symbol),
         sma=_build_sma(symbol),
         calibration=_build_calibration(symbol),
+        fundlist=_build_fund_list(symbol),
     )
 
 
@@ -185,6 +186,72 @@ def _est_symbol_of(fund: Any) -> Any:
         return getter()
     except Exception:
         return None
+
+
+def _build_fund_list(symbol: str) -> dict[str, Any] | None:
+    """基金指数对照表（``php/ui/fundlistparagraph.php:38``）。
+
+    PHP 在 ``_qdiigroup.php:100`` 的守卫是 ``if (count($arLev) > 0)`` ——
+    **没有跟踪这只基金中间层标的的杠杆标的，整段就不出现**，与本项目其它段落
+    "缺数据就整段不摆"的处理一致（比摆一张只有表头的空表好）。
+
+    末列「对冲值」由 ``_qdiigroup.php:41 _callbackFundListHedge`` 提供，
+    见 :mod:`web.services.qdii_fund_list`。``$arLev`` 与五档表那一列同源
+    （都是"谁跟踪了我的中间层标的"），所以直接复用
+    :func:`~web.services.qdii_trading_column.build_leverage_references`，
+    不再查第二次。
+    """
+    try:
+        from web.services.qdii_fund_list import fund_list_table
+        from web.services.qdii_trading_column import build_leverage_references
+
+        refs = _get_trading_refs(symbol)
+        if not refs:
+            return None
+        fund = refs[0]
+        est_symbol = _est_symbol_of(fund)
+        if not est_symbol:
+            return None
+        source = getattr(_get_reference_service(), "source", None)
+        # ``$arLev`` 默认查 ``fundpair``（谁跟踪了我的中间层标的）；
+        # 测试与无库环境可以用 ``fundlist_refs_builder`` 直接给一批引用对象 ——
+        # 与 ``trading_refs_builder`` / ``sma_refs_builder`` 同一套注入约定。
+        refs_builder = current_app.extensions.get("fundlist_refs_builder")
+        if refs_builder is not None:
+            leverage_refs = refs_builder(est_symbol)
+        else:
+            leverage_refs = build_leverage_references(est_symbol, source)
+        table = fund_list_table(
+            fund,
+            leverage_refs,
+            source=source,
+            link_builder=current_app.extensions.get("fundlist_link_builder"),
+            # 这些标的之所在这里，正是因为它们跟踪 ``est_symbol`` —— 引用对象
+            # 自己说不出来（FundPairReference 未迁），由调用方补上。
+            pair_symbol=est_symbol,
+        )
+    except Exception:
+        return None
+    if table is None:
+        return None
+    table["link"] = _fund_list_group_link(symbol)
+    return table
+
+
+def _fund_list_group_link(symbol: str) -> dict[str, str] | None:
+    """``GetFundListLink()``：指向这只基金所在分组的列表页。
+
+    PHP 把它摆在表**前面**当标题链接；本版按本项目其它表的做法摆到表后面的
+    ``table-note`` 里（位置不同、内容一样）。取不到分组就 ``None`` ——
+    不该为了一个装饰链接让整张表消失。
+    """
+    group = get_symbol_group(symbol)
+    if not group:
+        return None
+    return {
+        "url": url_for("fund.fund_group_page", group=group),
+        "text": "基金指数对照表",
+    }
 
 
 def _build_calibration(symbol: str) -> dict[str, Any] | None:

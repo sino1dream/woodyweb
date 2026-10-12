@@ -154,9 +154,15 @@ Flask 路由
    `_qdiigroup.php` 的 `_tradingUserDefined` → `web/services/qdii_trading_column.py`
    （五档表最后一列「换算价」），附 PHP 逐项对照 5 例全一致。  
    详见 `python/auto/README_calibration_record.md` 与
-   `python/auto/README_qdii_trading_column.md`。
+   `python/auto/README_qdii_trading_column.md`。  
+   **第 6 轮**：`fundlistparagraph` 带回调那一版 →
+   `web/services/qdii_fund_list.py`（详情页「基金指数对照表」，末列「对冲值」
+   由 `_callbackFundListHedge` 提供；公式复用已迁好的
+   `stockdata.get_stock_hedge`），附 PHP 逐项对照 5 例一致、2 条已知差异、
+   自检 4/4。详见 `python/auto/README_qdii_fund_list.md`。
    **仍未迁**：`portfolioparagraph`、`stockgroup` / `fundpurchase` /
-   `transaction` / `comment`、以及 `_qdiigroup.php` 的 `_callbackFundListHedge`。
+   `transaction` / `comment`，以及 `_qdiigroup.php:101` 的
+   `EchoFundPairSmaParagraphs`（紧跟在基金指数对照表后面）。
 5. `php/layout.php`、`php/menu.php`、`php/stocklink.php`：站点布局和导航。
 
 第 1、2、3 步已经落地：

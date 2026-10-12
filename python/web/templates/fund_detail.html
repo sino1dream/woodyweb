@@ -31,6 +31,18 @@
     {% endif %}
     {{ data_table(sma.qdii, "sma-table") }}
   {% endif %}
+  {# 基金指数对照表（php/ui/fundlistparagraph.php:38）：_qdiigroup.php:100 把它
+     摆在均线表之后、期货均线表之前。末列是「对冲值」而不是「参考值」——
+     只有 QDII 详情页传了 _callbackFundListHedge 回调，其它调用点显示参考值。 #}
+  {% if fundlist %}
+    <h2>{{ fundlist.title }}</h2>
+    {{ data_table(fundlist, "fundlist-table") }}
+    <p class="table-note">
+      {% if fundlist.link %}<a href="{{ fundlist.link.url }}">{{ fundlist.link.text }}</a>{% endif %}
+      对冲值 = 本基金与这一行标的的校准值之比（各自按仓位折算），
+      回答"对冲一份本基金要配多少份它"。
+    </p>
+  {% endif %}
   {% if sma and sma.future %}
     {# smaparagraph.php:218 —— 期货均线表之前，先摆中间层标的的校准记录。
        注意这张表的对象是中间层（^GSPC）而不是基金，所以没有"净值 / 对冲值"两列。 #}
