@@ -302,7 +302,7 @@ class QuotesUpdater:
         self.store = store
         # 中间层快照表（estquote）。命中 est_symbols 的符号除了写 realtimequote，
         # 再写一份到 estquote 供 QDII 估值用 —— 对应 PHP 的 _yahooStockGetData()。
-        # 分表是为了不把"中间层估值序列"混进"基金单位净值"，见 sql/schema.sql。
+        # 分表是为了不把"中间层估值序列"混进"基金单位净值"，见 dbtools/schema.sql。
         self.est_store = est_store
         self.est_symbols = set(est_symbols or ())
         self._cache: Dict[str, RecentQuote] = {}

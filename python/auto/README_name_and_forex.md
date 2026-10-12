@@ -153,7 +153,7 @@ Python 侧原本写的是 `return float(value) if value is not None else 1.0` �
 | --- | --- |
 | `stockdata.py` `MySqlFundDataSource.get_position()` | 无行时回落到 `StockSymbol(symbol).get_default_position()` |
 | `stockdata.py` `MemoryFundDataSource.get_position()` | 同样回落（保持两个实现一致） |
-| `sql/seed_demo_data.py` `POSITIONS` | `SZ161125` 改为 `0.95` |
+| `dbtools/seed_demo_data.py` `POSITIONS` | `SZ161125` 改为 `0.95` |
 | 数据库 | `UPDATE fundposition SET close=0.95 WHERE id=2`，随后重标定 |
 
 修后实测：
@@ -269,7 +269,7 @@ SZ161130   易方达标普信息科技LOF     ← 错！这是 SZ161128 的名�
 **根因是种子数据写错**，不是代码逻辑问题：
 
 ```python
-# python/sql/seed_demo_data.py（修前）
+# python/dbtools/seed_demo_data.py（修前）
 STOCKS = [
     ("SZ161130", "易方达标普信息科技LOF"),   # ← 错，这是 161128 的名字
     ...

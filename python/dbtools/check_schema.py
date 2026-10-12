@@ -3,7 +3,7 @@
 用法：
 
     cd F:\\woody\\woodyweb\\python
-    python -B sql\\check_schema.py
+    python -B dbtools\\check_schema.py
 
 输出分两段：
 
@@ -124,7 +124,7 @@ def main() -> int:
             print("")
             if missing:
                 print("结论：缺 %d 张表 -> %s" % (len(missing), ", ".join(missing)))
-                print("执行 python -B sql\\build_schema.py 建表。")
+                print("执行 python -B dbtools\\build_schema.py 建表。")
             else:
                 print("结论：%d 张表齐全。" % len(CORE_TABLES))
     finally:

@@ -216,7 +216,7 @@ $this->arAfterHour[$strName] = false;
   也不参与盘后估值。照抄。
 
 顺带一个列名差异：这两张表只有 `id` / `stock_id` / `date` / `close`，
-**没有 `adjclose`**（`sql/schema.sql`）—— 而 `stockhistory` 表用的是 `adjclose`。
+**没有 `adjclose`**（`dbtools/schema.sql`）—— 而 `stockhistory` 表用的是 `adjclose`。
 所以 `StockHistorySql.get_close()` 单独写了 `SELECT \`close\``。
 
 ## 八、第二刀：配置改成了可替换的内存实现

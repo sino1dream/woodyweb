@@ -7,8 +7,8 @@
 用法::
 
     cd F:\\woody\\woodyweb\\python
-    D:\\python\\python.exe -B sql\\seed_future_premium.py
-    D:\\python\\python.exe -B sql\\seed_future_premium.py --dry-run
+    D:\\python\\python.exe -B dbtools\\seed_future_premium.py
+    D:\\python\\python.exe -B dbtools\\seed_future_premium.py --dry-run
 
 ## 数字从哪来
 

@@ -315,7 +315,7 @@ class MemoryQuoteStore(QuoteStore):
         return True
 
 
-#: 建库时就有的一列不缺；``orderbook`` 是后来加的（``sql/patch_realtimequote_orderbook.sql``）。
+#: 建库时就有的一列不缺；``orderbook`` 是后来加的（``dbtools/patch_realtimequote_orderbook.sql``）。
 _LEGACY_COLUMNS = ("symbol", "source_symbol", "price", "prev_price", "name",
                    "quote_date", "quote_time", "source", "fetched_at")
 _ALL_COLUMNS = _LEGACY_COLUMNS + (ORDERBOOK_COLUMN,)
@@ -490,7 +490,7 @@ class EstQuoteStore:
 
     量级不需要在这一层处理：``calibrationhistory`` 是"源值 + 净值"反算出来的
     派生量（``php/stock/qdiiref.php:193``），换源时跟着重算即可，
-    详见 ``sql/schema.sql`` 里 ``estquote`` 的注释。
+    详见 ``dbtools/schema.sql`` 里 ``estquote`` 的注释。
     """
 
     def __init__(self, connection: Any):

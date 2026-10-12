@@ -708,7 +708,7 @@ class MySqlFundDataSource:
         """中间层标的的最新估值数值，读 ``estquote`` 表。
 
         对应 PHP ``yahoostock.php`` 往 ``netvaluehistory`` 写的中间层序列，
-        这里换成了独立的 ``estquote`` 表（见 ``sql/schema.sql`` 的说明）。
+        这里换成了独立的 ``estquote`` 表（见 ``dbtools/schema.sql`` 的说明）。
         表不存在或没有该符号时返回 ``None``，调用方回落到 ``netvaluehistory``。
         """
         row = self._fetchone(

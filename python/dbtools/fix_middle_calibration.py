@@ -18,13 +18,13 @@
 ## 做法
 
 删掉中间层**除基准日以外**的校准行，并确保基准日那一行是种子值。
-基准日与种子值写死在下面的常量里（来源 ``sql/seed_demo_data.py``
+基准日与种子值写死在下面的常量里（来源 ``dbtools/seed_demo_data.py``
 与 ``README_autocalibration_migration.md`` 的实测记录）。
 
 用法：
 
-    python -B sql\\fix_middle_calibration.py            # 预演
-    python -B sql\\fix_middle_calibration.py --apply    # 真改
+    python -B dbtools\\fix_middle_calibration.py            # 预演
+    python -B dbtools\\fix_middle_calibration.py --apply    # 真改
 """
 
 from __future__ import annotations

@@ -1,7 +1,7 @@
 -- Palmmicro 站点核心表结构
 --
 -- 来源：由 PHP 建表逻辑权威生成，不是手写。
---   生成方式见 python/sql/ddl_generate.php：临时把 php/sql/sqltable.php 里
+--   生成方式见 python/dbtools/ddl_generate.php：临时把 php/sql/sqltable.php 里
 --   硬编码的库名改成 stock_data，跑一次表类构造（TableSql 构造函数里会
 --   CREATE TABLE IF NOT EXISTS），再用 SHOW CREATE TABLE 导出。
 --   生成后已把 sqltable.php 还原，SHA256 校验一致。

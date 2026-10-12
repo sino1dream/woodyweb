@@ -77,10 +77,10 @@ EMA_t = k * close_t + (1 - k) * EMA_{t-1},  k = 2 / (n + 1)
 
 ```powershell
 cd F:\woody\woodyweb\python
-python -B sql\backup_demo_tables.py                 # 改数据前先备份
-python -B sql\seed_index_history.py                 # 预演（只抓不写）
-python -B sql\seed_index_history.py --apply         # 真写
-python -B sql\seed_index_history.py --apply --days 800
+python -B dbtools\backup_demo_tables.py                 # 改数据前先备份
+python -B dbtools\seed_index_history.py                 # 预演（只抓不写）
+python -B dbtools\seed_index_history.py --apply         # 真写
+python -B dbtools\seed_index_history.py --apply --days 800
 
 cd auto
 python -B quoteupdatercli.py --once                 # daemon 会自然收上两个指数

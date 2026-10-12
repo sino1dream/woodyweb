@@ -183,7 +183,7 @@ PHP 每个历史页面是独立 URL，页面之间靠正文里的链接互跳。
 **PHP 里表名是 `shareshistory` 不是 `fundshares`**
 （`php/sql/sqldailyclose.php:303` `new DailyCloseSql('shareshistory')`）。
 形状与 `netvaluehistory` 完全一致（同样继承 `DailyCloseSql`），
-已加入 `python/sql/schema.sql`。
+已加入 `python/dbtools/schema.sql`。
 
 ### 6.2 清掉种子占位历史行
 
@@ -195,7 +195,7 @@ PHP 每个历史页面是独立 URL，页面之间靠正文里的链接互跳。
 基金溢价记录算出 214.82% 溢价          （真实值 5.52%）
 ```
 
-处理（`python/sql/_clean_seed_history.py`）：
+处理（`python/dbtools/_clean_seed_history.py`）：
 
 * **按符号白名单 + 日期收窄**清理，只清基金与中间层符号；
 * **关键**：`netvaluehistory` 里同时存着 4 个币种的汇率历史
@@ -211,7 +211,7 @@ PHP 每个历史页面是独立 URL，页面之间靠正文里的链接互跳。
 生产端 `fundsharecn.php` **需要登录**（实测无凭据访问会 302 到
 `account/logincn.php`），取不到真实 `shareshistory`。
 
-`python/sql/_seed_shares_sample.py` 写入的是**作者开发历程文档里公开可见的
+`python/dbtools/_seed_shares_sample.py` 写入的是**作者开发历程文档里公开可见的
 SZ162411 表格**（4 行），用途是验证页面列与换手率算法渲染正确。
 **这不是完整历史数据，也不能据此判断业务结论。** 真实数据应由
 持续写入的入口积累（PHP 侧是 `submitholdings.php` 之类）。
@@ -262,7 +262,7 @@ SZ162411    1289.731      1358         0.9497                  0.95 (LOF)  ✓
 **由此发现一处数据错误**：种子里 `SH513100` 的仓位写成了 **0.98**，
 而生产用的是 **1.0** —— SH513100 是上海 51 号段的 **ETF**，
 `IsLofA()` 为假，`GetDefaultPosition()` 返回 1.0。已修正
-（`python/sql/_fix_sh513100_position.py`），重标定后校准值随之从
+（`python/dbtools/_fix_sh513100_position.py`），重标定后校准值随之从
 13.942979 变为 13.6641195（`= 2.0379 × 6.705 / 1.0`），估值仍精确等于净值。
 
 这组生产向量已固化为回归测试

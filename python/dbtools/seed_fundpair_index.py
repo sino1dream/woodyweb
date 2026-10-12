@@ -26,8 +26,8 @@
 
 用法：
 
-    python -B sql\\seed_fundpair_index.py            # 预演
-    python -B sql\\seed_fundpair_index.py --apply    # 真写
+    python -B dbtools\\seed_fundpair_index.py            # 预演
+    python -B dbtools\\seed_fundpair_index.py --apply    # 真写
 """
 
 from __future__ import annotations

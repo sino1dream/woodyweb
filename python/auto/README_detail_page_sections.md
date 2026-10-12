@@ -135,7 +135,7 @@ EST 表   = 8 列（官方EST / EST日期 / 溢价 / 参考EST / 溢价 / 实时
 参考数据 = 5 行（NQ 31137.58 期货行已出现）
 ```
 
-数据用 ``sql/seed_fundpair_index.py`` 补（幂等，可重复跑）。
+数据用 ``dbtools/seed_fundpair_index.py`` 补（幂等，可重复跑）。
 
 ### ⚠️ 三档 EST 现在显示成一样的（不是 bug）
 
@@ -247,7 +247,7 @@ if ($realtime_ref = $ref->GetRealtimeRef())  $arRef[] = $realtime_ref;
 演示库 ``fundpair`` 里当时没有 ``id = ^NDX`` 的行，所以这一档查出来是空的 ——
 **不是代码没接通，是库里没数据**，单元测试已经把接通的行为钉住了。
 
-> **2026-10-10 更新**：那两行已经补上（``sql/seed_fundpair_index.py``），
+> **2026-10-10 更新**：那两行已经补上（``dbtools/seed_fundpair_index.py``），
 > 所以 ``hf_NQ``/``hf_ES`` 现在真的会出现在参考数据表里。详见第十节。
 
 ### 9.2 给 ``_leverage_symbols()`` 补假 cursor 测试
@@ -329,7 +329,7 @@ realtime_net_value  = None        ← 实时档没通
   查自己的配对，形成 ``^NDX → hf_NQ → hf_NQ 的配对 → …`` 递归。
   PHP 靠 ``IsSinaFutureUS()`` 打断，本版让配对引用不再找配对。
 
-数据侧：新增 ``sql/seed_fundpair_index.py``（幂等，默认预演、``--apply`` 才写）。
+数据侧：新增 ``dbtools/seed_fundpair_index.py``（幂等，默认预演、``--apply`` 才写）。
 
 实测结果：
 

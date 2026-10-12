@@ -3,8 +3,8 @@
 用法：
 
     cd F:\\woody\\woodyweb\\python
-    python -B sql\\seed_demo_data.py            # 求解后写入
-    python -B sql\\seed_demo_data.py --clear    # 清掉脚本写入的行
+    python -B dbtools\\seed_demo_data.py            # 求解后写入
+    python -B dbtools\\seed_demo_data.py --clear    # 清掉脚本写入的行
 
 为什么要在写库前"求解校准值"？
 
@@ -136,7 +136,7 @@ NET_VALUES = {
 # 若把 netvalue 写成 0.42 这类"每份净值"，同一个 source 会被放大上千倍。
 #
 # **注意**：这里写的是 ``SEED_DATE``（2026-01-02，即"原点"）那一行。
-# 真实行情行由 ``python/sql/`` 下那几个按实际日期写入的脚本负责，
+# 真实行情行由 ``python/dbtools/`` 下那几个按实际日期写入的脚本负责，
 # 不要为了对齐生产端的"真实净值"而改这里的数 —— 两者是不同日期的两行。
 # 自动校准（``autocalibration.py``）对归一化尺度做了显式换算，见那里的说明。
 MARKET_LAYERS = {
@@ -364,8 +364,8 @@ def main() -> int:
         connection.close()
 
     print("\n完成。接着验证：")
-    print("  python -B sql\\check_schema.py")
-    print("  python -B sql\\verify_pages.py")
+    print("  python -B dbtools\\check_schema.py")
+    print("  python -B dbtools\\verify_pages.py")
     return 0
 
 

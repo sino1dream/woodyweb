@@ -128,20 +128,32 @@ class ImportRewriteTest(unittest.TestCase):
 
 
 class SqlPackageShadowTest(unittest.TestCase):
-    """``sql`` 这个包名的解析必须落在 ``python/auto/sql``。
+    """``sql`` 这个包名的解析必须落在 ``python/auto/sql``，不能被同名目录抢走。
 
-    ``python/sql``（建表 / 种子 / 备份脚本）与它是**同名目录**，且
-    ``web.bootstrap.install_paths()`` 会先把 ``python`` 塞进 ``sys.path``。
-    目前靠"``python/sql`` 没有 ``__init__.py``，而 ``python/auto/sql`` 有"
-    这条规则让正确的那个胜出；一旦有人给 ``python/sql`` 补了 ``__init__.py``，
-    ``import sql.xxx`` 会静默解析到错的目录，所以这里显式钉住。
+    建表/种子/备份脚本原先放在 ``python/sql``，和数据库访问包 ``auto/sql``
+    **同名**：只能靠"有 ``__init__.py`` 的那个胜出"才解析对，而
+    ``web.bootstrap.install_paths()`` 又是先把 ``python`` 塞进 ``sys.path``，
+    谁给维护脚本目录补一个 ``__init__.py`` 就会静默抢错，且报错看不出原因。
+    现已把该目录改名成 ``python/dbtools`` 从根上消掉同名，这里钉住三件事：
+    改名不能被退回、新目录不许变成包、``import sql`` 仍解析到 ``auto/sql``。
     """
 
-    def test_python_sql_has_no_init(self):
-        self.assertFalse(
-            (PYTHON_DIR / "sql" / "__init__.py").exists(),
-            "python/sql 不能有 __init__.py：它会把 import sql.* 抢到维护脚本目录去",
+    def test_maintenance_dir_is_renamed_to_dbtools(self):
+        self.assertTrue(
+            (PYTHON_DIR / "dbtools" / "schema.sql").exists(),
+            f"维护脚本目录应在 {PYTHON_DIR / 'dbtools'}（schema.sql 是它的标志文件）",
         )
+        self.assertFalse(
+            (PYTHON_DIR / "sql").exists(),
+            "python/sql 不该再存在：它与 auto/sql 同名，会让 import sql.* 解析到错的目录",
+        )
+
+    def test_dbtools_is_not_a_package(self):
+        """``dbtools`` 是一组独立运行的维护脚本，不是包。
+
+        一旦出现 ``__init__.py``，它就重新变成和 ``auto/sql`` 争抢的候选。
+        """
+        self.assertFalse((PYTHON_DIR / "dbtools" / "__init__.py").exists())
 
     def test_sql_package_resolves_to_auto(self):
         sql = importlib.import_module("sql")

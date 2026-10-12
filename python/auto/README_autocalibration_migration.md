@@ -138,7 +138,7 @@ ratio = est_value / est_quote_ref          # 对 cal_m 线性
 修法（幂等，改完用真实管线自证）：
 
 ```powershell
-python -B sql\fix_middle_calibration.py --apply
+python -B dbtools\fix_middle_calibration.py --apply
 ```
 
 ```text
@@ -235,12 +235,12 @@ SH513100 | 国泰纳斯达克100ETF | ^NDX | 1.0  | 13.66412  | 2026-10-01 | 2.3
 ```powershell
 cd F:\woody\woodyweb\python
 
-python -B sql\backup_demo_tables.py       # 备份 10 张演示表到 sql\_demo_backup.json
-python -B sql\restore_demo_tables.py      # 预演还原
-python -B sql\restore_demo_tables.py --apply
-python -B sql\show_calibration.py         # 看 calibrationhistory 全表 + 中间层净值
-python -B sql\clear_middle_calibration.py --apply   # 清中间层某天校准值（便于重测）
-python -B sql\purge_index_calibration.py --apply    # 清误写到指数上的校准行
+python -B dbtools\backup_demo_tables.py       # 备份 10 张演示表到 dbtools\_demo_backup.json
+python -B dbtools\restore_demo_tables.py      # 预演还原
+python -B dbtools\restore_demo_tables.py --apply
+python -B dbtools\show_calibration.py         # 看 calibrationhistory 全表 + 中间层净值
+python -B dbtools\clear_middle_calibration.py --apply   # 清中间层某天校准值（便于重测）
+python -B dbtools\purge_index_calibration.py --apply    # 清误写到指数上的校准行
 ```
 
 **教训**：``seed_demo_data.py`` 的 ``MARKET_LAYERS`` / ``NET_VALUES`` 写的都是

@@ -24,9 +24,9 @@ $strQuery = 'CREATE TABLE IF NOT EXISTS `n5gl0n39mnyn183l_camman`.`'
 
 **改动方式**：只替换库名字符串，其余内容（含缩进）一字未动。
 
-**执行**：`D:\xampp\php\php.exe python/sql/ddl_generate.php`
+**执行**：`D:\xampp\php\php.exe python/dbtools/ddl_generate.php`
 （PATH 里的 `C:\php` 没有 mysqli 扩展，必须用 XAMPP 那个）
-输出：14 张表的 `SHOW CREATE TABLE`，整理成 `python/sql/schema.sql`。
+输出：14 张表的 `SHOW CREATE TABLE`，整理成 `python/dbtools/schema.sql`。
 
 **还原**：改回 `n5gl0n39mnyn183l_camman`，并做哈希校验：
 

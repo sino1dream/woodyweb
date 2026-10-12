@@ -64,7 +64,7 @@ from sql.historytable import CalibrationSql
 
 #: 中间层 → 它跟踪的标的（指数）的内置映射。
 #:
-#: 对应 ``sql/seed_demo_data.py`` 的 ``MARKET_LAYERS`` —— 那份是 demo 库里
+#: 对应 ``dbtools/seed_demo_data.py`` 的 ``MARKET_LAYERS`` —— 那份是 demo 库里
 #: "ETF 跟踪哪个指数"的权威来源。``fundpair`` 表在 demo 里只存"基金 → ETF"，
 #: 没有"ETF → 指数"，所以需要这张兜底表。
 MIDDLE_PAIR_FALLBACK = {

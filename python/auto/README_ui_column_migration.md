@@ -485,8 +485,8 @@ for ($i = 10; $i < 20; $i += 2) {         // 新浪 A 股行情的第 10~29 个�
 
 `schema.sql` 全是 `CREATE TABLE IF NOT EXISTS`，`build_schema.py` 重跑
 **也不会改动已存在的表**（这是刻意的：建表脚本不许动数据）。
-所以给旧库补列走 `sql/patch_realtimequote_orderbook.sql`，
-用新增的 `sql/apply_patch.py` 执行；它把 MySQL 的 1060（列已存在）
+所以给旧库补列走 `dbtools/patch_realtimequote_orderbook.sql`，
+用新增的 `dbtools/apply_patch.py` 执行；它把 MySQL 的 1060（列已存在）
 当成"打过了"跳过，可以重复跑。
 
 ### 读写两侧都要能退回"老库没有这一列"

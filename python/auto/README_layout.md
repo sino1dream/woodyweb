@@ -87,13 +87,16 @@ python -B auto\_scratch\_php_numfmt_compare.py               :: PHP 对照脚本
 
 ## 5. 已知取舍与坑
 
-1. **`python/sql` 与 `auto/sql` 同名。** `python/sql` 是建表/种子/备份脚本
-   （不是包，没有 `__init__.py`），`auto/sql` 是数据库访问包（有）。
-   Python 的解析规则让**有 `__init__.py` 的那个胜出**，所以 `import sql.xxx`
-   总能落到 `auto/sql`；但谁要是给 `python/sql` 也补一个 `__init__.py`，
-   解析就会静默跑到错的目录去。`test_layout.py` 里的
-   `SqlPackageShadowTest` 专门钉住这件事。**建议后续把 `python/sql`
-   改名成 `python/dbtools`**，彻底消掉同名。
+1. **~~`python/sql` 与 `auto/sql` 同名~~（已解决，改名 `python/dbtools`）。**
+   `python/dbtools` 是建表/种子/备份脚本（不是包，没有 `__init__.py`），
+   `auto/sql` 是数据库访问包（有）。同名时只能靠"**有 `__init__.py` 的那个
+   胜出**"这条规则才让 `import sql.xxx` 落到 `auto/sql` —— 谁给维护脚本目录
+   补一个 `__init__.py`，解析就会静默跑到错的目录去，且报错看不出原因。
+   已把维护脚本目录改名成 `python/dbtools`，从根上消掉同名；
+   `test_layout.py` 里的 `SqlPackageShadowTest` 改成钉住"改名不能被退回"
+   （`python/sql` 不许再出现、`python/dbtools` 不许有 `__init__.py`、
+   `import sql` 仍解析到 `auto/sql` 三件事）。改名只动目录名与文档引用，
+   脚本内部全部用 `os.path.dirname(__file__)` 推导路径，因此零代码改动。
 2. **测试文件留在根目录。** `unittest discover -s .` 的入口就是这里，
    且 `test_*.py` 需要 import 各子包，放在根目录最省事；搬进 `tests/`
    要额外处理 `sys.path` 与相互 import（`test_smaconfig.py` 会 import
@@ -123,6 +126,5 @@ python -B auto\_scratch\_php_numfmt_compare.py               :: PHP 对照脚本
 
 ## 7. 没做的事
 
-* `python/sql` 改名（见取舍 1）；
 * 测试文件搬进 `tests/`（见取舍 2）；
 * 历史 README 散文里的裸模块名（``quotestore.py`` 这种）未逐个改，按第 2 节映射表对照。

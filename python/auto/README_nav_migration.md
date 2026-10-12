@@ -157,7 +157,7 @@ PHP 把中间层数值写进 `netvaluehistory`，与基金单位净值混在一�
 | `python/auto/cli/navcli.py` | 命令行：抓取 / 检查 / 历史 / 交叉对比 / 接口说明 |
 | `python/auto/sql/quotestore.py` | 新增 `EstQuoteStore`（`estquote` 表读写） |
 | `python/auto/updater/quoteupdater.py` | 新增 `est_store` / `est_symbols`，派发中间层写入 |
-| `python/sql/schema.sql` | 新增 `estquote` 表（含量级说明注释） |
+| `python/dbtools/schema.sql` | 新增 `estquote` 表（含量级说明注释） |
 
 ## 七、踩到并修掉的一个真 bug
 
@@ -187,12 +187,12 @@ if not self.should_update(stock_id, today):   # 用今天判断
 ```powershell
 cd F:\woody\woodyweb\python
 
-python -B sql\build_schema.py          # 新建 estquote 表
+python -B dbtools\build_schema.py          # 新建 estquote 表
 python -B auto\navcli.py --check       # 只看源返回什么
 python -B auto\navcli.py               # 真实写入
 python -B auto\navcli.py --all-sources 161130   # 三源交叉验证
 python -B auto\quoteupdatercli.py --once        # 抓行情（顺带写 estquote）
-python -B sql\verify_pages.py          # 页面复核
+python -B dbtools\verify_pages.py          # 页面复核
 ```
 
 实测（真实联网 + 真实数据库）：

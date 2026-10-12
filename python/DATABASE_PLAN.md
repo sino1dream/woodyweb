@@ -1,7 +1,7 @@
 # 数据库表重建方案（已执行）
 
 > **状态：已于本次执行完成。** 结果与偏差见文末「执行结果」一节。
-> 临时改动记录见 `python/sql/PATCHES.md`。
+> 临时改动记录见 `python/dbtools/PATCHES.md`。
 
 对应需求：补齐 `stock`、`calibration`、`fundposition`、`netvaluehistory` 等表，
 让 Web 页面能显示真实数据。
@@ -176,18 +176,18 @@ python/
 ## 生成与还原
 
 - 用「PHP 生成」路线拿到**权威 DDL**：临时把 `php/sql/sqltable.php` 里 3 处硬编码
-  库名改成 `stock_data`，用 `D:\xampp\php\php.exe python/sql/ddl_generate.php`
+  库名改成 `stock_data`，用 `D:\xampp\php\php.exe python/dbtools/ddl_generate.php`
   建出并导出 14 张表，然后立即还原。
 - 还原校验：改前/改后 SHA256 均为
   `A5601668520D7471B3F5A2FA96A13CA465E611010B257B3A90F0D5300F87C824`，
-  `git status -- php` 无输出。详见 `python/sql/PATCHES.md`。
+  `git status -- php` 无输出。详见 `python/dbtools/PATCHES.md`。
 - 一个环境坑：PATH 里的 `C:\php` **没有 mysqli 扩展**，必须用 XAMPP 的
   `D:\xampp\php\php.exe`，且不能加 `-n`（会禁用扩展）。
 
 ## 实际落地文件
 
 ```text
-python/sql/
+python/dbtools/
   schema.sql            # 14 张表 DDL，带中文注释（由权威导出整理）
   ddl_generate.php      # 从 PHP 权威生成 DDL 的一次性脚本（保留以便复现）
   build_schema.py       # 按 schema.sql 建表，可重复执行
@@ -228,8 +228,8 @@ python/sql/
 ## 验证结果
 
 ```text
-python -B sql\check_schema.py     # 14 张核心表齐全，8 张 Web 依赖表有数据
-python -B sql\verify_pages.py     # 分组列表出名称/仓位/校准值/日期；估值 ≈ 官方净值
+python -B dbtools\check_schema.py     # 14 张核心表齐全，8 张 Web 依赖表有数据
+python -B dbtools\verify_pages.py     # 分组列表出名称/仓位/校准值/日期；估值 ≈ 官方净值
 python -B -m unittest discover -s auto         # 222 个通过
 python -B -m unittest discover -s web\tests    # 30 个通过
 ```

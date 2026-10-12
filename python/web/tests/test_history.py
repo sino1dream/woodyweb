@@ -235,7 +235,7 @@ class HistoryRouteTest(unittest.TestCase):
         换手口径：100 * volume / (shares万份 * 10000)，对应 PHP
         ``GetTurnoverDisplay()``（php/ui/stockcomm.php:70）。
         快照数据是自洽的（份额 80500 万份、成交 6369249），
-        真实样本见 python/sql/_seed_shares_sample.py。
+        真实样本见 python/dbtools/_seed_shares_sample.py。
         """
         data = self.client.get("/api/history/shareshistory/SZ161130").get_json()
         cells = data["rows"][0]["cells"]

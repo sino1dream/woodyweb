@@ -99,7 +99,7 @@ def cmd_fetch(args) -> int:
 
     symbols = _future_symbols(source)
     if not symbols:
-        print("没有可抓的期货符号（先跑 python -B sql\\_seed_futures_pair.py --apply）。")
+        print("没有可抓的期货符号（先跑 python -B dbtools\\_seed_futures_pair.py --apply）。")
         source.connection.close()
         return 0
 

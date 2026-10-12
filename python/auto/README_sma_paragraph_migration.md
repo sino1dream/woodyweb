@@ -127,7 +127,7 @@ CREATE TABLE IF NOT EXISTS futurepremium (
 );
 ```
 
-演示数据由 `sql/seed_future_premium.py` 灌（幂等）：
+演示数据由 `dbtools/seed_future_premium.py` 灌（幂等）：
 `hf_NQ` 5.00625 / `hf_ES` 4.75，都记在 `2026-12-18`。
 
 **单位是百分点**（`5.00625` 表示 5.00625%），所以要 `/ 100.0` ——

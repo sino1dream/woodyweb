@@ -411,7 +411,7 @@ class RealReferenceBuildingTest(unittest.TestCase):
 
         **不走 HTTP**：``/fund/<symbol>`` 那条路由依赖真实 ``get_symbol_group()``
         （查库），在离线测试里会 404。页面渲染另由真实验收脚本覆盖
-        （``sql/verify_pages.py`` 与 P0 对照）。
+        （``dbtools/verify_pages.py`` 与 P0 对照）。
         """
         source = StoredQuoteSource()
         refs = build_stock_references(["SZ161130"], source=source)

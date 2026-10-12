@@ -592,7 +592,7 @@ class StockHistorySql:
 
         列名是 ``close`` 而不是 ``adjclose``：``stockema50`` / ``stockema200``
         两张表只有 ``id`` / ``stock_id`` / ``date`` / ``close``
-        （见 ``sql/schema.sql``），没有复权列。
+        （见 ``dbtools/schema.sql``），没有复权列。
         """
         row = self._fetchone(
             "SELECT `close` FROM `%s` WHERE stock_id = %%s AND `date` = %%s LIMIT 1"

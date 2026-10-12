@@ -18,8 +18,8 @@
 用法：
 
     cd F:\\woody\\woodyweb\\python
-    python -B sql\\sync_demo_netvalue.py
-    python -B sql\\sync_demo_netvalue.py --premium 0.02    # 想要 2% 溢价
+    python -B dbtools\\sync_demo_netvalue.py
+    python -B dbtools\\sync_demo_netvalue.py --premium 0.02    # 想要 2% 溢价
 """
 
 from __future__ import annotations
@@ -121,7 +121,7 @@ def main() -> int:
     finally:
         connection.close()
 
-    print("\n完成。用 python -B sql\\verify_pages.py 复核。")
+    print("\n完成。用 python -B dbtools\\verify_pages.py 复核。")
     return 0
 
 

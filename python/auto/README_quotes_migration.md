@@ -28,7 +28,7 @@
 | `python/auto/source/sinaquotes.py` | `php/stock.php::GetSinaQuotes()`、`php/externalurl.php::GetSinaDataUrl()`、`php/url.php::url_get_contents()` | HTTP 抓取、Referer、GBK 解码、按符号切行、60 秒缓存 |
 | `python/auto/sql/quotestore.py` | `php/stock/sqlstocksymbol.php::StockHistorySql::WriteHistory()`、`php/stock/sqldailyclose.php::WriteDaily()`、`php/stock/mystockref.php::_updateStockHistory()` | 行情/净值落库、字段校验、溢价率 |
 | `python/auto/cli/quotecli.py` | `php/stock.php::StockPrefetchArrayData()` 那条链路 | 命令行：抓取 + 落库 + `--check` 预览 |
-| `python/sql/sync_demo_netvalue.py` | —— | 把种子净值与真实市价对齐，让溢价率有意义 |
+| `python/dbtools/sync_demo_netvalue.py` | —— | 把种子净值与真实市价对齐，让溢价率有意义 |
 
 ### 抓取层的三个关键细节
 
@@ -101,7 +101,7 @@ python -B -m unittest discover -s web\tests -p "test_*.py"   # 30 个
 python -B auto\quotecli.py SZ161130 --check                  # 真实抓取（需网络）
 python -B auto\_quote_probe.py --parse                       # 离线走通"解析 -> 落库"
 python -B auto\_quote_probe.py                               # 查库里的市价/净值/溢价率
-python -B sql\sync_demo_netvalue.py                          # 对齐种子净值后重解校准值
+python -B dbtools\sync_demo_netvalue.py                          # 对齐种子净值后重解校准值
 ```
 
 新增 `test_sinaquotes.py`（23 个）覆盖：按符号切行、GBK/UTF-8 解码、

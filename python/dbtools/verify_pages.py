@@ -3,7 +3,7 @@
 用法：
 
     cd F:\\woody\\woodyweb\\python
-    python -B sql\\verify_pages.py
+    python -B dbtools\\verify_pages.py
 """
 
 from __future__ import annotations

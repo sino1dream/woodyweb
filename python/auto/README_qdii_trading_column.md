@@ -117,14 +117,14 @@ python -B auto/_php_qdiicolumn_compare.py --selftest
   正是这次要犯的错：**有人把 `QQQ` 写成生产的 `41.488229`，基金估值立刻从
   `4.59` 变成 `20245.2`**，页面不报错，只显示荒谬数字。
 
-演示库把中间层净值归一化成 1.0（`sql/seed_demo_data.MARKET_LAYERS`，刻意设计），
+演示库把中间层净值归一化成 1.0（`dbtools/seed_demo_data.MARKET_LAYERS`，刻意设计），
 于是按 README 第 3.3 节，`est_m × cal_m` 这个**乘积必须守恒**：
 演示库的 `est_m` 是中间层实时价（QQQ ≈ 757），配的 `cal_m` 只能是 `0.008945`。
 这跟配对换算要的"点位 ÷ ETF 价 ≈ 41.2"是**两个数**，在归一化表示下不可能同时成立。
 
 ### 6.2 受控实验：改对了这一格，估值就炸
 
-备份整库（`sql/_snapshots/calib_before_20261012.sql`）之后，临时把中间层改写成
+备份整库（`dbtools/_snapshots/calib_before_20261012.sql`）之后，临时把中间层改写成
 生产量级（`QQQ = 30883.15 / 749.41308 = 41.21`、`SPY = 7811.54 / 769.46 = 10.15`）
 抓页面，然后立即还原：
 

@@ -1,12 +1,12 @@
 """临时工具：从 ``_demo_backup.json`` 还原演示数据表。
 
-重播种前用 ``_backup_demo_tables.py`` 生成备份，这里按主键 upsert 回去，
+重播种前用 ``backup_demo_tables.py`` 生成备份，这里按主键 upsert 回去，
 并把备份里没有的行删掉（即"还原成备份那一刻的状态"）。
 
-用法：
+用法（在 ``python`` 目录下执行）：
 
-    python -B sql\\_restore_demo_tables.py            # 预演
-    python -B sql\\_restore_demo_tables.py --apply    # 真还原
+    python -B dbtools\\restore_demo_tables.py            # 预演
+    python -B dbtools\\restore_demo_tables.py --apply    # 真还原
 """
 
 from __future__ import annotations

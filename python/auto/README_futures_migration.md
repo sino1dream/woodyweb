@@ -17,7 +17,7 @@
 * `python/auto/calc/futurescalib.py` —— 期货配对、校准、实时 EST 取值
 * `python/auto/cli/futurescli.py` —— 命令行（抓取 / 校准 / 显示）
 * `python/auto/test_futures.py` —— 36 个测试
-* `python/sql/_seed_futures_pair.py` / `_calibrate_futures.py` —— 配对与校准数据
+* `python/dbtools/seed_futures_pair.py` / `calibrate_futures.py` —— 配对与校准数据
 * `futurespair` 表（`schema.sql`）
 
 ## 一、先说一件重要的事：PHP 里**没有**可照抄的实现
@@ -168,12 +168,12 @@ SZ161130   4.586786    4.586786    4.587085    期货 hf_NQ
 ```powershell
 cd F:\woody\woodyweb\python
 
-python -B sql\_seed_futures_pair.py --apply     # 建配对（一次性）
+python -B dbtools\seed_futures_pair.py --apply     # 建配对（一次性）
 python -B auto\futurescli.py                    # 抓期货 + 落快照 + 尝试校准
 python -B auto\futurescli.py --show             # 看期货行情与校准状态
 python -B auto\futurescli.py --est              # 三个 EST（实时用期货）
 python -B auto\futurescli.py --api              # 口径说明
-python -B sql\_calibrate_futures.py --apply     # 写期货校准值
+python -B dbtools\calibrate_futures.py --apply     # 写期货校准值
 ```
 
 `quoteupdatercli.py --once` 现在也会抓期货（`collect_symbols_from_source()` 已覆盖），
@@ -201,6 +201,6 @@ python -B sql\_calibrate_futures.py --apply     # 写期货校准值
    印度与欧洲**没有对应期货**，按作者文档实时 EST 直接用指数。
 2. **`AverageCalibraion()` 的自动触发**：PHP 在构造 `FundPairReference` 时
    检查 `CheckAdjustFactorTime()` 并顺手校准。本版做成显式命令
-   （`futurescli.py` / `_calibrate_futures.py`），还没接进页面访问路径。
+   （`futurescli.py` / `calibrate_futures.py`），还没接进页面访问路径。
 3. **`^NDX` / `^GSPC` 自身没有行情快照**：所以严格时刻对齐那条路在本项目里
    走不通（已用 ETF 反推替代）。要把指数行情也落库才能走 PHP 原逻辑。

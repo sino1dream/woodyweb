@@ -32,9 +32,9 @@
 
 用法：
 
-    python -B sql\\seed_index_history.py                 # 预演（只抓不写）
-    python -B sql\\seed_index_history.py --apply          # 真写
-    python -B sql\\seed_index_history.py --apply --days 800
+    python -B dbtools\\seed_index_history.py                 # 预演（只抓不写）
+    python -B dbtools\\seed_index_history.py --apply          # 真写
+    python -B dbtools\\seed_index_history.py --apply --days 800
 """
 
 from __future__ import annotations

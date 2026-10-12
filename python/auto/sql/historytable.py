@@ -450,7 +450,7 @@ class SharesHistorySql(DailyCloseSql):
 
     **注意**：PHP 里表名是 ``shareshistory`` 不是 ``fundshares``
     （``php/sql/sqldailyclose.php:303``）；Python 侧原来没有这张表，
-    见 ``python/sql/schema.sql`` 与本模块配套的建表说明。
+    见 ``python/dbtools/schema.sql`` 与本模块配套的建表说明。
     """
 
     def __init__(self, connection: Any):

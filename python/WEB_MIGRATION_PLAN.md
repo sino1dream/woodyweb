@@ -217,7 +217,7 @@ Flask 路由
 - 净值默认走**双源校验**（`crosscheck`）：东方财富为主信源、新浪为对照，  
   清洗后对比，差异超容差打 `ALERT` 到 stderr；主源缺失自动用对照源。  
   可用 `PALMMICRO_NAV_SOURCE` 退回单源，容差用 `PALMMICRO_NAV_TOLERANCE`。
-- `python/sql/schema.sql` 新增 `estquote` 表：中间层估值数值单独存，  
+- `python/dbtools/schema.sql` 新增 `estquote` 表：中间层估值数值单独存，  
   不再像 PHP 那样混进 `netvaluehistory`。详见  
   `python/auto/README_nav_migration.md` 与方案 `python/NAV_SOURCE_PLAN.md`。
 - `python/auto/updater/estcalibration.py`：中间层估值**尺度自洽**工具（诊断 + 重标定）。  
@@ -322,7 +322,7 @@ Flask 路由
   偏差 >5% 拒写。它现在能挡住上面那次事故（实测拒绝理由给出  
   `偏差 468757% > 容差 5%`）。  
   新增 `sql/fix_middle_calibration.py`（幂等修复 + 改完自证估值）、  
-  `sql/backup_demo_tables.py` / `restore_demo_tables.py`（改数据前的安全网）。  
+  `dbtools/backup_demo_tables.py` / `restore_demo_tables.py`（改数据前的安全网）。  
   运维手册见 skill `palmmicro-ops`。
 - **页面新增「基金净值 / 基金净值日期」两列**（12 → 14 列）：数据来自  
   `netvaluehistory`（官方公布的单位净值），与「最新价 / 最新行情日期」是两回事  
@@ -463,7 +463,7 @@ Flask 路由
     靠 `hasattr` 探测它，没有就恒返回 `None`）；
   - 演示库 `fundpair` 缺 `^NDX → hf_NQ`、`^GSPC → hf_ES` 两行。
 
-  本步补上两者（新增 `sql/seed_fundpair_index.py`，幂等），实测：
+  本步补上两者（新增 `dbtools/seed_fundpair_index.py`，幂等），实测：
   `SZ161130` 配对到 `hf_NQ`、实时 EST = `4.555899`；
   **EST 表 8 列**（官方EST/EST日期/溢价/参考EST/溢价/实时EST/溢价）、
   参考数据 **5 行**（`NQ 31137.58` 期货行已出现）。
@@ -602,7 +602,7 @@ Flask 路由
   （`EchoQdiiSmaParagraph()` 用的就是它）。
 
   新增 `auto/indexhistory.py`（新浪美股日线 jsonp 接口）+
-  `sql/seed_index_history.py`（幂等），给 `^NDX` / `^GSPC` 各补 **800 天**历史
+  `dbtools/seed_index_history.py`（幂等），给 `^NDX` / `^GSPC` 各补 **800 天**历史
   （2023-08-03 ~ 2026-10-09），并顺带算 `EMA50` / `EMA200` ——
   `GetBullBear()` 是**直接查** `stockema*` 表的，不是算出来的，那两张表原来
   是空的，所以页面上不会出现"牛市/熊市"。

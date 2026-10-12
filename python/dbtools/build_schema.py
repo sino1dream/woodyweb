@@ -3,8 +3,8 @@
 用法：
 
     cd F:\\woody\\woodyweb\\python
-    python -B sql\\build_schema.py            # 建表（已存在则跳过）
-    python -B sql\\build_schema.py --dry-run  # 只打印将要执行的语句
+    python -B dbtools\\build_schema.py            # 建表（已存在则跳过）
+    python -B dbtools\\build_schema.py --dry-run  # 只打印将要执行的语句
 
 设计要点：
 

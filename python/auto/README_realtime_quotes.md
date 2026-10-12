@@ -106,7 +106,7 @@ GET /api/quotes/source                              # Web 侧同样可查
 第一版我把实时行情放在**进程内存**里，结果踩了坑：抓取进程写的缓存，
 Web 进程读不到 —— 两个进程的内存互不可见，多 worker 更不可能共享。
 
-所以新增了 `realtimequote` 表（`python/sql/schema.sql`），只保留每个符号的
+所以新增了 `realtimequote` 表（`python/dbtools/schema.sql`），只保留每个符号的
 **最新一条**快照（`id` 即 `stock_id`，一符号一行）：
 
 ```text
@@ -121,7 +121,7 @@ Web 进程读不到 —— 两个进程的内存互不可见，多 worker 更不
 于是「五档交易」表**不必在请求期联网**就能渲染。
 详见 `README_ui_column_migration.md` 的第四轮那一节。
 
-> 加列走 `sql/patch_realtimequote_orderbook.sql`（用 `sql/apply_patch.py` 执行）——
+> 加列走 `dbtools/patch_realtimequote_orderbook.sql`（用 `dbtools/apply_patch.py` 执行）——
 > `schema.sql` 是 `CREATE TABLE IF NOT EXISTS`，不会给已存在的表补列。
 > 读写两侧都能在"列不存在"时退回原样（只认 MySQL 1054 这一个错码）。
 
@@ -191,7 +191,7 @@ GET /fund/qdiilof      → <td>4.796 <span class="quote-time">15:00:00</span></t
 cd F:\woody\woodyweb\python
 
 # 建表（新增了 realtimequote）
-python -B sql\build_schema.py
+python -B dbtools\build_schema.py
 
 # 抓一轮
 python -B auto\quoteupdatercli.py --once --verbose

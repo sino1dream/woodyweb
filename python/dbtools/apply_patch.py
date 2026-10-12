@@ -3,8 +3,8 @@
 用法：
 
     cd F:\\woody\\woodyweb\\python
-    D:\\python\\python.exe -B sql\\apply_patch.py sql\\patch_realtimequote_orderbook.sql
-    D:\\python\\python.exe -B sql\\apply_patch.py sql\\patch_xxx.sql --dry-run
+    D:\\python\\python.exe -B dbtools\\apply_patch.py dbtools\\patch_realtimequote_orderbook.sql
+    D:\\python\\python.exe -B dbtools\\apply_patch.py dbtools\\patch_xxx.sql --dry-run
 
 为什么要有它：``schema.sql`` 全是 ``CREATE TABLE IF NOT EXISTS``，
 ``build_schema.py`` 重跑也不会改动已存在的表（这是刻意的 —— 建表脚本不许动数据）。
@@ -53,7 +53,7 @@ def main() -> int:
     args = [arg for arg in sys.argv[1:] if not arg.startswith("--")]
     dry_run = "--dry-run" in sys.argv
     if not args:
-        print("用法：python -B sql\\apply_patch.py <补丁.sql> [--dry-run]")
+        print("用法：python -B dbtools\\apply_patch.py <补丁.sql> [--dry-run]")
         return 2
 
     path = args[0]

@@ -21,7 +21,7 @@ PHP 里 ``StockSql extends KeyNameSql extends TableSql``，构造函数里除了
 留着避免调用方各写一遍裸 SQL。
 
 **没有迁** ``InsertKey()`` / ``Create()`` 这类写操作：建表与种子数据归
-``python/sql/``（见 ``build_schema.py`` / ``seed_demo_data.py``），
+``python/dbtools/``（见 ``build_schema.py`` / ``seed_demo_data.py``），
 页面层不需要写 ``stock`` 表。
 
 ## 排序与 limit 都照抄 PHP
