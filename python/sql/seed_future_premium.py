@@ -41,7 +41,7 @@ for _path in (AUTO_DIR, PYTHON_DIR):
     if _path not in sys.path:
         sys.path.insert(0, _path)
 
-from stockdata import load_mysql_env, mysql_config_from_env  # noqa: E402
+from core.stockdata import load_mysql_env, mysql_config_from_env  # noqa: E402
 
 #: ``(符号, 利率百分点, 交割日)`` —— 只给演示库当前在跟的两个期货。
 SEED_ROWS = (

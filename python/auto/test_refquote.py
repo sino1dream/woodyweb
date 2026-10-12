@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import unittest
 
-from refquote import (
+from ref.refquote import (
     NetworkQuoteSource,
     SnapshotQuoteSource,
     apply_network,

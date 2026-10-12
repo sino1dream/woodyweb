@@ -1,7 +1,7 @@
 import datetime
 import unittest
 
-from stocksymbol import (
+from core.stocksymbol import (
     BJ_PREFIX,
     SH_PREFIX,
     SINA_CN_FUTURE_PREFIX,

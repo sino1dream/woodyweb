@@ -48,8 +48,8 @@ from web.bootstrap import install_paths
 
 install_paths()
 
-from historytable import TableRow  # noqa: E402
-from uicolumn import (  # noqa: E402
+from sql.historytable import TableRow  # noqa: E402
+from ui.uicolumn import (  # noqa: E402
     columns_to_dicts,
     column_base,
     column_change,
@@ -396,8 +396,8 @@ def _fund_reference_symbols(symbol: str, source: Any) -> tuple:
     日本用 ``JPCNY``/``fx_sjpycny``，不能一律按美元处理。
     """
     try:
-        from refobj import build_qdii_reference
-        from fundcalc import qdii_est_symbol, qdii_hk_est_symbol, qdii_jp_est_symbol, qdii_eu_est_symbol
+        from ref.refobj import build_qdii_reference
+        from calc.fundcalc import qdii_est_symbol, qdii_hk_est_symbol, qdii_jp_est_symbol, qdii_eu_est_symbol
     except ImportError:
         return None, None, None
 
@@ -567,7 +567,7 @@ def _build_one(symbol: str, source: Any = None, quote_loader: Any = None) -> Any
     ``refobj`` 不可用时退回 ``stockref.StockReference``（只有行情，字段更少）。
     """
     try:
-        from refobj import MysqlReference
+        from ref.refobj import MysqlReference
     except ImportError:
         return _build_one_via_stockref(symbol, quote_loader)
 
@@ -587,7 +587,7 @@ def _build_one(symbol: str, source: Any = None, quote_loader: Any = None) -> Any
 
 def _build_one_via_stockref(symbol: str, quote_loader: Any = None) -> Any:
     """回退实现：只有行情的瘦引用对象。"""
-    from stockref import StockReference
+    from ref.stockref import StockReference
 
     ref = StockReference(symbol, quote_loader=quote_loader)
     try:
@@ -616,7 +616,7 @@ def build_reference_table(
 
 def default_reference_service_factory() -> ReferenceService:
     """创建使用当前请求数据库连接的参考数据服务（名称从库里查）。"""
-    from stockdata import MySqlFundDataSource
+    from core.stockdata import MySqlFundDataSource
     from web.db import get_db
 
     return ReferenceService(MySqlFundDataSource(get_db()))

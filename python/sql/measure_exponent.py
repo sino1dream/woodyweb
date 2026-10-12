@@ -28,8 +28,8 @@ if hasattr(sys.stdout, "buffer"):
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "auto"))
 
-from fundestcalc import build_estimate_calculator  # noqa: E402
-from stockdata import MySqlFundDataSource  # noqa: E402
+from calc.fundestcalc import build_estimate_calculator  # noqa: E402
+from core.stockdata import MySqlFundDataSource  # noqa: E402
 
 FUND = "SZ161130"
 MIDDLE = "QQQ"

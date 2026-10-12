@@ -1,11 +1,11 @@
-# StockSymbol 迁移说明（php/stock/stocksymbol.php → python/auto/stocksymbol.py）
+# StockSymbol 迁移说明（php/stock/stocksymbol.php → python/auto/core/stocksymbol.py）
 
-本文档记录 `php/stock/stocksymbol.php` 到 `python/auto/stocksymbol.py` 的迁移范围、
+本文档记录 `php/stock/stocksymbol.php` 到 `python/auto/core/stocksymbol.py` 的迁移范围、
 语义取舍和验证方式，对应 `python/WEB_MIGRATION_PLAN.md` 中「后续迁移优先级」第 1 步。
 
 ## 已迁移内容
 
-`python/auto/stocksymbol.py` 是纯逻辑层：不访问数据库、不发网络请求、不渲染 HTML。
+`python/auto/core/stocksymbol.py` 是纯逻辑层：不访问数据库、不发网络请求、不渲染 HTML。
 
 对应关系如下：
 

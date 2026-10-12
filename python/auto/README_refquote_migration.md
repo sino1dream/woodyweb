@@ -32,7 +32,7 @@ get_stored_quote('SZ161130') = RecentQuote(price='4.884', prev_price='4.814',
 用户裁决过的取向 —— 与项目既有分层一致：**抓取归 daemon，页面读快照**，
 联网只是快照缺失时的最后手段。
 
-新增 `python/auto/refquote.py`：
+新增 `python/auto/ref/refquote.py`：
 
 ============================  ====================================================
 函数                           作用
@@ -86,7 +86,7 @@ QdiiReference.__init__
 而 `refobj` 从没设过 `external_link`，于是首格空、**整行少一格、后面全列错位**。
 
 workbuddy 把外链族（`php/ui/htmlelement.php`）列为"刻意不迁"，
-但那不等于可以让首格空着。所以新增 `python/auto/externallink.py`，
+但那不等于可以让首格空着。所以新增 `python/auto/ref/externallink.py`，
 **只补参考数据表用到的这一个**：
 
 ```text

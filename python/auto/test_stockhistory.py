@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import unittest
 
-import stockhistory as sh
+from sql import stockhistory as sh
 
 
 class EstSmaTest(unittest.TestCase):

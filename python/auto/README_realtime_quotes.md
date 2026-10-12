@@ -35,7 +35,7 @@ PHP 的实际链路（以 `/qdiigroup` 这类页面为例）：
 
 ## 二、Python 版的行情源接口（换源只改一处）
 
-核心在 `python/auto/quotesource.py`：
+核心在 `python/auto/source/quotesource.py`：
 
 ```python
 class MarketQuoteSource:
@@ -129,11 +129,11 @@ Web 进程读不到 —— 两个进程的内存互不可见，多 worker 更不
 
 | 文件 | 职责 |
 | --- | --- |
-| `python/auto/quotesource.py` | 行情源抽象与注册表（**换源接口**） |
-| `python/auto/quoteupdater.py` | 抓取 → 解析 → 缓存/落库；市场时段判断；进程级单例 |
-| `python/auto/quoteupdatercli.py` | 命令行：`--once` / `--daemon` / `--api` / `--only-open` |
-| `python/auto/sinaquotes.py` | 新浪实现（`SinaMarketQuoteSource`） |
-| `python/auto/quotestore.py` | `RealtimeQuoteStore`（快照表读写）、溢价率 |
+| `python/auto/source/quotesource.py` | 行情源抽象与注册表（**换源接口**） |
+| `python/auto/updater/quoteupdater.py` | 抓取 → 解析 → 缓存/落库；市场时段判断；进程级单例 |
+| `python/auto/cli/quoteupdatercli.py` | 命令行：`--once` / `--daemon` / `--api` / `--only-open` |
+| `python/auto/source/sinaquotes.py` | 新浪实现（`SinaMarketQuoteSource`） |
+| `python/auto/sql/quotestore.py` | `RealtimeQuoteStore`（快照表读写）、溢价率 |
 | `python/web/routes/quote.py` | `/api/quotes`、`/api/quotes/refresh`、`/api/quotes/source` |
 | `python/web/services/fund_list_service.py` | 列表页优先用实时价，取不到才回落收盘价 |
 

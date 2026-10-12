@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import unittest
 
-from stocksql import (
+from sql.stocksql import (
     STOCK_KEY_NAME,
     STOCK_TABLE,
     SqlBuildLimit,

@@ -38,7 +38,7 @@ for _path in (AUTO_DIR, PYTHON_DIR):
     if _path not in sys.path:
         sys.path.insert(0, _path)
 
-from stockdata import (  # noqa: E402
+from core.stockdata import (  # noqa: E402
     MySqlFundDataSource,
     StockDataArrayBuilder,
     load_mysql_env,
@@ -48,7 +48,7 @@ from web.bootstrap import install_paths  # noqa: E402
 
 install_paths()
 
-from fundcalc import PalmmicroFundCalculator  # noqa: E402
+from calc.fundcalc import PalmmicroFundCalculator  # noqa: E402
 
 SEED_DATE = "2026-01-02"
 

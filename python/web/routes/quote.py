@@ -17,8 +17,8 @@ from web.bootstrap import install_paths
 
 install_paths()
 
-from quoteupdater import get_updater  # noqa: E402
-from quotesource import list_quote_sources  # noqa: E402
+from updater.quoteupdater import get_updater  # noqa: E402
+from source.quotesource import list_quote_sources  # noqa: E402
 
 
 quote_bp = Blueprint("quote", __name__)

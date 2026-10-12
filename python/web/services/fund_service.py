@@ -8,8 +8,8 @@ from web.bootstrap import install_paths
 
 install_paths()
 
-from fundcalc import PalmmicroFundCalculator
-from stockdata import FundDataSource, MySqlFundDataSource, StockDataArrayBuilder, stock_get_symbol
+from calc.fundcalc import PalmmicroFundCalculator
+from core.stockdata import FundDataSource, MySqlFundDataSource, StockDataArrayBuilder, stock_get_symbol
 from web.db import get_db
 
 

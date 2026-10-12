@@ -9,7 +9,7 @@
 | ``php/stock/fundpairref.php:174`` ``AverageCalibraion()`` | ``futurescalib.FuturesCalibrator.calibrate()``（期货那一路） |
 | ``woody/res/php/_qdiigroup.php:81`` 页面触发 | ``web/services/fund_list_service.py`` 的 ``_auto_calibrate()`` |
 
-新增 ``python/auto/autocalibration.py`` 与 ``python/auto/test_autocalibration.py``（19 个测试）。
+新增 ``python/auto/updater/autocalibration.py`` 与 ``python/auto/test_autocalibration.py``（19 个测试）。
 
 ## 一、触发点
 

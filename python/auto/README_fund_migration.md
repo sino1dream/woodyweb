@@ -43,19 +43,19 @@ python -m pip install PyMySQL
 Generate migrated stock data and official estimates:
 
 ```powershell
-python -B python\auto\fundcli.py "SZ159518,SZ161125" --data --pretty
+python -B python\auto\cli/fundcli.py "SZ159518,SZ161125" --data --pretty
 ```
 
 Estimate with realtime source values:
 
 ```powershell
-python -B python\auto\fundcli.py "SZ159518" --source XOP=140 --source CNY=7.1 --pretty
+python -B python\auto\cli/fundcli.py "SZ159518" --source XOP=140 --source CNY=7.1 --pretty
 ```
 
 Reverse-estimate the peer value from a fund value:
 
 ```powershell
-python -B python\auto\fundcli.py "SZ159518" --reverse SZ159518=1.376 --reverse CNY=7.1 --pretty
+python -B python\auto\cli/fundcli.py "SZ159518" --reverse SZ159518=1.376 --reverse CNY=7.1 --pretty
 ```
 
 ## Tests

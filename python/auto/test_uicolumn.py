@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import unittest
 
-from uicolumn import (
+from ui.uicolumn import (
     COLUMN_PRESETS,
     HOLDINGS_NETVALUE_DIFF,
     POS_NETVALUE_DIFF,

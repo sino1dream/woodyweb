@@ -25,7 +25,7 @@ if hasattr(sys.stdout, "buffer"):
 
 sys.path.insert(0, "auto")
 
-from stockdata import MySqlFundDataSource  # noqa: E402
+from core.stockdata import MySqlFundDataSource  # noqa: E402
 
 # 只清**基金与中间层**符号的旧行。
 #

@@ -39,7 +39,7 @@ import os
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "auto"))
 
-from stockdata import MySqlFundDataSource  # noqa: E402
+from core.stockdata import MySqlFundDataSource  # noqa: E402
 
 # (指数符号, 期货符号, 期货中文名)
 PAIRS = [

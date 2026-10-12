@@ -6,7 +6,7 @@ SMA 表（`smaparagraph`）的代码早就完成了，但**页面上一直看不
 根因不是代码，是数据 —— 而且是**自锁**的：
 
 行情 daemon 的 `collect_symbols_from_source()` 是**从 `stockhistory` 反推**
-要抓哪些符号的（`php/quoteupdater` / `python/auto/quoteupdater.py:600`）：
+要抓哪些符号的（`php/quoteupdater` / `python/auto/updater/quoteupdater.py:600`）：
 
 ```sql
 SELECT s.id, s.symbol FROM stock s

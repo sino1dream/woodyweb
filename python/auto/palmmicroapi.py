@@ -1,4 +1,4 @@
-from fundcalc import PalmmicroFundCalculator
+from calc.fundcalc import PalmmicroFundCalculator
 
 
 class PalmmicroAPI(PalmmicroFundCalculator):

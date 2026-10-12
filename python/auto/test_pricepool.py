@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import unittest
 
-from pricepool import (
+from ui.pricepool import (
     PRICE_POOL_CHANGE_LABELS,
     PRICE_POOL_PREMIUM_LABELS,
     PRICE_POOL_TABLE_ID,

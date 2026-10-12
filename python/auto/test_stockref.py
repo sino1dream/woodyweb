@@ -11,7 +11,7 @@ import datetime
 import os
 import unittest
 
-import stockref as sr
+from ref import stockref as sr
 
 
 class NumberFormatTest(unittest.TestCase):

@@ -18,7 +18,7 @@
 import datetime
 import unittest
 
-from futurepremium import (
+from calc.futurepremium import (
     DAYS_IN_YEAR,
     DEFAULT_FUTURE_END_DATE,
     DEFAULT_FUTURE_RATE,

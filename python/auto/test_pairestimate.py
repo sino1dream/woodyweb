@@ -11,7 +11,7 @@
 
 import unittest
 
-from pairestimate import est_from_pair, est_to_pair, get_default_cny
+from calc.pairestimate import est_from_pair, est_to_pair, get_default_cny
 
 
 class FakePairRef:

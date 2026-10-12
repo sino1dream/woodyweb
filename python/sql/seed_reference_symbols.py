@@ -50,7 +50,7 @@ if hasattr(sys.stdout, "buffer"):
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "auto"))
 
-from stockdata import MySqlFundDataSource  # noqa: E402
+from core.stockdata import MySqlFundDataSource  # noqa: E402
 
 #: 要补的标的（符号, 中文名）。名字按行业惯例，与生产端页面口径一致。
 #:

@@ -7,12 +7,12 @@
 
 | PHP 源文件 | Python 模块 | 说明 |
 | --- | --- | --- |
-| `php/stock/stockref.php` | `python/auto/stockref.py` | `StockReference`、`ExtendedTradingReference` 与行情字段解析 |
-| `php/stock/stockprefetch.php` | `python/auto/stockprefetch.py` | 「要不要重新取行情」的调度判断 |
-| `php/debug.php` 的格式化函数 | `python/auto/stockref.py` | `rtrim0()`、`IsZeroString()`、`GetHM()`、日期时间格式化 |
-| `php/stock.php` 的行情解析函数 | `python/auto/stockref.py` | `explodeQuote()`、`RemoveDoubleQuotationMarks()`、`StockGetPercentage()` |
-| `php/class/year_month_day.php` 的时间判定 | `python/auto/stockprefetch.py` | `NeedFile()`、周几判断 |
-| 新增 | `python/auto/tzutil.py` | 时区获取：优先 `zoneinfo`，旧解释器回退 |
+| `php/stock/stockref.php` | `python/auto/ref/stockref.py` | `StockReference`、`ExtendedTradingReference` 与行情字段解析 |
+| `php/stock/stockprefetch.php` | `python/auto/updater/stockprefetch.py` | 「要不要重新取行情」的调度判断 |
+| `php/debug.php` 的格式化函数 | `python/auto/ref/stockref.py` | `rtrim0()`、`IsZeroString()`、`GetHM()`、日期时间格式化 |
+| `php/stock.php` 的行情解析函数 | `python/auto/ref/stockref.py` | `explodeQuote()`、`RemoveDoubleQuotationMarks()`、`StockGetPercentage()` |
+| `php/class/year_month_day.php` 的时间判定 | `python/auto/updater/stockprefetch.py` | `NeedFile()`、周几判断 |
+| 新增 | `python/auto/core/tzutil.py` | 时区获取：优先 `zoneinfo`，旧解释器回退 |
 
 ### stockref.py
 

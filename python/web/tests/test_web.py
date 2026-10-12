@@ -15,7 +15,7 @@ from web.services.fund_service import FundService
 
 install_paths()
 
-from stockdata import DailyRecord, FundProfile, MemoryFundDataSource  # noqa: E402
+from core.stockdata import DailyRecord, FundProfile, MemoryFundDataSource  # noqa: E402
 
 # 离线行情样本：A 股/基金 32 字段，date(30)/time(31) 落在正确位置
 QUOTE_LINE_SZ162411 = (
@@ -40,7 +40,7 @@ class FakeQuoteSource:
 
 def make_quotes_updater():
     """构造一个带假行情源的实时行情更新器。"""
-    from quoteupdater import QuotesUpdater
+    from updater.quoteupdater import QuotesUpdater
 
     updater = QuotesUpdater(
         source=FakeQuoteSource(QUOTE_LINE_SZ162411),
@@ -249,7 +249,7 @@ class FundGroupDefinitionTest(unittest.TestCase):
     """分组划分：按代码号段把 47 只分成 LOF 与 ETF 两组。"""
 
     def setUp(self):
-        from fundgroups import (
+        from calc.fundgroups import (
             get_overseas_fund_symbol_array,
             get_qdiietf_symbol_array,
             get_qdiilof_symbol_array,
@@ -284,7 +284,7 @@ class FundGroupDefinitionTest(unittest.TestCase):
         self.assertIsNone(self.group_of("SH600000"))
 
     def test_index_membership_helpers(self):
-        from fundgroups import in_array_qdiietf, in_array_qdiilof
+        from calc.fundgroups import in_array_qdiietf, in_array_qdiilof
 
         self.assertTrue(in_array_qdiilof("SZ162411"))
         self.assertFalse(in_array_qdiilof("SH513100"))

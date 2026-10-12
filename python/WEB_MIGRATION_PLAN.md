@@ -37,7 +37,7 @@ python/
 - `/health`：Web 服务健康检查。
 - `/status`：数据库连通性和迁移状态。
 
-基金分组按代码号段划分（`python/auto/fundgroups.py`）：
+基金分组按代码号段划分（`python/auto/calc/fundgroups.py`）：
 
 | 分组        | 号段                      | 数量 |
 | --------- | ----------------------- | -- |
@@ -106,12 +106,16 @@ python -B -m unittest discover -s auto -p "test_*.py"        # 222 个
 python -B -m unittest discover -s web\tests -p "test_*.py"   # 30 个
 ```
 
-`python\auto` 下的测试需要在该目录内运行（`python/auto` 不是包，模块之间是平铺导入）：
+`python\auto` 自 2026-10-12 起按职责分成子包（`core` / `sql` / `source` /
+`calc` / `ref` / `updater` / `ui` / `cli` / `_scratch`），测试文件仍留在根目录，
+所以测试还是要在该目录内运行，让 `python/auto` 进 `sys.path`：
 
 ```powershell
 cd python\auto
-python -B -m unittest discover -s . -p "test_*.py"
+python -B -m unittest discover -s . -t . -p "test_*.py"
 ```
+
+分档的目录职责、模块映射表与已知取舍见 `python/auto/README_layout.md`。
 
 ## 数据流
 
@@ -129,13 +133,13 @@ Flask 路由
 ## 后续迁移优先级
 
 1. ~~`php/stock/stocksymbol.php`：符号分类、精度、市场和时区。~~  
-   已完成，见 `python/auto/stocksymbol.py` 与  
+   已完成，见 `python/auto/core/stocksymbol.py` 与  
    `python/auto/README_stocksymbol_migration.md`。
 2. ~~`php/stock/stockref.php`、`php/stock/stockprefetch.php`：实时行情和缓存。~~  
-   已完成，见 `python/auto/stockref.py`、`python/auto/stockprefetch.py`、  
-   `python/auto/tzutil.py` 与 `python/auto/README_stockref_migration.md`。
+   已完成，见 `python/auto/ref/stockref.py`、`python/auto/updater/stockprefetch.py`、  
+   `python/auto/core/tzutil.py` 与 `python/auto/README_stockref_migration.md`。
 3. ~~`php/stock/mysqlref.php`、`fundref.php`、`qdiiref.php`：引用对象层。~~  
-   已完成，见 `python/auto/refobj.py` 与  
+   已完成，见 `python/auto/ref/refobj.py` 与  
    `python/auto/README_refobj_migration.md`（含 `cnyref.php` 与 `GbToUtf8()`）。
 4. `php/ui/table.php`、`stocktable.php`、`stockdisp.php`、`stockcomm.php`：  
    渲染层已做两轮，见 `python/auto/README_ui_column_migration.md`。  
@@ -181,24 +185,24 @@ Flask 路由
 
 第 1、2、3 步已经落地：
 
-- `python/auto/stocksymbol.py`：`stocksymbol.php` 的纯逻辑移植（常量、全部符号表、  
+- `python/auto/core/stocksymbol.py`：`stocksymbol.php` 的纯逻辑移植（常量、全部符号表、  
   数字区间、符号构造、`StockSymbol` 分类与交易时段/时区）。
-- `python/auto/stockref.py`：`stockref.php` 的行情解析层（四个市场的字段映射、  
+- `python/auto/ref/stockref.py`：`stockref.php` 的行情解析层（四个市场的字段映射、  
   涨跌幅、时区换算、盘前盘后引用）。
-- `python/auto/stockprefetch.py`：`stockprefetch.php` 的预取调度判断，数据库与  
+- `python/auto/updater/stockprefetch.py`：`stockprefetch.php` 的预取调度判断，数据库与  
   缓存文件依赖用回调注入，保持逻辑可测。
-- `python/auto/tzutil.py`：时区获取；`zoneinfo` 不可用时回退到带夏令时规则的实现，  
+- `python/auto/core/tzutil.py`：时区获取；`zoneinfo` 不可用时回退到带夏令时规则的实现，  
   使 Python 3.7（当前 Flask 运行环境）也能正确换算。
-- `python/auto/fundgroups.py`：基金分组定义（`qdiilof` 26 只、`qdiietf` 21 只，  
+- `python/auto/calc/fundgroups.py`：基金分组定义（`qdiilof` 26 只、`qdiietf` 21 只，  
   按深圳 15/16、上海 50/51 号段划分），Web 层据此提供分组列表页。
-- `python/auto/sinaquotes.py`：新浪行情 HTTP 抓取层（`GetSinaQuotes()` /  
+- `python/auto/source/sinaquotes.py`：新浪行情 HTTP 抓取层（`GetSinaQuotes()` /  
   `url_get_contents()` 的迁移），补上了第 2 步刻意留成回调的 IO 实现。
-- `python/auto/quotestore.py`：行情/净值落库（`StockHistorySql::WriteHistory()`  
+- `python/auto/sql/quotestore.py`：行情/净值落库（`StockHistorySql::WriteHistory()`  
   等）与**溢价率**计算。
-- `python/auto/quotecli.py`：抓取 + 落库命令行。
-- `python/auto/quotesource.py`：**行情源抽象与注册表**。PHP 侧实时行情写死新浪、  
+- `python/auto/cli/quotecli.py`：抓取 + 落库命令行。
+- `python/auto/source/quotesource.py`：**行情源抽象与注册表**。PHP 侧实时行情写死新浪、  
   没有任何接口，这里预留了可替换接口，换源只改环境变量 `PALMMICRO_QUOTE_SOURCE`。
-- `python/auto/quoteupdater.py` + `quoteupdatercli.py`：**后台定时抓取**与  
+- `python/auto/updater/quoteupdater.py` + `quoteupdatercli.py`：**后台定时抓取**与  
   跨进程共享（新增 `realtimequote` 快照表）。PHP 是在页面请求内同步抓取，  
   这里改成独立进程定时抓、页面直读。
 - `python/web/routes/quote.py`：`/api/quotes`、`/api/quotes/refresh`、  
@@ -206,7 +210,7 @@ Flask 路由
 - 分组列表末两列为**最新价**（带行情时间）与**溢价率**（正值红/负值绿）；  
   真实联网抓取 + 页面直读已验证。详见  
   `python/auto/README_quotes_migration.md` 与 `python/auto/README_realtime_quotes.md`。
-- `python/auto/navsource.py` + `navupdater.py` + `navcli.py`：**基金官方净值**抓取，  
+- `python/auto/source/navsource.py` + `navupdater.py` + `navcli.py`：**基金官方净值**抓取，  
   替代 `php/stock/yahoostock.php`（Yahoo 实测全面 403）。净值源同样是可替换接口，  
   换源只改 `PALMMICRO_NAV_SOURCE`；已实现东方财富（首选）/ 新浪（备选）/  
   深交所（兜底校验）三个源，实测数值互相一致。
@@ -216,12 +220,12 @@ Flask 路由
 - `python/sql/schema.sql` 新增 `estquote` 表：中间层估值数值单独存，  
   不再像 PHP 那样混进 `netvaluehistory`。详见  
   `python/auto/README_nav_migration.md` 与方案 `python/NAV_SOURCE_PLAN.md`。
-- `python/auto/estcalibration.py`：中间层估值**尺度自洽**工具（诊断 + 重标定）。  
+- `python/auto/updater/estcalibration.py`：中间层估值**尺度自洽**工具（诊断 + 重标定）。  
   `estquote` 已接进 `fundcalc` 的估值公式，静态与实时两条路径结果一致  
   （实测三只基金估值都等于官方净值）。详见  
   `python/auto/README_estquote_and_navcheck.md`。
 - 页面溢价率现在是**真实数值**（实测 SZ161130 = 5.52%、SZ161125 = 4.54%）。
-- `python/auto/forexsource.py` + `forexupdater.py` + `forexcli.py`：**汇率**抓取，  
+- `python/auto/source/forexsource.py` + `forexupdater.py` + `forexcli.py`：**汇率**抓取，  
   替代 PHP `php/stock/chinamoney.php` 的 `GetChinaMoney()`。汇率源同样是可替换  
   接口（新浪为主 + 中国货币网对照 + 相对差告警）。  
   修前汇率恒为 `1.0`（库里没有 `USCNY` 符号），**等于把美元当人民币用**。
@@ -254,7 +258,7 @@ Flask 路由
 - **历史数据页面组**（新增）：迁移 `php/ui` 下 6 个历史数据段落  
   （历史价格 / 基金溢价记录 / 净值记录 / 净值价格比较 / 校准记录 / 基金场内份额），  
   路由 `/history/<kind>/<sym>`，并加了 `/api/history/<kind>/<sym>`。  
-  共享取数与显示口径抽到 `python/auto/historytable.py`（对应 PHP  
+  共享取数与显示口径抽到 `python/auto/sql/historytable.py`（对应 PHP  
   `php/sql/sqldailyclose.php` 与 `php/stock.php` 的显示函数）。  
   核对到生产端的两个关键口径：① QDII 用**前一交易日**净值  
   （`UseSameDayNetValue()`，作者明确说过这是设计不是 bug）；  
@@ -471,7 +475,7 @@ Flask 路由
   ⑥ **StockHistory 数值核心（2026-10-10，第一刀）**：`php/stockhis.php` 586 行里
   **纯算数**的那部分 —— `_estSma`、`GetQuadraticEquationRoot`、
   `_estBollingerBands`、`_estNextBollingerBands`、`_isWeekEnd`、`_isMonthEnd`、
-  `MaxMin`、`_getColorAndOrderArray`，落在 `python/auto/stockhistory.py`。
+  `MaxMin`、`_getColorAndOrderArray`，落在 `python/auto/sql/stockhistory.py`。
 
   分刀的理由：`StockHistory` 的构造同时做"算数 / 查库 / **回写配置文件** / 渲染"
   四件事，第 3 件有外部可见副作用，不能和纯数值混在一起迁。
@@ -572,7 +576,7 @@ Flask 路由
   3. **测试隔离** —— 默认内存 + 临时目录 + **绝不拿 CWD 当 root**（有测试把
      CWD 切到临时目录再渲染，断言事后是空的）。
 
-  新增模块 `python/auto/smaconfig.py`（`stockhistory.py` 被
+  新增模块 `python/auto/sql/smaconfig.py`（`stockhistory.py` 被
   `ModuleIsImportCleanTest` 钉着不许出现 `open(`，落盘只能单列）。
   文件格式与 PHP 互通，`[段]\n键=值\n`，**保留未知段**。
 
@@ -646,9 +650,9 @@ Flask 路由
 `python/core/stock_symbol.py` 和 `python/core/sina_fetcher.py`：
 
 - `stock_symbol.py` 是第 1 步的早期版本，缺少交易时段和时区方法，  
-  且未接入当前分支的 `python/auto` 包，现已由 `python/auto/stocksymbol.py`  
+  且未接入当前分支的 `python/auto` 包，现已由 `python/auto/core/stocksymbol.py`  
   取代；新模块保留了 camelCase 方法别名，因此按该分支写法调用仍然可用。
-- `sina_fetcher.py` 里的抓取动作最终由 `python/auto/sinaquotes.py` 实现  
+- `sina_fetcher.py` 里的抓取动作最终由 `python/auto/source/sinaquotes.py` 实现  
   （结构上仍是先解析后落库，只是把 IO 补齐了，并保持与 PHP 一致的分层）。
 
 ## 测试

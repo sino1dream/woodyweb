@@ -38,7 +38,7 @@ if hasattr(sys.stdout, "buffer"):
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "auto"))
 
-from stockdata import MySqlFundDataSource  # noqa: E402
+from core.stockdata import MySqlFundDataSource  # noqa: E402
 
 #: 基准日（种子写的那一天）与各中间层在该日的正确校准值。
 #:
@@ -118,7 +118,7 @@ def main() -> int:
     # 改完立刻用真实管线自证：估值必须回到净值附近
     print("")
     print("=== 自证：官方 EST 应接近净值 ===")
-    from fundestcalc import build_estimate_calculator
+    from calc.fundestcalc import build_estimate_calculator
 
     calculator = build_estimate_calculator(source)
     nav = {"SZ161130": 4.5452, "SZ161125": 3.1328, "SH513100": 2.0379}

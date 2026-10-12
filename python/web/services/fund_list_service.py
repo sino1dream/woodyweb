@@ -17,13 +17,13 @@ from web.bootstrap import install_paths
 
 install_paths()
 
-from fundgroups import get_fund_group, get_fund_group_names, get_symbol_group  # noqa: E402
-from quotestore import (  # noqa: E402
+from calc.fundgroups import get_fund_group, get_fund_group_names, get_symbol_group  # noqa: E402
+from sql.quotestore import (  # noqa: E402
     format_premium_rate,
     get_premium_rate,
     stock_get_percentage,
 )
-from stockdata import FundDataSource, MySqlFundDataSource, rtrim0  # noqa: E402
+from core.stockdata import FundDataSource, MySqlFundDataSource, rtrim0  # noqa: E402
 from web.db import get_db  # noqa: E402
 
 
@@ -165,7 +165,7 @@ class FundListService:
             return notes
 
         try:
-            from autocalibration import build_auto_calibrator
+            from updater.autocalibration import build_auto_calibrator
         except ImportError:
             self.calibration_notes = notes
             return notes
@@ -460,6 +460,6 @@ class FundListService:
 
 def default_fund_list_service_factory() -> FundListService:
     """创建使用当前请求数据库连接与实时行情缓存的列表服务。"""
-    from quoteupdater import get_updater
+    from updater.quoteupdater import get_updater
 
     return FundListService(MySqlFundDataSource(get_db()), quotes_provider=get_updater())

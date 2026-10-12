@@ -70,8 +70,8 @@ from web.bootstrap import install_paths
 
 install_paths()
 
-from historytable import TableRow, format_number_display  # noqa: E402
-from uicolumn import (  # noqa: E402
+from sql.historytable import TableRow, format_number_display  # noqa: E402
+from ui.uicolumn import (  # noqa: E402
     column_calibration,
     column_date,
     column_hedge,

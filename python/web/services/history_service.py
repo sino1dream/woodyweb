@@ -30,8 +30,8 @@ from web.bootstrap import install_paths
 
 install_paths()
 
-from fundgroups import get_symbol_group  # noqa: E402
-from historytable import (  # noqa: E402
+from calc.fundgroups import get_symbol_group  # noqa: E402
+from sql.historytable import (  # noqa: E402
     CalibrationSql,
     DailyTimeSql,
     FundEstSql,
@@ -52,9 +52,9 @@ from historytable import (  # noqa: E402
     stock_calc_hedge,
     use_same_day_net_value,
 )
-from stockdata import FundDataSource, MySqlFundDataSource  # noqa: E402
-from stocksymbol import in_array_hk_mix, in_array_qdii, in_array_qdii_mix  # noqa: E402
-from uicolumn import POS_NETVALUE_DIFF  # noqa: E402
+from core.stockdata import FundDataSource, MySqlFundDataSource  # noqa: E402
+from core.stocksymbol import in_array_hk_mix, in_array_qdii, in_array_qdii_mix  # noqa: E402
+from ui.uicolumn import POS_NETVALUE_DIFF  # noqa: E402
 from web.db import get_db  # noqa: E402
 
 
@@ -107,7 +107,7 @@ def _columns_stockhistory(source: FundDataSource, symbol: str, compare: Any, for
     # 因为这个判断只跟符号本身有关（hf_CL / hf_CHA50CFD 之类）。
     is_future = False
     try:
-        from stocksymbol import StockSymbol
+        from core.stocksymbol import StockSymbol
 
         is_future = bool(StockSymbol(symbol).is_sina_future())
     except Exception:

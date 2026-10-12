@@ -39,9 +39,9 @@ from web.bootstrap import install_paths
 
 install_paths()
 
-from historytable import TableRow  # noqa: E402
-from stocksql import StockSql, stock_paging_columns  # noqa: E402
-from uicolumn import column_base, column_name, column_symbol, columns_to_dicts  # noqa: E402
+from sql.historytable import TableRow  # noqa: E402
+from sql.stocksql import StockSql, stock_paging_columns  # noqa: E402
+from ui.uicolumn import column_base, column_name, column_symbol, columns_to_dicts  # noqa: E402
 
 
 #: ``EchoTableParagraphBegin($ar, 'stock', $strMenuLink)`` 的 ``$strId``。

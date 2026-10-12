@@ -1,7 +1,7 @@
 # 历史数据页面迁移
 
 迁移范围：PHP ``php/ui`` 下 6 个历史数据段落页面 → Python ``python/web`` +
-``python/auto/historytable.py``。
+``python/auto/sql/historytable.py``。
 
 | 生产端页面 | 本版 URL | 对应 PHP |
 | --- | --- | --- |
@@ -19,7 +19,7 @@
 ## 一、为什么单独抽出 `historytable.py`
 
 PHP 里这 6 个页面各自独立，但共享同一套**取数语义**与**显示口径**。Python 侧把它们
-集中到 `python/auto/historytable.py`：
+集中到 `python/auto/sql/historytable.py`：
 
 * **显示口径**（`format_price_display` / `format_number_display` /
   `format_ratio_display` / `format_turnover_display` / `format_hm`）——

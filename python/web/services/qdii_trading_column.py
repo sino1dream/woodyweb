@@ -86,7 +86,7 @@ from web.bootstrap import install_paths
 
 install_paths()
 
-from pairestimate import est_from_pair  # noqa: E402
+from calc.pairestimate import est_from_pair  # noqa: E402
 
 
 #: ``TableColumnGetPrice()`` 那段后缀。单独提常量是因为表头拼接里要用，

@@ -1,6 +1,6 @@
 import unittest
 
-from fundcalc import (
+from calc.fundcalc import (
     PalmmicroFundCalculator,
     fund_adjust_position,
     fund_reverse_adjust_position,

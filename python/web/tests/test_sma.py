@@ -386,7 +386,7 @@ class RealQdiiReferenceTest(unittest.TestCase):
     def _qdii(self):
         """``source=None`` 也能建：``MysqlReference`` 构造只读库快照，而
         ``is_fund_a()`` 与符号精度都只依赖符号本身。"""
-        from refobj import QdiiReference
+        from ref.refobj import QdiiReference
 
         return QdiiReference("SZ161130", source=None, auto_estimate=False)
 
@@ -628,7 +628,7 @@ class FakeRefContractTest(unittest.TestCase):
 
     def test_real_reference_has_every_method_the_service_calls(self):
         """真实 ``EstReference`` 必须真的有这些方法。"""
-        from refobj import EstReference
+        from ref.refobj import EstReference
 
         for name in self.CALLED:
             self.assertTrue(
@@ -637,7 +637,7 @@ class FakeRefContractTest(unittest.TestCase):
 
     def test_fake_does_not_invent_methods(self):
         """替身不该实现真实类没有的方法 —— 那会造成假通过。"""
-        from refobj import EstReference
+        from ref.refobj import EstReference
 
         for name in self.CALLED:
             self.assertTrue(callable(getattr(FakeRef, name, None)),
@@ -649,7 +649,7 @@ class FakeRefContractTest(unittest.TestCase):
         PHP 的 ``GetPercentageDisplay()`` 是"文本 + 染色"，本项目把染色
         放在 ``reference_service.percentage_cell`` 里，所以服务只该要文本。
         """
-        from refobj import EstReference
+        from ref.refobj import EstReference
 
         self.assertFalse(
             callable(getattr(EstReference, "get_percentage_display", None)),

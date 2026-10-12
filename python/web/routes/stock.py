@@ -15,8 +15,8 @@ from web.bootstrap import install_paths
 
 install_paths()
 
-from externallink import get_xueqiu_url  # noqa: E402
-from historytable import TABLE_COMMON_DISPLAY  # noqa: E402
+from ref.externallink import get_xueqiu_url  # noqa: E402
+from sql.historytable import TABLE_COMMON_DISPLAY  # noqa: E402
 from web.services.stock_service import (  # noqa: E402
     StockService,
     default_stock_service_factory,

@@ -13,7 +13,7 @@ from __future__ import annotations
 import datetime
 import unittest
 
-from historytable import (
+from sql.historytable import (
     CALIBRATION_HEDGE_MULTIPLIERS,
     MIN_FLOAT_VAL,
     TABLE_COMMON_DISPLAY,
@@ -295,7 +295,7 @@ class HedgeTest(unittest.TestCase):
 
         公式：仓位 = 校准值 / 对冲值。
         """
-        from stocksymbol import StockSymbol
+        from core.stocksymbol import StockSymbol
 
         vectors = (
             ("SZ161130", 44997.025, 47365),

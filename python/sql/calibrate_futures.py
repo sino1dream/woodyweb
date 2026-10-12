@@ -30,10 +30,10 @@ if hasattr(sys.stdout, "buffer"):
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "auto"))
 
-from futurescalib import build_futures_calibrator  # noqa: E402
-from futuresquotes import SinaFuturesClient  # noqa: E402
-from historytable import CalibrationSql  # noqa: E402
-from stockdata import MySqlFundDataSource  # noqa: E402
+from calc.futurescalib import build_futures_calibrator  # noqa: E402
+from source.futuresquotes import SinaFuturesClient  # noqa: E402
+from sql.historytable import CalibrationSql  # noqa: E402
+from core.stockdata import MySqlFundDataSource  # noqa: E402
 
 
 def main() -> int:

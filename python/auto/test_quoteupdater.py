@@ -9,15 +9,15 @@
 import datetime
 import unittest
 
-import quotesource
-from quoteupdater import (
+from source import quotesource
+from updater.quoteupdater import (
     RecentQuote,
     QuotesUpdater,
     is_any_market_open,
     parse_symbol,
     quote_from_reference,
 )
-from stocksymbol import StockSymbol
+from core.stocksymbol import StockSymbol
 
 # 真实响应样本（A 股/基金 32 字段，date(30)/time(31) 落在正确位置）
 LINE_CN = (
@@ -361,7 +361,7 @@ class EstQuoteStoreTest(unittest.TestCase):
     def test_default_est_symbols_derived_from_fundcalc(self):
         # 中间层名单从 fundcalc.qdii_est_symbol_map() 的值集合推导，
         # 这样以后加基金时不用记得同步这里
-        from quoteupdater import default_est_symbols
+        from updater.quoteupdater import default_est_symbols
 
         symbols = default_est_symbols()
 
@@ -391,7 +391,7 @@ class StaleQuoteReadTest(unittest.TestCase):
             return True
 
     def _updater(self, row, now):
-        from quoteupdater import QuotesUpdater
+        from updater.quoteupdater import QuotesUpdater
 
         return QuotesUpdater(
             source=FakeSource({}),
@@ -449,7 +449,7 @@ class StaleQuoteReadTest(unittest.TestCase):
         self.assertTrue(updater.is_stored_fresh(quote))
 
     def test_missing_store_returns_none(self):
-        from quoteupdater import QuotesUpdater
+        from updater.quoteupdater import QuotesUpdater
 
         updater = QuotesUpdater(source=FakeSource({}), symbols_provider=lambda: [])
 
@@ -457,7 +457,7 @@ class StaleQuoteReadTest(unittest.TestCase):
 
     def test_normalize_quote_time_handles_odd_shapes(self):
         """时间字段可能是 timedelta / time / 字符串，都要落成时钟文本。"""
-        from quoteupdater import _normalize_quote_time
+        from updater.quoteupdater import _normalize_quote_time
 
         self.assertEqual(_normalize_quote_time(datetime.timedelta(seconds=57600)), "16:00:00")
         self.assertEqual(_normalize_quote_time(datetime.time(9, 15, 0)), "09:15:00")

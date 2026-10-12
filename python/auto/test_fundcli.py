@@ -1,8 +1,8 @@
 import unittest
 from unittest.mock import patch
 
-from fundcalc import PalmmicroFundCalculator
-from fundcli import build_output, main, parse_market_values
+from calc.fundcalc import PalmmicroFundCalculator
+from cli.fundcli import build_output, main, parse_market_values
 
 
 class FundCliTest(unittest.TestCase):
@@ -79,7 +79,7 @@ class FundCliTest(unittest.TestCase):
             def get_stock_id(self, symbol):
                 return {"SZ159518": "1"}.get(symbol)
 
-        with patch("fundcli.MySqlFundDataSource", Source), patch("builtins.print") as mock_print:
+        with patch("cli.fundcli.MySqlFundDataSource", Source), patch("builtins.print") as mock_print:
             self.assertEqual(main(["SZ159518", "--check-db"]), 0)
 
         self.assertIn('"ok": true', mock_print.call_args[0][0])

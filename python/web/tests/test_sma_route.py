@@ -395,7 +395,7 @@ class SmaConfigBackendTest(unittest.TestCase):
 
     def test_config_reaches_stockhistory(self):
         """``SmaService`` 把存放处交给 ``StockHistory`` —— 接线别断在半路。"""
-        import smaconfig
+        from sql import smaconfig
         from web.services import sma_service as module
         from web.services.sma_service import SmaService
 
@@ -421,7 +421,7 @@ class SmaConfigBackendTest(unittest.TestCase):
 
     def test_custom_history_factory_owns_the_config(self):
         """注入了 ``history_factory`` 时服务**不再插手** config —— 构造归调用方。"""
-        import smaconfig
+        from sql import smaconfig
         from web.services import sma_service as module
         from web.services.sma_service import SmaService
 

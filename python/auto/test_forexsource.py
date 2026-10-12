@@ -9,10 +9,10 @@
 import os
 import unittest
 
-import forexsource
-import navsource
-from forexupdater import ForexUpdater
-from quotestore import MemoryQuoteStore
+from source import forexsource
+from source import navsource
+from updater.forexupdater import ForexUpdater
+from sql.quotestore import MemoryQuoteStore
 
 # 真实响应样本（取自新浪，GB18030）
 SINA_TEXT = (
@@ -68,7 +68,7 @@ class StaleRateWarningTest(unittest.TestCase):
     """汇率回退过久必须留下警告 —— 这是 7.1 那个坑的防线。"""
 
     def test_warns_when_fallback_is_too_old(self):
-        from stockdata import MAX_RATE_FALLBACK_DAYS, MySqlFundDataSource
+        from core.stockdata import MAX_RATE_FALLBACK_DAYS, MySqlFundDataSource
 
         store = MySqlFundDataSource.__new__(MySqlFundDataSource)
         store.rate_warnings = []
@@ -82,7 +82,7 @@ class StaleRateWarningTest(unittest.TestCase):
         self.assertEqual(MAX_RATE_FALLBACK_DAYS, 10)
 
     def test_no_warning_within_threshold(self):
-        from stockdata import MySqlFundDataSource
+        from core.stockdata import MySqlFundDataSource
 
         store = MySqlFundDataSource.__new__(MySqlFundDataSource)
         store.rate_warnings = []
@@ -93,7 +93,7 @@ class StaleRateWarningTest(unittest.TestCase):
         self.assertEqual(store.rate_warnings, [])
 
     def test_bad_dates_are_ignored(self):
-        from stockdata import MySqlFundDataSource
+        from core.stockdata import MySqlFundDataSource
 
         store = MySqlFundDataSource.__new__(MySqlFundDataSource)
         store.rate_warnings = []

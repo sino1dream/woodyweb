@@ -20,15 +20,15 @@
 
 import unittest
 
-from quoteupdater import RecentQuote, _quote_from_row, parse_symbol, quote_from_reference
-from quotestore import (
+from updater.quoteupdater import RecentQuote, _quote_from_row, parse_symbol, quote_from_reference
+from sql.quotestore import (
     ER_BAD_FIELD_ERROR,
     RealtimeQuoteStore,
     decode_orderbook,
     encode_orderbook,
     orderbook_from_lists,
 )
-from refquote import apply_order_book
+from ref.refquote import apply_order_book
 
 
 def make_book_line(sina_symbol="sz161130", name="纳指LOF", price="4.796", prev="4.727",

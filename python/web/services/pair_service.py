@@ -65,9 +65,9 @@ from web.bootstrap import install_paths
 
 install_paths()
 
-from historytable import TableRow, format_price_display  # noqa: E402
-from stockdata import rtrim0  # noqa: E402
-from uicolumn import (  # noqa: E402
+from sql.historytable import TableRow, format_price_display  # noqa: E402
+from core.stockdata import rtrim0  # noqa: E402
+from ui.uicolumn import (  # noqa: E402
     STOCK_DISP_BSHARES,
     STOCK_DISP_HSHARES,
     columns_to_dicts,

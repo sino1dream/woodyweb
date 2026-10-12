@@ -29,7 +29,7 @@ from web.bootstrap import install_paths  # noqa: E402
 
 install_paths()
 
-import pairestimate  # noqa: E402
+from calc import pairestimate  # noqa: E402
 from web.services.qdii_trading_column import (  # noqa: E402
     LEVERAGE_SEPARATOR,
     PRICE_COLUMN_TEXT,

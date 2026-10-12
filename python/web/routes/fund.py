@@ -24,8 +24,8 @@ from web.bootstrap import install_paths
 
 install_paths()
 
-from fundcli import parse_market_values  # noqa: E402
-from fundgroups import get_symbol_group  # noqa: E402
+from cli.fundcli import parse_market_values  # noqa: E402
+from calc.fundgroups import get_symbol_group  # noqa: E402
 from web.services.fund_list_service import (  # noqa: E402
     FundGroupNotFoundError,
     FundListService,
@@ -419,7 +419,7 @@ def _fill_order_book(ref: Any) -> bool:
     if quote_ref is None:
         quote_ref = ref
     try:
-        from refquote import NetworkQuoteSource, apply_network
+        from ref.refquote import NetworkQuoteSource, apply_network
 
         return apply_network(quote_ref, NetworkQuoteSource())
     except Exception:
@@ -566,7 +566,7 @@ def _build_qdii_refs(symbols: list) -> list:
     if source is None:
         return []
 
-    from refobj import build_qdii_reference
+    from ref.refobj import build_qdii_reference
 
     refs = []
     for symbol in symbols:

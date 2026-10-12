@@ -54,12 +54,12 @@ from web.bootstrap import install_paths
 
 install_paths()
 
-from historytable import TableRow  # noqa: E402
-from futurepremium import future_sma_value, ref_get_future_premium  # noqa: E402
-from pairestimate import est_from_pair, est_to_pair  # noqa: E402
-import smaconfig  # noqa: E402
-from stockhistory import StockHistory  # noqa: E402
-from uicolumn import (  # noqa: E402
+from sql.historytable import TableRow  # noqa: E402
+from calc.futurepremium import future_sma_value, ref_get_future_premium  # noqa: E402
+from calc.pairestimate import est_from_pair, est_to_pair  # noqa: E402
+from sql import smaconfig  # noqa: E402
+from sql.stockhistory import StockHistory  # noqa: E402
+from ui.uicolumn import (  # noqa: E402
     STOCK_DISP_PREMIUM,
     TableColumn,
     column_base,
@@ -621,7 +621,7 @@ def _has_any_level(sma: dict) -> bool:
 
 def _premium_column() -> Any:
     """``new TableColumnPremium()`` —— 一行里会用到**两次**（同一个实例）。"""
-    from uicolumn import column_premium
+    from ui.uicolumn import column_premium
 
     return column_premium()
 
@@ -647,7 +647,7 @@ def _stock_column(cb_ref: Any, callback: Callable[..., Any]) -> Any:
     数值全对、只差一个颜色，是最难发现的一类偏差 —— 所以钉在
     ``FundPairTablesTest`` 里。
     """
-    from uicolumn import column_stock
+    from ui.uicolumn import column_stock
 
     display_ref = callback(cb_ref)
     display = _invoke(display_ref, "get_display", "GetDisplay")

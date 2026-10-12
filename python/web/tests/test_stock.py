@@ -95,7 +95,7 @@ def service(connection, **kwargs):
 
 
 def _sql(connection):
-    from stocksql import StockSql
+    from sql.stocksql import StockSql
 
     return StockSql(connection)
 

@@ -24,7 +24,7 @@ for _path in (PYTHON_DIR, WEB_DIR):
         sys.path.insert(0, _path)
 
 from app import create_app  # noqa: E402
-from stockdata import FundProfile, MemoryFundDataSource  # noqa: E402
+from core.stockdata import FundProfile, MemoryFundDataSource  # noqa: E402
 from web.services.history_service import HistoryService, parse_paging  # noqa: E402
 
 

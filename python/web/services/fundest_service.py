@@ -72,8 +72,8 @@ from web.bootstrap import install_paths
 
 install_paths()
 
-from historytable import TableRow  # noqa: E402
-from uicolumn import (  # noqa: E402
+from sql.historytable import TableRow  # noqa: E402
+from ui.uicolumn import (  # noqa: E402
     STOCK_DISP_EST,
     columns_to_dicts,
     column_change,
@@ -272,7 +272,7 @@ def build_fund_est_table(
 
 def default_fundest_service_factory() -> FundEstService:
     """创建使用当前请求数据库连接的估值表服务（名称从库里查）。"""
-    from stockdata import MySqlFundDataSource
+    from core.stockdata import MySqlFundDataSource
     from web.db import get_db
 
     return FundEstService(MySqlFundDataSource(get_db()))

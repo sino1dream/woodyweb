@@ -1,6 +1,6 @@
 # php/stock 引用对象层迁移：`refobj.py`
 
-本文件记录 `python/auto/refobj.py` 这一步（优先级列表第 3 项）的范围、取舍与
+本文件记录 `python/auto/ref/refobj.py` 这一步（优先级列表第 3 项）的范围、取舍与
 已知偏差。按 `AGENTS.md` 的约定，每一步都要写清**对应哪个 PHP 源文件**、
 **什么没迁**、**哪里故意和 PHP 不一样**。
 

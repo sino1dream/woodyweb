@@ -10,9 +10,9 @@ from __future__ import annotations
 
 import unittest
 
-import refobj
-import stockref
-from refobj import (
+from ref import refobj
+from ref import stockref
+from ref.refobj import (
     NETVALUE_PRECISION,
     QDII_REGIONS,
     CnyReference,

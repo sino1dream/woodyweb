@@ -19,8 +19,8 @@ import shutil
 import tempfile
 import unittest
 
-import smaconfig as sc
-import stockhistory as sh
+from sql import smaconfig as sc
+from sql import stockhistory as sh
 from test_stockhistory import _build as _build_history
 
 
@@ -43,7 +43,7 @@ class PathTest(unittest.TestCase):
 
     def test_symbol_is_lowercased_and_sanitized(self):
         """``str_replace(array('/', '+', ',', '^', '.', ':', '%'), '_', $str)``。"""
-        from stockref import config_file_name
+        from ref.stockref import config_file_name
 
         self.assertEqual(config_file_name("^NDX", "root"),
                          os.path.join("root", "config", "_ndx.txt"))
@@ -53,7 +53,7 @@ class PathTest(unittest.TestCase):
                          os.path.join("root", "config", "sz161130.txt"))
 
     def test_unsafe_characters_all_become_underscore(self):
-        from stockref import config_file_name
+        from ref.stockref import config_file_name
 
         for symbol, stem in (("A/B", "a_b"), ("A+B", "a_b"), ("A,B", "a_b"),
                              ("A^B", "a_b"), ("A.B", "a_b"), ("A:B", "a_b"),

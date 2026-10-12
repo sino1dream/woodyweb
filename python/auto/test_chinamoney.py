@@ -2,7 +2,7 @@ import json
 import unittest
 from unittest.mock import patch
 
-from chinamoney import (
+from source.chinamoney import (
     CURRENCY_SYMBOL_MAP,
     ChinaMoneyClient,
     ChinaMoneySnapshot,
@@ -301,7 +301,7 @@ class MySqlChinaMoneyStoreTest(unittest.TestCase):
 
 class ChinaMoneyCliTest(unittest.TestCase):
     def test_check_prints_mapped_rows_without_mysql(self):
-        with patch("chinamoney.ChinaMoneyClient", FakeClient), patch("builtins.print") as mock_print:
+        with patch("source.chinamoney.ChinaMoneyClient", FakeClient), patch("builtins.print") as mock_print:
             self.assertEqual(main(["--check"]), 0)
 
         output = json.loads(mock_print.call_args[0][0])
@@ -321,7 +321,7 @@ class ChinaMoneyCliTest(unittest.TestCase):
             def get_netvalue(self, stock_id, date):
                 return None
 
-        with patch("chinamoney.ChinaMoneyClient", FakeClient), patch("chinamoney.MySqlChinaMoneyStore", FakeStore), patch(
+        with patch("source.chinamoney.ChinaMoneyClient", FakeClient), patch("source.chinamoney.MySqlChinaMoneyStore", FakeStore), patch(
             "builtins.print"
         ) as mock_print:
             self.assertEqual(main(["--check-db"]), 0)

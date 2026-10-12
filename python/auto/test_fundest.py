@@ -13,12 +13,12 @@ from __future__ import annotations
 import datetime
 import unittest
 
-from fundestcalc import (
+from calc.fundestcalc import (
     ESTIMATE_ERROR_THRESHOLD,
     EstimateCalculator,
     EstRecord,
 )
-from fundeststore import FundEstStore, hour_minute_of
+from sql.fundeststore import FundEstStore, hour_minute_of
 
 
 class HourMinuteTest(unittest.TestCase):
@@ -53,19 +53,19 @@ class TimeTextTest(unittest.TestCase):
     """
 
     def test_timedelta_gets_zero_padded(self):
-        from fundestcli import _time_text
+        from cli.fundestcli import _time_text
 
         self.assertEqual(_time_text(datetime.timedelta(seconds=2406)), "00:40:06")
         self.assertEqual(_time_text(datetime.timedelta(seconds=63000)), "17:30:00")
 
     def test_strings_pass_through(self):
-        from fundestcli import _time_text
+        from cli.fundestcli import _time_text
 
         self.assertEqual(_time_text("04:00:00"), "04:00:00")
         self.assertEqual(_time_text("04:00:00.123456"), "04:00:00")
 
     def test_missing_shows_dash(self):
-        from fundestcli import _time_text
+        from cli.fundestcli import _time_text
 
         self.assertEqual(_time_text(None), "-")
         self.assertEqual(_time_text(""), "-")
@@ -290,7 +290,7 @@ class EstimateCalculatorTest(unittest.TestCase):
             return 0.95
 
         def get_latest_net_value(self, stock_id):
-            from stockdata import DailyRecord
+            from core.stockdata import DailyRecord
 
             dates = [d for (sid, d) in self.netvalue if sid == stock_id]
             if not dates:
@@ -299,7 +299,7 @@ class EstimateCalculatorTest(unittest.TestCase):
             return DailyRecord(date=date, close=self.netvalue[(stock_id, date)])
 
         def get_calibration_now(self, stock_id):
-            from stockdata import DailyRecord
+            from core.stockdata import DailyRecord
 
             value = self.calibrations.get(stock_id)
             if value is None:
@@ -539,7 +539,7 @@ class ThreeEstTest(unittest.TestCase):
             return 1.0 if stock_id == "4" else 0.95
 
         def get_latest_net_value(self, stock_id):
-            from stockdata import DailyRecord
+            from core.stockdata import DailyRecord
 
             if stock_id == "1":
                 return DailyRecord(date=self._nav_date, close=self.NAV)
@@ -550,7 +550,7 @@ class ThreeEstTest(unittest.TestCase):
             return None
 
         def get_calibration_now(self, stock_id):
-            from stockdata import DailyRecord
+            from core.stockdata import DailyRecord
 
             value = self._calibrations.get(stock_id)
             # 校准日期要与 ``CAL_DATE`` 一致 —— ``_build()`` 按它去查校准时汇率
@@ -587,7 +587,7 @@ class ThreeEstTest(unittest.TestCase):
             return self._mid_date if stock_id == "4" else None
 
         def get_est_quote(self, stock_id):
-            from stockdata import DailyRecord
+            from core.stockdata import DailyRecord
 
             if stock_id == "4":
                 return DailyRecord(date=self._mid_date, close=self._realtime_quote)

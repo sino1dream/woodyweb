@@ -2,8 +2,8 @@ import unittest
 import tempfile
 from pathlib import Path
 
-from fundcalc import PalmmicroFundCalculator
-from stockdata import (
+from calc.fundcalc import PalmmicroFundCalculator
+from core.stockdata import (
     DailyRecord,
     FundProfile,
     MemoryFundDataSource,
@@ -417,7 +417,7 @@ class PositionDefaultTest(unittest.TestCase):
     """
 
     def test_memory_source_falls_back_to_symbol_default(self):
-        from stockdata import MemoryFundDataSource
+        from core.stockdata import MemoryFundDataSource
 
         source = MemoryFundDataSource(
             stocks={"SZ162411": "1", "SH513350": "2", "QQQ": "3"},
@@ -429,7 +429,7 @@ class PositionDefaultTest(unittest.TestCase):
         self.assertAlmostEqual(source.get_position("3"), 1.0)    # 美股标的
 
     def test_explicit_position_wins(self):
-        from stockdata import MemoryFundDataSource
+        from core.stockdata import MemoryFundDataSource
 
         source = MemoryFundDataSource(
             stocks={"SZ161125": "1"},
@@ -438,7 +438,7 @@ class PositionDefaultTest(unittest.TestCase):
         self.assertAlmostEqual(source.get_position("1"), 0.98)
 
     def test_defaults_match_php_get_default_position(self):
-        from stocksymbol import StockSymbol
+        from core.stocksymbol import StockSymbol
 
         # 与 php/stock/stocksymbol.php:1001 对齐：LOF 0.95，其余 1.0
         for symbol in ("SZ161130", "SZ161125", "SZ162411", "SH501018", "SH501312"):

@@ -11,7 +11,7 @@ from web.bootstrap import install_paths
 
 install_paths()
 
-from stockdata import load_mysql_env, mysql_config_from_env, mysql_connection_error_message
+from core.stockdata import load_mysql_env, mysql_config_from_env, mysql_connection_error_message
 
 
 class DatabaseUnavailableError(RuntimeError):

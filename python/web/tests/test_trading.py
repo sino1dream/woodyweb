@@ -17,8 +17,8 @@ from web.bootstrap import install_paths  # noqa: E402
 
 install_paths()
 
-from quotestore import orderbook_from_lists  # noqa: E402
-from refquote import apply_order_book  # noqa: E402
+from sql.quotestore import orderbook_from_lists  # noqa: E402
+from ref.refquote import apply_order_book  # noqa: E402
 from web.services.trading_service import (  # noqa: E402
     TRADING_CALLBACK_WIDTH,
     TRADING_COLOR_FIRST,
@@ -82,7 +82,7 @@ class FakeRef:
         这里刻意不自己写一套假的：涨停基准价那条三元表达式的分叉就在这个判定上，
         用假的实现等于把最要紧的那条逻辑摘出去测了。
         """
-        from stocksymbol import StockSymbol
+        from core.stocksymbol import StockSymbol
 
         try:
             return StockSymbol(self.str_symbol).is_stock_market_trading(ymd, no_noon_break)
@@ -513,7 +513,7 @@ def _dt(text):
 
         zone = ZoneInfo("Asia/Shanghai")
     except Exception:  # Python 3.7 没有 zoneinfo
-        import tzutil
+        from core import tzutil
 
         zone = tzutil.get_time_zone("Asia/Shanghai")
     naive = datetime.datetime.strptime(text, "%Y-%m-%d %H:%M:%S")

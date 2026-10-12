@@ -41,7 +41,7 @@ if hasattr(sys.stdout, "buffer"):
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "auto"))
 
-from stockdata import MySqlFundDataSource  # noqa: E402
+from core.stockdata import MySqlFundDataSource  # noqa: E402
 
 #: （指数, 它跟踪的期货）。与 ``futurespair`` 的内容一致。
 PAIRS = [

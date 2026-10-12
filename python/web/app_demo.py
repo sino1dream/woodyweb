@@ -42,7 +42,7 @@ from web.services.fund_service import FundService  # noqa: E402
 
 install_paths()
 
-from stockdata import DailyRecord, FundProfile, MemoryFundDataSource  # noqa: E402
+from core.stockdata import DailyRecord, FundProfile, MemoryFundDataSource  # noqa: E402
 
 
 def build_demo_source() -> MemoryFundDataSource:

@@ -32,7 +32,7 @@ for _path in (AUTO_DIR, PYTHON_DIR):
     if _path not in sys.path:
         sys.path.insert(0, _path)
 
-from stockdata import load_mysql_env, mysql_config_from_env  # noqa: E402
+from core.stockdata import load_mysql_env, mysql_config_from_env  # noqa: E402
 
 #: MySQL 错误码 1060：列已存在。重复打补丁不算失败。
 ER_DUP_FIELDNAME = 1060

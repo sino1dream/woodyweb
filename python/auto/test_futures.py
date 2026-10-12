@@ -13,7 +13,7 @@ from __future__ import annotations
 import datetime
 import unittest
 
-from futurescalib import (
+from calc.futurescalib import (
     FALLBACK_FUTURES,
     FALLBACK_PROXIES,
     FuturesCalibrator,
@@ -21,7 +21,7 @@ from futurescalib import (
     build_futures_calibrator,
     check_adjust_time,
 )
-from futuresquotes import (
+from source.futuresquotes import (
     MIN_FIELD_COUNT,
     SinaFuturesClient,
     FuturesQuote,
@@ -56,7 +56,7 @@ class FuturesSymbolTest(unittest.TestCase):
         ``GetSinaSymbol()`` 有同样的兜底，所以它的期货取数走的是
         ``DebugGetSinaFileName()``（文件名 = 裸符号）。
         """
-        from stocksymbol import StockSymbol
+        from core.stocksymbol import StockSymbol
 
         self.assertEqual(get_quote_symbol("hf_NQ"), "hf_NQ")
         self.assertEqual(get_quote_symbol("hf_ES"), "hf_ES")
@@ -64,7 +64,7 @@ class FuturesSymbolTest(unittest.TestCase):
         self.assertEqual(StockSymbol("hf_NQ").get_sina_symbol(), "gb_hf_nq")
 
     def test_get_quote_symbol_unchanged_for_normal_symbols(self):
-        from stocksymbol import StockSymbol
+        from core.stocksymbol import StockSymbol
 
         for symbol in ("SZ161130", "SH513100", "QQQ", "sh600000"):
             self.assertEqual(get_quote_symbol(symbol), StockSymbol(symbol).get_sina_symbol(), symbol)
@@ -283,7 +283,7 @@ class FakeSource:
         return self._ids.get(symbol)
 
     def get_calibration_now(self, stock_id):
-        from stockdata import DailyRecord
+        from core.stockdata import DailyRecord
 
         value = self._calibrations.get(stock_id)
         return DailyRecord(date="2026-10-07", close=value) if value else None
@@ -433,7 +433,7 @@ class RealtimeSourceValueTest(unittest.TestCase):
             return self._ids.get(symbol)
 
         def get_calibration_now(self, stock_id):
-            from stockdata import DailyRecord
+            from core.stockdata import DailyRecord
 
             value = self._calibrations.get(stock_id)
             return DailyRecord(date="2026-10-07", close=value) if value else None
@@ -478,7 +478,7 @@ class RealtimeSourceValueTest(unittest.TestCase):
     def test_returns_none_without_futures_calibration(self):
         class NoCalibration(self.Source):
             def get_calibration_now(self, stock_id):
-                from stockdata import DailyRecord
+                from core.stockdata import DailyRecord
 
                 # 只有中间层有校准值，指数没有 -> 无法换算
                 if stock_id == 4:

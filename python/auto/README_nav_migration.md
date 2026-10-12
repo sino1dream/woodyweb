@@ -152,11 +152,11 @@ PHP 把中间层数值写进 `netvaluehistory`，与基金单位净值混在一�
 
 | 文件 | 职责 |
 | --- | --- |
-| `python/auto/navsource.py` | 净值源抽象 + 东方财富/新浪/深交所三个实现 |
-| `python/auto/navupdater.py` | 净值抓取与落库、`16:55` 守卫 |
-| `python/auto/navcli.py` | 命令行：抓取 / 检查 / 历史 / 交叉对比 / 接口说明 |
-| `python/auto/quotestore.py` | 新增 `EstQuoteStore`（`estquote` 表读写） |
-| `python/auto/quoteupdater.py` | 新增 `est_store` / `est_symbols`，派发中间层写入 |
+| `python/auto/source/navsource.py` | 净值源抽象 + 东方财富/新浪/深交所三个实现 |
+| `python/auto/updater/navupdater.py` | 净值抓取与落库、`16:55` 守卫 |
+| `python/auto/cli/navcli.py` | 命令行：抓取 / 检查 / 历史 / 交叉对比 / 接口说明 |
+| `python/auto/sql/quotestore.py` | 新增 `EstQuoteStore`（`estquote` 表读写） |
+| `python/auto/updater/quoteupdater.py` | 新增 `est_store` / `est_symbols`，派发中间层写入 |
 | `python/sql/schema.sql` | 新增 `estquote` 表（含量级说明注释） |
 
 ## 七、踩到并修掉的一个真 bug

@@ -1,4 +1,4 @@
-# 外链函数族迁移（`php/externallink.php` → `python/auto/externallink.py`）
+# 外链函数族迁移（`php/externallink.php` → `python/auto/ref/externallink.py`）
 
 > 补记：这一族函数是 2026-10-10 由「引用对象行情装填」那一步（见
 > `README_refquote_migration.md`）顺手带出来的，当时**没有单独写迁移记录**，

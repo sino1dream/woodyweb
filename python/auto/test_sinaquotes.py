@@ -9,9 +9,9 @@
 
 import unittest
 
-import quotestore
-import sinaquotes
-from stockref import StockReference
+from sql import quotestore
+from source import sinaquotes
+from ref.stockref import StockReference
 
 # 真实新浪响应样本（与远端分支 captured 样本一致），用于离线验证
 LINE_CN = (
@@ -185,8 +185,8 @@ class QuoteStoreTest(unittest.TestCase):
         与 ``load_sina_data()`` 内部 ``GetSinaSymbol()`` 的行为一致，
         所以这里要先转换再登记，否则 loader 查不到映射。
         """
-        from stockref import sina_quote_file_name
-        from stocksymbol import StockSymbol
+        from ref.stockref import sina_quote_file_name
+        from core.stocksymbol import StockSymbol
 
         sina_symbol = StockSymbol(symbol).get_sina_symbol()
         client = sinaquotes.SinaQuoteClient(session=FakeSession(session_content))

@@ -30,7 +30,7 @@ if hasattr(sys.stdout, "buffer"):
 
 sys.path.insert(0, "auto")
 
-from stockdata import MySqlFundDataSource  # noqa: E402
+from core.stockdata import MySqlFundDataSource  # noqa: E402
 
 # 来源见模块 docstring：作者文档里公开可见的 SZ162411 表格
 # (symbol, date, 份额万份, 数量[成交量])

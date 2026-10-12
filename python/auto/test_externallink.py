@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import unittest
 
-from externallink import (
+from ref.externallink import (
     SINA_FINANCE_URL,
     get_external_link,
     get_link_element,

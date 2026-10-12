@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from flask import Blueprint, redirect, render_template, request, url_for
 
-from fundgroups import get_fund_group, get_fund_group_names
+from calc.fundgroups import get_fund_group, get_fund_group_names
 
 
 main_bp = Blueprint("main", __name__)

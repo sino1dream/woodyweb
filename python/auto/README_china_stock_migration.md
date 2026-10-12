@@ -4,24 +4,24 @@ This note tracks the PHP-to-Python migration for the Chinese-market data path.
 
 ## Migrated
 
-- `php/stockdataarray.php` -> `python/auto/stockdata.py`
+- `php/stockdataarray.php` -> `python/auto/core/stockdata.py`
   - Builds the fund estimation data structure from the legacy MySQL tables.
-- `php/stock.php` fund calculation helpers -> `python/auto/fundcalc.py`
+- `php/stock.php` fund calculation helpers -> `python/auto/calc/fundcalc.py`
   - Covers calibrated QDII funds, holdings-based funds, and reverse estimation.
-- `php/stock.php` fund CLI flow -> `python/auto/fundcli.py`
+- `php/stock.php` fund CLI flow -> `python/auto/cli/fundcli.py`
   - Provides a JSON CLI for estimates and database connectivity checks.
-- `php/test/updatechinastock.php` -> `python/auto/chinastock.py`
+- `php/test/updatechinastock.php` -> `python/auto/source/chinastock.py`
   - Updates `stock` rows for `hs_a`, `hs_b`, `hs_s`, `etf_hq_fund`,
     `lof_hq_fund`, and `qbgg_hk`.
   - Updates `ahpair` rows for the `aplush` node.
   - Deletes stale `stock` rows only when they are not referenced by
     `stockgroupitem`, matching the PHP guard.
-- `php/stock/chinamoney.php` -> `python/auto/chinamoney.py`
+- `php/stock/chinamoney.php` -> `python/auto/source/chinamoney.py`
   - Updates `netvaluehistory` for `USCNY`, `EUCNY`, `JPCNY`, and `HKCNY`
     from the China Money `ccpr.json` feed.
   - Inserts missing rows, optionally overwrites existing rows, and reports
     missing currency stock IDs instead of writing invalid data.
-- Shared HTTP/JSON handling -> `python/auto/httpjson.py`
+- Shared HTTP/JSON handling -> `python/auto/source/httpjson.py`
   - User-Agent, UTF-8/GB18030 JSON decoding, and network error wrapping shared
     by `chinastock.py` and `chinamoney.py`.
 
@@ -51,38 +51,38 @@ access. Do not commit real credentials.
 Check a Sina node without touching MySQL:
 
 ```powershell
-python -B python\auto\chinastock.py hs_a --check
-python -B python\auto\chinastock.py etf_hq_fund --peek 2 --pretty
+python -B python\auto\source/chinastock.py hs_a --check
+python -B python\auto\source/chinastock.py etf_hq_fund --peek 2 --pretty
 ```
 
 Check the local row count with a read-only query:
 
 ```powershell
-python -B python\auto\chinastock.py hs_a --check-db
+python -B python\auto\source/chinastock.py hs_a --check-db
 ```
 
 Run the full node update:
 
 ```powershell
-python -B python\auto\chinastock.py hs_a
-python -B python\auto\chinastock.py aplush
+python -B python\auto\source/chinastock.py hs_a
+python -B python\auto\source/chinastock.py aplush
 ```
 
 Inspect the China Money feed without touching MySQL:
 
 ```powershell
-python -B python\auto\chinamoney.py --check
-python -B python\auto\chinamoney.py --peek
-python -B python\auto\chinamoney.py --check-db
+python -B python\auto\source/chinamoney.py --check
+python -B python\auto\source/chinamoney.py --peek
+python -B python\auto\source/chinamoney.py --check-db
 ```
 
 Update the four CNY central parity rates:
 
 ```powershell
-python -B python\auto\chinamoney.py
-python -B python\auto\chinamoney.py --dry-run
-python -B python\auto\chinamoney.py --overwrite
-python -B python\auto\chinamoney.py --force
+python -B python\auto\source/chinamoney.py
+python -B python\auto\source/chinamoney.py --dry-run
+python -B python\auto\source/chinamoney.py --overwrite
+python -B python\auto\source/chinamoney.py --force
 ```
 
 `--overwrite` updates rows that already exist for the remote date and bypasses

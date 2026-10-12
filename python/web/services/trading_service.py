@@ -84,8 +84,8 @@ from web.bootstrap import install_paths
 
 install_paths()
 
-from historytable import TableRow  # noqa: E402
-from uicolumn import (  # noqa: E402
+from sql.historytable import TableRow  # noqa: E402
+from ui.uicolumn import (  # noqa: E402
     STOCK_DISP_FAIR,
     STOCK_DISP_OFFICIAL,
     STOCK_DISP_REALTIME,
@@ -472,7 +472,7 @@ def market_now(ref: Any) -> Any:
 
     name = _text(_invoke(ref, "get_time_zone", "GetTimeZone"))
     try:
-        import tzutil
+        from core import tzutil
 
         zone = tzutil.get_time_zone(name)
     except Exception:
@@ -518,7 +518,7 @@ def _rotation_link(symbol: str, link_builder: Callable[..., Any]) -> Any:
     """
     if not symbol or link_builder is None:
         return None
-    from stocksymbol import (
+    from core.stocksymbol import (
         in_array_qqq_match,
         in_array_spy_qdii,
         in_array_xbi_qdii,
@@ -563,7 +563,7 @@ def _php_empty(value: Any) -> bool:
 
 def _floatval(value: Any) -> float:
     """``floatval()`` 语义。``None`` 也是 0.0（``floatval(null) === 0.0``）。"""
-    from stockref import _php_floatval
+    from ref.stockref import _php_floatval
 
     return _php_floatval(value)
 

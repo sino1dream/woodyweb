@@ -29,7 +29,7 @@ class StockRouteTest(unittest.TestCase):
     """``/stock`` 接线：**不连数据库**，用假连接替掉 StockSql。"""
 
     def setUp(self):
-        from stocksql import StockSql
+        from sql.stocksql import StockSql
         from web.app import create_app
         from web.services.stock_service import StockService
 
@@ -82,7 +82,7 @@ class StockRouteTest(unittest.TestCase):
 
     def test_database_unavailable_page_still_opens(self):
         """取数失败时降级成空表，而不是整页 500。"""
-        from stocksql import StockSql
+        from sql.stocksql import StockSql
 
         app = _app_with_failing_sql(StockSql)
         html = app.test_client().get("/stock").get_data(as_text=True)

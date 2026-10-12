@@ -32,7 +32,7 @@ for _path in (AUTO_DIR, PYTHON_DIR):
     if _path not in sys.path:
         sys.path.insert(0, _path)
 
-from stockdata import load_mysql_env, mysql_config_from_env  # noqa: E402
+from core.stockdata import load_mysql_env, mysql_config_from_env  # noqa: E402
 
 SCHEMA_FILE = os.path.join(SQL_DIR, "schema.sql")
 

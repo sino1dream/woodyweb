@@ -30,8 +30,8 @@ if hasattr(sys.stdout, "buffer"):
 
 sys.path.insert(0, "auto")
 
-from stockdata import MySqlFundDataSource  # noqa: E402
-from stocksymbol import StockSymbol  # noqa: E402
+from core.stockdata import MySqlFundDataSource  # noqa: E402
+from core.stocksymbol import StockSymbol  # noqa: E402
 
 FIXES = {"SH513100": 1.0}
 

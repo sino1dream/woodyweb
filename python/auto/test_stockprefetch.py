@@ -12,9 +12,9 @@ import os
 import unittest
 from unittest import mock
 
-import stockprefetch as sp
-import tzutil
-from stocksymbol import StockSymbol
+from updater import stockprefetch as sp
+from core import tzutil
+from core.stocksymbol import StockSymbol
 
 SHANGHAI = datetime.timezone(datetime.timedelta(hours=8), "Asia/Shanghai")
 

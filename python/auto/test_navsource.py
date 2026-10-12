@@ -11,9 +11,9 @@ import datetime
 import os
 import unittest
 
-import navsource
-from navupdater import NavUpdater, is_nav_ready, nav_code_of
-from quotestore import MemoryQuoteStore
+from source import navsource
+from updater.navupdater import NavUpdater, is_nav_ready, nav_code_of
+from sql.quotestore import MemoryQuoteStore
 
 # 真实响应样本（取自东方财富 / 新浪 / 深交所）
 EASTMONEY_PAYLOAD = {
@@ -551,7 +551,7 @@ class NameCompatibilityTest(unittest.TestCase):
     """
 
     def test_correct_short_name_is_compatible_with_full_name(self):
-        from navupdater import _name_compatible
+        from updater.navupdater import _name_compatible
 
         # 库里存简洁短名、权威源给全称 —— 应当判为相容
         self.assertTrue(_name_compatible(
@@ -568,7 +568,7 @@ class NameCompatibilityTest(unittest.TestCase):
         ))
 
     def test_wrong_fund_name_is_incompatible(self):
-        from navupdater import _name_compatible
+        from updater.navupdater import _name_compatible
 
         # 这就是库里原来的错误：161130 被安上了 161128 的名字
         self.assertFalse(_name_compatible(
@@ -577,14 +577,14 @@ class NameCompatibilityTest(unittest.TestCase):
         ))
 
     def test_missing_side_does_not_conclude(self):
-        from navupdater import _name_compatible
+        from updater.navupdater import _name_compatible
 
         # 缺一侧时不下定论，避免误报
         self.assertTrue(_name_compatible(None, "某基金"))
         self.assertTrue(_name_compatible("某基金", None))
 
     def test_name_key_strips_noise(self):
-        from navupdater import _name_key
+        from updater.navupdater import _name_key
 
         self.assertEqual(_name_key("国泰纳斯达克100(QDII-ETF)"), "国泰纳斯达克100")
         self.assertEqual(_name_key("易方达纳斯达克100LOF"), "易方达纳斯达克100")

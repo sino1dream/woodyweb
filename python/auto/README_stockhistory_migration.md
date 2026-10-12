@@ -1,6 +1,6 @@
 # StockHistory 迁移（第一刀 + 第二刀）
 
-`php/stockhis.php`（586 行）迁移到 `python/auto/stockhistory.py`。
+`php/stockhis.php`（586 行）迁移到 `python/auto/sql/stockhistory.py`。
 
 ## 一、为什么分刀，切在哪
 
@@ -351,7 +351,7 @@ python -B _php_sma_compare.py --selftest   # 证明它抓得到注入的错误
 
 ## 十三、下一刀要做什么
 
-**第 3 刀 —— 配置的文件后端** —— **已做完**，落在 `python/auto/smaconfig.py`。
+**第 3 刀 —— 配置的文件后端** —— **已做完**，落在 `python/auto/sql/smaconfig.py`。
 上面那三个问题的答案（路径从哪来 / 并发写 / 测试隔离）连同两处新增的偏离，
 记在 **`python/auto/README_sma_config_backend.md`**（单独评审）。
 
@@ -363,6 +363,6 @@ python -B _php_sma_compare.py --selftest   # 证明它抓得到注入的错误
 `_callbackQdiiSma` / `_callbackFundPairSma` / `_callbackAhPairSma` /
 `_callbackFutureSma` 四个回调，以及 `EchoFutureSmaParagraph` 里的期货理论溢价
 （走 `futurepremium` 表）—— **已做完**，落在
-`python/web/services/sma_service.py`、`python/auto/pairestimate.py`、
-`python/auto/futurepremium.py`，记录见
+`python/web/services/sma_service.py`、`python/auto/calc/pairestimate.py`、
+`python/auto/calc/futurepremium.py`，记录见
 `python/auto/README_sma_paragraph_migration.md`。

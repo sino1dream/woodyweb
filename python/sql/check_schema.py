@@ -29,7 +29,7 @@ for _path in (AUTO_DIR, PYTHON_DIR):
     if _path not in sys.path:
         sys.path.insert(0, _path)
 
-from stockdata import load_mysql_env, mysql_config_from_env  # noqa: E402
+from core.stockdata import load_mysql_env, mysql_config_from_env  # noqa: E402
 
 # schema.sql 定义的表，以及各自用于展示"最新进度"的日期列
 # 前 14 张是 PHP 原本就有的；后两张是 Python 侧新增（见 schema.sql 注释）

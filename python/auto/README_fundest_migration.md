@@ -15,9 +15,9 @@
 
 新增文件：
 
-* `python/auto/fundeststore.py` —— `fundest` 表读写（含闸门）
-* `python/auto/fundestcalc.py` —— 官方 EST 计算、记录、误差告警
-* `python/auto/fundestcli.py` —— 命令行（记录 / 查看 / 误差扫描）
+* `python/auto/sql/fundeststore.py` —— `fundest` 表读写（含闸门）
+* `python/auto/calc/fundestcalc.py` —— 官方 EST 计算、记录、误差告警
+* `python/auto/cli/fundestcli.py` —— 命令行（记录 / 查看 / 误差扫描）
 * `python/auto/test_fundest.py` —— 27 个测试
 
 ## 一、`fundest` 存的到底是什么（最容易误解的一步）

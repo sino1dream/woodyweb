@@ -13,9 +13,9 @@
 
 新增文件：
 
-* `python/auto/futuresquotes.py` —— 期货行情抓取与解析
-* `python/auto/futurescalib.py` —— 期货配对、校准、实时 EST 取值
-* `python/auto/futurescli.py` —— 命令行（抓取 / 校准 / 显示）
+* `python/auto/source/futuresquotes.py` —— 期货行情抓取与解析
+* `python/auto/calc/futurescalib.py` —— 期货配对、校准、实时 EST 取值
+* `python/auto/cli/futurescli.py` —— 命令行（抓取 / 校准 / 显示）
 * `python/auto/test_futures.py` —— 36 个测试
 * `python/sql/_seed_futures_pair.py` / `_calibrate_futures.py` —— 配对与校准数据
 * `futurespair` 表（`schema.sql`）

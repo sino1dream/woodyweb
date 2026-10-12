@@ -14,9 +14,13 @@
    边界条件、魔数来源的地方必须说明原因，并注明对应的 PHP 文件与函数名。
 
 3. 命名与接口保持现有约定：
-   - `python/auto` 是平铺模块（非包），模块之间直接 `import`，测试需在该目录内运行；
+   - `python/auto` 按职责分成子包（`core` / `sql` / `source` / `calc` / `ref` /
+     `updater` / `ui` / `cli`，一次性脚本在 `_scratch`），测试文件留在根目录，
+     测试需在该目录内运行。跨包 import 一律写 `from 包 import 模块`
+     （**不要**写 `import 包.模块`，它只绑定顶层包名）。分档理由与完整
+     模块映射见 `python/auto/README_layout.md`；
    - 函数与变量用 snake_case，同时对 PHP 原名保留 camelCase 别名（见
-     `python/auto/stocksymbol.py` 的别名区）；
+     `python/auto/core/stocksymbol.py` 的别名区）；
    - PHP 返回 `false` 的字符串类方法映射为 `None`，布尔类方法映射为 `False`。
 
 4. 迁移的每一步都要：

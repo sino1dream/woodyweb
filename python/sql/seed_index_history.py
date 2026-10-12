@@ -48,8 +48,8 @@ if hasattr(sys.stdout, "buffer"):
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "auto"))
 
-import indexhistory  # noqa: E402
-from stockdata import MySqlFundDataSource  # noqa: E402
+from updater import indexhistory  # noqa: E402
+from core.stockdata import MySqlFundDataSource  # noqa: E402
 
 #: 要补的符号。这两个是 QDII 的估值标的（``^NDX`` → 纳指、``^GSPC`` → 标普）。
 #: ``QQQ``/``SPY`` 是 ETF，本来就由 daemon 正常抓，不用在这里补。

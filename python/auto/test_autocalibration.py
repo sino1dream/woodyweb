@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import unittest
 
-from autocalibration import (
+from updater.autocalibration import (
     DEMO_MIDDLE_SYMBOLS,
     MIDDLE_PAIR_FALLBACK,
     AutoCalibrator,
@@ -518,7 +518,7 @@ class EstimateGuardRestoreTest(unittest.TestCase):
     """
 
     def test_guard_restores_original_value(self):
-        from autocalibration import EstimateGuard
+        from updater.autocalibration import EstimateGuard
 
         source = GuardSource(original=0.008945)
         guard = EstimateGuard(source)
@@ -537,7 +537,7 @@ class EstimateGuardRestoreTest(unittest.TestCase):
 
     def test_guard_rejects_bad_value(self):
         """偏差超过容差就拒写。"""
-        from autocalibration import EstimateGuard
+        from updater.autocalibration import EstimateGuard
 
         source = GuardSource()
         guard = EstimateGuard(source)
@@ -552,7 +552,7 @@ class EstimateGuardRestoreTest(unittest.TestCase):
 
     def test_guard_restores_even_when_estimate_raises(self):
         """估值抛异常时也必须还原 —— 否则异常路径会把库留在脏状态。"""
-        from autocalibration import EstimateGuard
+        from updater.autocalibration import EstimateGuard
 
         source = GuardSource(original=0.008945)
 
@@ -570,7 +570,7 @@ class EstimateGuardRestoreTest(unittest.TestCase):
         self.assertIn(("update", 0.008945), source.connection.writes)
 
     def test_guard_skips_when_no_fund_uses_middle(self):
-        from autocalibration import EstimateGuard
+        from updater.autocalibration import EstimateGuard
 
         source = GuardSource()
         source.get_stock_id = lambda symbol: None      # 什么都找不到
@@ -584,7 +584,7 @@ class GuardToleranceTest(unittest.TestCase):
     """容差语义：抓"量级错了"，不抓日常漂移。"""
 
     def test_default_tolerance_is_five_percent(self):
-        from autocalibration import GUARD_TOLERANCE
+        from updater.autocalibration import GUARD_TOLERANCE
 
         # 汇率与行情的正常日内变动就有 1% 量级，容差不该收到 1%
         self.assertGreaterEqual(GUARD_TOLERANCE, 0.02)

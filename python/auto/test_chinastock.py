@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import patch
 
-from chinastock import (
+from source.chinastock import (
     ChinaStockUpdater,
     MemoryChinaStockStore,
     MySqlChinaStockStore,
@@ -11,7 +11,7 @@ from chinastock import (
     sina_count_code,
     sina_data_code,
 )
-from httpjson import decode_json_content
+from source.httpjson import decode_json_content
 
 
 class FakeResponse:
@@ -323,7 +323,7 @@ class ChinaStockCliTest(unittest.TestCase):
             def list_symbol_ids(self, node):
                 return {"SH600000": "1"}
 
-        with patch("chinastock.MySqlChinaStockStore", FakeStore), patch("builtins.print") as mock_print:
+        with patch("source.chinastock.MySqlChinaStockStore", FakeStore), patch("builtins.print") as mock_print:
             self.assertEqual(main(["hs_a", "--check-db"]), 0)
 
         self.assertIn('"local_count": 1', mock_print.call_args[0][0])
