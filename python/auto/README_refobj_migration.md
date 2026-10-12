@@ -216,10 +216,12 @@ PHP 是 `_QdiiReference`（抽象中间类）+ 四个地区子类，差异只有
    连带影响：`_getOfficialEstVal()` / `_getFairEstVal()` 里的
    `method_exists($est_ref, 'GetHoldingsDate')` 分支（持仓型基金）**未迁移**。
 
-2. **`stock_ref` 由调用方注入。** PHP 是 `new MyStockReference($strSymbol)`
-   （`mystockref.php`，未迁移）。`FundReference` 已经准备了委托
-   （`get_symbol` / `get_stock_id` / `get_price_display` / `get_percentage_text`
-   都转发给 `stock_ref`），注入进来即可生效。
+2. **`stock_ref` 自动建，调用方也可注入。** PHP 是
+   `new MyStockReference($strSymbol)`（`mystockref.php`，未迁移），
+   `is_fund_a()` 为真时构造时自动建 —— 由 `MysqlReference` 顶上
+   （同样读库快照行情）。委托（`get_symbol` / `get_stock_id` /
+   `get_price_display` / `get_percentage_text`）都转发给 `stock_ref`。
+   详见 `README_stock_ref_autobuild.md`。
 
 3. **`GetPercentageDisplay()` 只迁了文本部分。** PHP 返回带颜色的 `<font>`
    片段，属于渲染层（`php/ui` 未迁移），这里返回不带标记的文本。

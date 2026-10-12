@@ -371,6 +371,44 @@ class QdiiCallbackTest(unittest.TestCase):
         self.assertIsNone(SmaService().qdii_table(Bare()))
 
 
+class RealQdiiReferenceTest(unittest.TestCase):
+    """用**真的** ``refobj.QdiiReference`` 走一遍 ``_callbackQdiiSma``。
+
+    ## 为什么 ``QdiiCallbackTest`` 之外还要这一条
+
+    ``QdiiCallbackTest.FakeQdiiRef`` 自己实现了 ``GetStockRef()``，于是单元测试
+    全绿；真库上 ``QdiiReference.get_stock_ref()`` 却是 ``None`` ——
+    ``php/stock/fundref.php:19`` 那句 ``if ($this->IsFundA())`` 当时没迁 ——
+    QDII 均线表的换算列**整列空白**（生产端该列是 ``SZ161125 / 3.179``）。
+    不报错、单测也不报错，只能靠抓页面发现。所以这里**不许再自己造引用对象**。
+    """
+
+    def _qdii(self):
+        """``source=None`` 也能建：``MysqlReference`` 构造只读库快照，而
+        ``is_fund_a()`` 与符号精度都只依赖符号本身。"""
+        from refobj import QdiiReference
+
+        return QdiiReference("SZ161130", source=None, auto_estimate=False)
+
+    def test_the_real_reference_has_a_stock_ref(self):
+        self.assertIsNotNone(self._qdii().get_stock_ref())
+
+    def test_the_callback_without_est_returns_the_display_ref(self):
+        display_ref = callback_qdii_sma(self._qdii())
+        self.assertIsNotNone(display_ref)
+        self.assertEqual(display_ref.get_symbol(), "SZ161130")
+
+    def test_the_conversion_column_header_is_not_empty(self):
+        """页面上的形状是 ``[均线 EST 溢价 T+1EST 溢价 SZ161130 T+1EST]``。"""
+        history = FakeHistory(sma=make_sma(value="100.00"), ref=FakeRef())
+        service = SmaService(history_factory=lambda ref, wide: history)
+
+        table = service.qdii_table(self._qdii())
+
+        self.assertIsNotNone(table)
+        self.assertEqual(table["columns"][5]["text"], "SZ161130")
+
+
 class PairCallbackTest(unittest.TestCase):
     """``_callbackFundPairSma`` / ``_callbackAhPairSma``（``:151`` / ``:169``）。
 

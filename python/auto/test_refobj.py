@@ -368,6 +368,84 @@ class FundReferenceTest(unittest.TestCase):
         self.assertEqual(ref.get_price_display(), "delegated")
         self.assertEqual(ref.get_percentage_text(), "1.23%")
 
+class StockRefAutoBuildTest(unittest.TestCase):
+    """``php/stock/fundref.php:19`` 那行 ``if ($this->IsFundA())`` 的迁移版。
+
+    补上它之前，``GetStockRef()`` 恒为 ``None``，QDII 均线表的换算列整列空白
+    （生产端 ``sz161125cn.php`` 该列是 ``SZ161125 / 3.179``）。
+    """
+
+    def test_a_fund_builds_one_automatically(self):
+        """A 股基金（LOF）：构造时就挂上场内行情引用。"""
+        ref = FundReference("SZ161130", source=FakeSource())
+        stock_ref = ref.get_stock_ref()
+        self.assertIsNotNone(stock_ref)
+        self.assertEqual(stock_ref.get_symbol(), "SZ161130")
+
+    def test_qdii_reference_inherits_it(self):
+        """``_callbackQdiiSma`` 走的是 ``QdiiReference``，它也必须带上。"""
+        ref = QdiiReference("SZ161130", source=FakeSource(), auto_estimate=False)
+        self.assertIsNotNone(ref.get_stock_ref())
+
+    def test_non_a_fund_has_none(self):
+        """``IsFundA()`` 为假的符号一律不建 —— PHP 那边 ``$stock_ref`` 保持 ``false``。"""
+        for symbol in ("QQQ", "^NDX", "hf_NQ", "USCNY"):
+            ref = FundReference(symbol, source=FakeSource())
+            self.assertIsNone(ref.get_stock_ref(), symbol)
+
+    def test_injected_one_wins(self):
+        """调用方显式给的优先 —— 自动建只是兜底。"""
+
+        class Injected:
+            def get_symbol(self):
+                return "INJECTED"
+
+        ref = FundReference("SZ161130", source=FakeSource(), stock_ref=Injected())
+        self.assertIsInstance(ref.get_stock_ref(), Injected)
+
+    def test_the_built_one_is_not_a_fund_reference(self):
+        """**不能**是 ``FundReference`` —— 否则构造时又去建一个 stock_ref，递归。"""
+        ref = FundReference("SZ161130", source=FakeSource())
+        stock_ref = ref.get_stock_ref()
+        self.assertIsInstance(stock_ref, MysqlReference)
+        self.assertNotIsInstance(stock_ref, FundReference)
+
+    def test_delegation_stays_identity(self):
+        """自动建的 stock_ref 与自己同符号，所以委托**必须是恒等变换**。
+
+        这条最要紧：``get_symbol()`` / ``get_stock_id()`` 会转发给 stock_ref，
+        一旦两者不一致，详情页上几乎所有段落（估值 / 校准 / 参考数据）都会跟着
+        错 —— 所以特意钉住"补这行前后这两个方法的返回值不变"。
+        """
+        source = FakeSource()
+        plain = MysqlReference("SZ161130", source=source)
+        ref = FundReference("SZ161130", source=source)
+
+        self.assertEqual(ref.get_symbol(), plain.get_symbol())
+        self.assertEqual(ref.get_stock_id(), plain.get_stock_id())
+        self.assertEqual(ref.get_symbol(), "SZ161130")
+
+    def test_build_failure_keeps_none(self):
+        """建不出来就回退 ``None`` —— 这一列只是装饰，不该让整页 500。"""
+
+        def boom(symbol):
+            raise RuntimeError("no source")
+
+        original = FundReference._build_stock_ref
+        FundReference._build_stock_ref = lambda self, symbol: boom(symbol)
+        try:
+            ref = FundReference("SZ161130", source=FakeSource())
+            self.assertIsNone(ref.get_stock_ref())
+            self.assertEqual(ref.get_symbol(), "SZ161130")
+        finally:
+            FundReference._build_stock_ref = original
+
+    def test_source_is_passed_through(self):
+        """stock_ref 要共享同一个数据源，否则它读不到库快照。"""
+        source = FakeSource()
+        ref = FundReference("SZ161130", source=source)
+        self.assertIs(ref.get_stock_ref().source, source)
+
     def test_insert_fund_calibration_prefers_source_writer(self):
         source = FakeSource()
         ref = FundReference("SZ161130", source=source)

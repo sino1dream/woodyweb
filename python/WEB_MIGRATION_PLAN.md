@@ -166,12 +166,17 @@ Flask 路由
    PHP 逐项对照 5 例 0 差异（列组装用 PHP 自己的 `TableColumn` 真身）、自检 4/4。
    顺带修掉 `_stock_column` 漏掉的 maroon 染色（同时影响 `EchoQdiiSmaParagraph`）。
    详见 `python/auto/README_qdii_fund_pair_sma.md`。
+   **第 8 轮**：补 `php/stock/fundref.php:19` 那句
+   `if ($this->IsFundA()) $this->stock_ref = new MyStockReference($strSymbol)` ——
+   `FundReference.__init__` 现在自动建 stock_ref，`MyStockReference` 未迁、
+   由 `MysqlReference` 顶上（同样读库快照行情）。修掉了 QDII 均线换算列整列
+   空白的问题。改共享构造，所以按规矩先留页面基线再改：受影响面只有那一列，
+   其余九张表一行未动。PHP 逐例对照 5 例 0 差异（验的是四个委托方法的转发与
+   参数个数）、自检 4/4。详见 `python/auto/README_stock_ref_autobuild.md`。
    **仍未迁**：`portfolioparagraph`、`stockgroup` / `fundpurchase` /
    `transaction` / `comment`。
-   **已迁但有缺口**：`EchoQdiiSmaParagraph` 的对照列整列为空 ——
-   `build_qdii_reference()` 少了 PHP `fundref.php:19` 那句
-   `if (IsFundA()) $this->stock_ref = new MyStockReference(...)`。
-   改它要动 `reference_service` 的共享构造，需另排一轮配受控实验。
+   **已迁但受数据所限**：ETF（如 `SH513100`）走即期外汇分支，演示库
+   `fx_susdcny` 无行情快照，换算格仍为空 —— 列头已正确。
 5. `php/layout.php`、`php/menu.php`、`php/stocklink.php`：站点布局和导航。
 
 第 1、2、3 步已经落地：
@@ -343,7 +348,8 @@ Flask 路由
   `fundestcalc`，避免重演"估值 4.59 变 20245"那次两条实现并存的事故）、  
   **外部依赖全部可注入**。四个地区合成一个类 + `region` 查表。  
   已知偏差：PHP 这个位置用的 `FundPairReference` / `HoldingsReference` 未迁移，  
-  由 `EstReference` 顶上；`MyStockReference`（`stock_ref`）由调用方注入。  
+  由 `EstReference` 顶上；`MyStockReference`（`stock_ref`）同样未迁，
+  `is_fund_a()` 为真时由 `MysqlReference` 顶上（第 8 轮补的自动建）。  
   详见 `python/auto/README_refobj_migration.md`。
 - **渲染层（第 4 步，已做三轮）**：先说一个推翻预设的事实 —— `php/ui` 里  
   **几乎没有 `XxxParagraph` 类**，20 多个 `EchoXxxParagraph()` 全是过程式函数  

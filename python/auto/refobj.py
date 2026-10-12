@@ -585,8 +585,8 @@ class FundReference(MysqlReference):
     # 赋值那几行，访问 ``self.stock_ref`` 会 ``AttributeError``。
     # PHP 里访问未定义属性只是得到 ``null``，所以不会有这个问题。
 
-    #: ``MyStockReference``（``php/stock/mystockref.php``）—— **未迁移**，
-    #: 所以由调用方注入。它是 A 股基金的场内行情引用，基金 A 类才有。
+    #: A 股基金的场内行情引用。``is_fund_a()`` 为真时构造时自动建
+    #: （见 :meth:`_build_stock_ref`），调用方也可以用 ``stock_ref=`` 顶掉。
     stock_ref = None
     est_ref = None
     cny_ref = None
@@ -603,6 +603,20 @@ class FundReference(MysqlReference):
 
         if stock_ref is not None:
             self.stock_ref = stock_ref
+        elif self.is_fund_a():
+            # ``php/stock/fundref.php:19``::
+            #
+            #     if ($this->IsFundA())
+            #         $this->stock_ref = new MyStockReference($strSymbol);
+            #
+            # A 股基金（LOF / ETF）场内可交易，场内价才是"真价格"，
+            # 所以 PHP 给基金对象挂一份场内行情引用，净值之外另有一套口径。
+            # 兜底放在**调用处**而不是 ``_build_stock_ref`` 里面：这样无论
+            # 建不出来的是哪一步（甚至将来换了实现），承诺都成立。
+            try:
+                self.stock_ref = self._build_stock_ref(symbol)
+            except Exception:
+                self.stock_ref = None
 
         # 校准值来自 calibrationhistory（PHP 在子类构造里读一次）
         if self.stock_id:
@@ -613,6 +627,29 @@ class FundReference(MysqlReference):
                     self.factor = float(close)
                 except (TypeError, ValueError):
                     self.factor = 1.0
+
+    def _build_stock_ref(self, symbol: str) -> Any:
+        """``new MyStockReference($strSymbol)`` 在本项目里的等价物。
+
+        ``MyStockReference``（``php/stock/mystockref.php``）未迁移 —— 它构造时
+        联网抓新浪行情，而本项目的部署形态是"``quoteupdatercli --daemon`` 抓进
+        ``realtimequote``、页面读快照"（见 ``auto/refquote.py``）。所以用
+        :class:`MysqlReference` 顶上：它的构造已经包含"读快照装填行情"这一步，
+        正是场内行情引用在本项目里的形态，``reference_service._build_one()``
+        也是这么干的。
+
+        **为什么要补这一行**：QDII 均线的换算列
+        （``php/ui/smaparagraph.php:141 _callbackQdiiSma``）不带参数调用时返回
+        的就是 ``GetStockRef()``，列头和格子格式都取自它。缺了它整列空白 ——
+        生产端 ``sz161125cn.php`` 该列是 ``SZ161125 / 3.179``。
+
+        建不出来时调用方会回退 ``None``（见 ``__init__``）—— 这列只是装饰，
+        不该让整页 500；回退后行为与补这一行之前完全一致。
+
+        参数用传入的 ``symbol`` 而不是 ``self.get_symbol()``：后者会委托给
+        ``stock_ref``，而此刻 ``stock_ref`` 正在赋值 —— 绕开它更省心。
+        """
+        return MysqlReference(symbol, source=self.source)
 
     def load_data(self) -> None:
         """对应 ``FundReference::LoadData()``。

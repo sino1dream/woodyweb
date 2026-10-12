@@ -110,7 +110,12 @@ PHP 分支语义：if ('0') -> false    if ('0.0') -> true
 | 每张表的 `<font>` 逐数字染色 | 只给纯文本 | 本项目列/格模型是"文本 + 一个颜色"（见上一轮 README） |
 | 循环里 echo | 服务返回 list，模板循环 | 服务层不负责输出 |
 
-## 五、⚠️ 本轮发现、**没有**动的一个缺口
+## 五、本轮发现的缺口 —— **已在第 8 轮补上**
+
+> 更新：下面记的缺口已经修掉，见 `README_stock_ref_autobuild.md`。
+> `FundReference.__init__` 现在会建 `stock_ref`，真库上这一列是
+> `SZ161125 / 3.136`，形状与生产端一致（数值不同是数据日期不同）。
+> 下面留着是因为它记录了这个缺口是怎么被发现的。
 
 真库页面实测：
 
@@ -130,9 +135,10 @@ if ($this->IsFundA()) { $this->stock_ref = new MyStockReference($strSymbol); }
 Python 的 `build_qdii_reference()` 没做这一步，`QdiiReference.get_stock_ref()`
 返回 `None` → `callback_qdii_sma()` 无参调用得到 `None` → 列头与格子双双为空。
 
-**为什么本轮不改**：`build_qdii_reference` 是 `reference_service` 的共享入口，
-喂给详情页几乎所有段落（估值 / 对冲 / 参考数据）。改它要配套一次**受影响面
-受控实验**，不是"顺手补一行"。单独排一轮，带上 PHP 对照。
+**为什么当时不在本轮改**：`build_qdii_reference` 是 `reference_service` 的共享
+入口，喂给详情页几乎所有段落（估值 / 对冲 / 参考数据）。改它要配套一次
+**受影响面受控实验**，不是"顺手补一行"。单独排了一轮（第 8 轮），
+带上 PHP 对照 —— 实验结果是受影响面只有那一列，其余九张表一行未动。
 
 ## 六、另一个已知偏差（不是 bug）
 
