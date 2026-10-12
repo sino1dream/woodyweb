@@ -69,6 +69,7 @@ def _render_fund(symbol: str, group: str):
         sma=_build_sma(symbol),
         calibration=_build_calibration(symbol),
         fundlist=_build_fund_list(symbol),
+        fundpairsma=_build_fund_pair_sma(symbol),
     )
 
 
@@ -170,22 +171,7 @@ def _default_callback_width() -> int:
 
 def _est_symbol_of(fund: Any) -> Any:
     """基金的中间层标的符号；取不到返回 ``None``（此时不补那一列）。"""
-    est_ref = getattr(fund, "get_est_ref", None)
-    if not callable(est_ref):
-        return None
-    try:
-        ref = est_ref()
-    except Exception:
-        return None
-    if ref is None:
-        return None
-    getter = getattr(ref, "get_symbol", None)
-    if not callable(getter):
-        return None
-    try:
-        return getter()
-    except Exception:
-        return None
+    return _symbol_of(_est_ref_of(fund)) or None
 
 
 def _build_fund_list(symbol: str) -> dict[str, Any] | None:
@@ -203,7 +189,6 @@ def _build_fund_list(symbol: str) -> dict[str, Any] | None:
     """
     try:
         from web.services.qdii_fund_list import fund_list_table
-        from web.services.qdii_trading_column import build_leverage_references
 
         refs = _get_trading_refs(symbol)
         if not refs:
@@ -213,14 +198,7 @@ def _build_fund_list(symbol: str) -> dict[str, Any] | None:
         if not est_symbol:
             return None
         source = getattr(_get_reference_service(), "source", None)
-        # ``$arLev`` 默认查 ``fundpair``（谁跟踪了我的中间层标的）；
-        # 测试与无库环境可以用 ``fundlist_refs_builder`` 直接给一批引用对象 ——
-        # 与 ``trading_refs_builder`` / ``sma_refs_builder`` 同一套注入约定。
-        refs_builder = current_app.extensions.get("fundlist_refs_builder")
-        if refs_builder is not None:
-            leverage_refs = refs_builder(est_symbol)
-        else:
-            leverage_refs = build_leverage_references(est_symbol, source)
+        leverage_refs = _leverage_refs_of(est_symbol, source)
         table = fund_list_table(
             fund,
             leverage_refs,
@@ -236,6 +214,101 @@ def _build_fund_list(symbol: str) -> dict[str, Any] | None:
         return None
     table["link"] = _fund_list_group_link(symbol)
     return table
+
+
+def _leverage_refs_of(est_symbol: str, source: Any) -> list:
+    """``$arLev`` —— 谁跟踪了 ``est_symbol``（``GetLeverageSymbols``）。
+
+    ## PHP 里两处用的是**同一个** ``$arLev``
+
+    .. code-block:: php
+
+        if (count($arLev) > 0)
+        {
+            EchoFundListParagraph($arLev, '_callbackFundListHedge');
+            EchoFundPairSmaParagraphs($ref->GetEstRef(), $arLev);
+        }
+
+    所以本版也只查一次、两处共用：查两遍不只是浪费，还可能在两次查询之间
+    ``fundpair`` 表变了，给出两张互相矛盾的表。
+
+    ``fundlist_refs_builder`` 是测试与无库环境的注入口（与
+    ``trading_refs_builder`` / ``sma_refs_builder`` 同一套约定）。
+    """
+    builder = current_app.extensions.get("fundlist_refs_builder")
+    if builder is not None:
+        return list(builder(est_symbol) or ())
+    from web.services.qdii_trading_column import build_leverage_references
+
+    return list(build_leverage_references(est_symbol, source) or ())
+
+
+def _build_fund_pair_sma(symbol: str) -> list:
+    """每个杠杆标的**各一张**均线表（``smaparagraph.php:156``）。
+
+    ## 为什么是"好几张表"而不是"一张表多几列"
+
+    .. code-block:: php
+
+        foreach ($arFundPairRef as $fund_pair_ref)
+        {   EchoSmaParagraph($ref, '', $fund_pair_ref, '_callbackFundPairSma', $callback2); }
+
+    被算均线的是**同一个** ``$ref``（中间层标的 ``^GSPC``），变的只有
+    ``$cb_ref``（``SH`` / ``SPY``）—— 于是每张表的左边五列**完全一样**，
+    只有第 6 列"换算到这个标的是多少"不同。生产端 ``sz161125cn.php`` 上
+    就是并排三张（QDII 那张 + SH + SPY）。
+
+    所以服务返回的是**列表**，模板里逐个渲染。
+
+    ## 空列表不是错误
+
+    没有杠杆标的、或中间层标的没有历史数据时都返回空列表 —— PHP 那边对应
+    ``if (count($arLev) > 0)`` 与 ``EchoTableParagraphBegin()`` 的守卫。
+    """
+    service = _get_sma_service()
+    if service is None:
+        return []
+    refs = _get_sma_refs(symbol)
+    if not refs:
+        return []
+    est_ref = _est_ref_of(refs[0])
+    if est_ref is None:
+        return []
+    try:
+        source = getattr(_get_reference_service(), "source", None)
+        return list(service.fund_pair_tables(est_ref,
+                                             _leverage_refs_of(_symbol_of(est_ref), source)))
+    except Exception:
+        # 一张装饰性的对照表不该让整页 500
+        return []
+
+
+def _est_ref_of(fund: Any) -> Any:
+    """``$ref->GetEstRef()`` —— 中间层标的的**引用对象**。
+
+    与 :func:`_symbol_of` 分开：配对均线表要的是对象本身（它要被算均线、
+    要 ``GetPriceDisplay``），而五档表那一列只要符号去查 ``fundpair``。
+    """
+    for name in ("get_est_ref", "GetEstRef"):
+        getter = getattr(fund, name, None)
+        if callable(getter):
+            try:
+                return getter()
+            except Exception:
+                return None
+    return None
+
+
+def _symbol_of(ref: Any) -> str:
+    """引用对象的符号；取不到给空串（调用方据此跳过）。"""
+    for name in ("get_symbol", "GetSymbol"):
+        getter = getattr(ref, name, None)
+        if callable(getter):
+            try:
+                return str(getter() or "")
+            except Exception:
+                return ""
+    return ""
 
 
 def _fund_list_group_link(symbol: str) -> dict[str, str] | None:

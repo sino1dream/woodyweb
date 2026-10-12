@@ -160,9 +160,18 @@ Flask 路由
    由 `_callbackFundListHedge` 提供；公式复用已迁好的
    `stockdata.get_stock_hedge`），附 PHP 逐项对照 5 例一致、2 条已知差异、
    自检 4/4。详见 `python/auto/README_qdii_fund_list.md`。
+   **第 7 轮**：`_qdiigroup.php:101 EchoFundPairSmaParagraphs` —— 每个杠杆标的
+   各一张均线表，服务层复用已有的 `SmaService.fund_pair_tables()`，本轮只补
+   接线（`web/routes/fund.py`）、模板循环与测试（`fund_pair_tables` 此前零覆盖）。
+   PHP 逐项对照 5 例 0 差异（列组装用 PHP 自己的 `TableColumn` 真身）、自检 4/4。
+   顺带修掉 `_stock_column` 漏掉的 maroon 染色（同时影响 `EchoQdiiSmaParagraph`）。
+   详见 `python/auto/README_qdii_fund_pair_sma.md`。
    **仍未迁**：`portfolioparagraph`、`stockgroup` / `fundpurchase` /
-   `transaction` / `comment`，以及 `_qdiigroup.php:101` 的
-   `EchoFundPairSmaParagraphs`（紧跟在基金指数对照表后面）。
+   `transaction` / `comment`。
+   **已迁但有缺口**：`EchoQdiiSmaParagraph` 的对照列整列为空 ——
+   `build_qdii_reference()` 少了 PHP `fundref.php:19` 那句
+   `if (IsFundA()) $this->stock_ref = new MyStockReference(...)`。
+   改它要动 `reference_service` 的共享构造，需另排一轮配受控实验。
 5. `php/layout.php`、`php/menu.php`、`php/stocklink.php`：站点布局和导航。
 
 第 1、2、3 步已经落地：

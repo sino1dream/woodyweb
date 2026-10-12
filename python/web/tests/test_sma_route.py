@@ -18,6 +18,7 @@
 """
 
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -35,6 +36,16 @@ from web.bootstrap import install_paths  # noqa: E402
 install_paths()
 
 from web.tests.test_sma import FakeHistory, FakeRef, make_sma  # noqa: E402
+
+
+def _squeezed(html: str) -> str:
+    """压掉标签之间的空白 —— Jinja 会在标签之间塞缩进，
+    直接 ``assertIn("<td>125.00</td>")`` 会因为缩进而失败。"""
+    return re.sub(r"\s+", " ", html)
+
+
+#: 对照列（``TableColumnStock``）的表头：``<span class="col-maroon">SH</span>``。
+_STOCK_HEAD_RE = re.compile(r'<span class="col-maroon">([^<]+)</span>')
 
 
 class FakeDailyRecord:
@@ -174,6 +185,158 @@ class FundDetailSmaRouteTest(unittest.TestCase):
         html = app.test_client().get("/fund/SZ162411").get_data(as_text=True)
 
         self.assertNotIn("sma-table", html)
+
+
+class _LevRef(FakeRef):
+    """一个杠杆标的：自己带换算因子，也是那一列的显示口径。
+
+    三个方法缺一不可 —— ``est_from_pair`` 要用 ``factor``（校准值）、
+    ``get_position``（仓位）、``get_last_calibration_val``（上次校准值）。
+    少任何一个都会走 PHP 的退化分支，算出一个**看着合理但没有来源**的数。
+    """
+
+    def __init__(self, symbol="SPY", factor=10.0, precision=2):
+        FakeRef.__init__(self, symbol=symbol, precision=precision)
+        self.factor = factor
+        self.cny_ref = None
+        self._position = 1.0
+
+    def get_position(self):
+        return self._position
+
+    def get_last_calibration_val(self):
+        return False
+
+
+class _EstRef(FakeRef):
+    def __init__(self):
+        FakeRef.__init__(self, symbol="^GSPC", prev_price="1000.00",
+                         price="1000.00", precision=3)
+
+    def get_display(self):
+        return "^GSPC"
+
+
+class _FundRef(FakeRef):
+    """被看的基金：``$ref->GetEstRef()`` 给出中间层标的。
+
+    ``GetStockRef()`` 也不能少 —— ``_callbackQdiiSma`` 无参数时返回它，
+    那一列的**表头**就是它的显示名。少了它，页面上会出现一个空的 maroon 列
+    （不报错，但那一列整列空白，很难看出是缺方法还是缺数据）。
+    """
+
+    def __init__(self):
+        FakeRef.__init__(self, symbol="SZ162411")
+        self._est_ref = _EstRef()
+        self._stock_ref = FakeRef(symbol="SZ162411", precision=3)
+
+    def get_est_ref(self):
+        return self._est_ref
+
+    def get_stock_ref(self):
+        return self._stock_ref
+
+
+class _Service:
+    def __init__(self, source=None):
+        self.source = source
+
+
+class FundPairSmaRouteTest(unittest.TestCase):
+    """``EchoFundPairSmaParagraphs()`` 的接线：每个杠杆标的各一张表。
+
+    与 ``FundDetailSmaRouteTest`` 的区别是**那张表有一张还是好几张**：
+    这里断言页面上有两张、顺序与 ``$arLev`` 一致、各自的第 6 列不同。
+    """
+
+    def setUp(self):
+        from web.app import create_app
+        from web.services.fund_service import FundService
+        from web.services.sma_service import SmaService
+        from web.tests.test_web import make_source
+
+        self.history = FakeHistory(sma=make_sma(value="1000.00"),
+                                   next_values=make_sma(value="1010.00"),
+                                   ref=_EstRef())
+        self.leverage_refs = [_LevRef(symbol="SH", factor=8.0),
+                              _LevRef(symbol="SPY", factor=10.0)]
+        self.app = create_app(
+            {"TESTING": True},
+            fund_service_factory=lambda: FundService(make_source()),
+            sma_service_factory=lambda: SmaService(
+                history_factory=lambda ref, wide: self.history),
+            sma_refs_builder=lambda symbols: [_FundRef()],
+            fundlist_refs_builder=lambda est_symbol: self.leverage_refs,
+            reference_service_factory=lambda: _Service(None),
+        )
+        self.client = self.app.test_client()
+
+    def _html(self):
+        return _squeezed(self.client.get("/fund/SZ162411").get_data(as_text=True))
+
+    def test_there_is_one_table_per_leverage_ref(self):
+        html = self._html()
+        self.assertEqual(html.count('class="data-table sma-pair-table"'), 2)
+
+    def test_the_stock_column_headers_reach_the_page_in_order(self):
+        """页面上三张表的对照列依次是 ``SZ162411`` → ``SH`` → ``SPY``。
+
+        与生产端 ``sz161125cn.php`` 的形状一致（那里是 ``SZ161125`` → ``SH``
+        → ``SPY`` → ``ES``）：``EchoQdiiSmaParagraph`` 一张，
+        ``EchoFundPairSmaParagraphs`` 按 ``$arLev`` 的顺序再来两张。
+        """
+        html = self._html()
+        self.assertEqual([m.group(1) for m in _STOCK_HEAD_RE.finditer(html)],
+                         ["SZ162411", "SH", "SPY"])
+
+    def test_the_stock_column_is_rendered_maroon(self):
+        """``TableColumnStock`` 的 maroon —— 宏把它渲染成 ``col-maroon``。
+
+        这一条是**修 bug 时补的**：原先服务层漏了颜色，数值全对、
+        页面上只有颜色不对 —— 最难发现的那一类偏差。
+        """
+        html = self._html()
+        self.assertIn('<span class="col-maroon">SH</span>', html)
+        self.assertIn('<span class="col-maroon">SPY</span>', html)
+
+    def test_each_table_converts_with_its_own_factor(self):
+        """同一个均线值 ``1000.00``：``/8 = 125.00``、``/10 = 100.00``。"""
+        html = self._html()
+        self.assertIn("<td>125.00</td>", html)
+        self.assertIn("<td>100.00</td>", html)
+
+    def test_the_tables_have_no_memo_line(self):
+        """PHP 传 ``''`` 而不是 ``false`` —— 这些表**没有**"日期数据 牛市"。
+
+        页面上那行说明只属于循环外自己那张（``EchoQdiiSmaParagraph``）。
+        """
+        html = self._html()
+        self.assertLess(html.count("2026-10-09数据"), 2)
+
+    def test_no_leverage_refs_means_no_pair_tables(self):
+        """``if (count($arLev) > 0)``：没有杠杆标的，这两张表都不出现。"""
+        from web.app import create_app
+        from web.services.fund_service import FundService
+        from web.services.sma_service import SmaService
+        from web.tests.test_web import make_source
+
+        app = create_app(
+            {"TESTING": True},
+            fund_service_factory=lambda: FundService(make_source()),
+            sma_service_factory=lambda: SmaService(
+                history_factory=lambda ref, wide: self.history),
+            sma_refs_builder=lambda symbols: [_FundRef()],
+            fundlist_refs_builder=lambda est_symbol: [],
+            reference_service_factory=lambda: _Service(None),
+        )
+        html = _squeezed(app.test_client().get("/fund/SZ162411").get_data(as_text=True))
+
+        # QDII 那张（sma-table）还在 —— 它不受 count($arLev) 约束
+        self.assertIn("sma-table", html)
+        self.assertNotIn("sma-pair-table", html)
+        # 两张配对表的换算值一个都不该出现
+        self.assertNotIn("125.00", html)
+        self.assertNotIn("<td>100.00</td>", html)
 
 
 class SmaConfigBackendTest(unittest.TestCase):

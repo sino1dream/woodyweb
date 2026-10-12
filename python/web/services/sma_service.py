@@ -631,14 +631,29 @@ def _stock_column(cb_ref: Any, callback: Callable[..., Any]) -> Any:
 
     列头是回调**不带价格**时返回的那个引用对象的显示名 —— PHP 里
     ``$est_ref = call_user_func($callback, $cb_ref);`` 就取在这一行之前。
+
+    ## 这一列是 **maroon** 的，别用 ``column_base``
+
+    .. code-block:: php
+
+        class TableColumnStock extends TableColumn
+        {
+            public function __construct($sym, $iWidth = 80)
+            {   parent::__construct($sym->GetDisplay(), $iWidth, 'maroon'); }
+        }
+
+    生产端表头就是 ``<th width=90><font color=maroon>SH</font></th>``；
+    早期写成 ``column_base(display, 90)``（不带颜色），页面上那一列就是黑的。
+    数值全对、只差一个颜色，是最难发现的一类偏差 —— 所以钉在
+    ``FundPairTablesTest`` 里。
     """
-    from uicolumn import table_column_get_stock
+    from uicolumn import column_stock
 
     display_ref = callback(cb_ref)
     display = _invoke(display_ref, "get_display", "GetDisplay")
     if display is None:
         display = _text(_invoke(display_ref, "get_symbol", "GetSymbol"))
-    return column_base(_text(display) or table_column_get_stock(display or ""), 90)
+    return column_stock(display or "", 90)
 
 
 def _format_number(value: Any, digits: int = 4) -> str:

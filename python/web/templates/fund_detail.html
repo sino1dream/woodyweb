@@ -43,6 +43,13 @@
       回答"对冲一份本基金要配多少份它"。
     </p>
   {% endif %}
+  {# 每个杠杆标的各一张均线表（smaparagraph.php:156）：_qdiigroup.php:101 紧跟在
+     基金指数对照表之后。左边五列与被算均线的中间层标的那张一模一样，
+     变的只有第 6 列"换算到这个标的是多少"，所以生产端是并排好几张。
+     这些表在 PHP 里传的是 '' 而不是 false，因此没有"日期数据 牛市"那行说明。 #}
+  {% for pair_sma in (fundpairsma or []) %}
+    {{ data_table(pair_sma, "sma-pair-table") }}
+  {% endfor %}
   {% if sma and sma.future %}
     {# smaparagraph.php:218 —— 期货均线表之前，先摆中间层标的的校准记录。
        注意这张表的对象是中间层（^GSPC）而不是基金，所以没有"净值 / 对冲值"两列。 #}

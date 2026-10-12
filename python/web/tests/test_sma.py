@@ -431,6 +431,125 @@ class PairCallbackTest(unittest.TestCase):
         self.assertIsNot(callback_fund_pair_sma(ref), callback_ah_pair_sma(ref))
 
 
+class FundPairTablesTest(unittest.TestCase):
+    """``EchoFundPairSmaParagraphs()``（``php/ui/smaparagraph.php:156``）。
+
+    ``_qdiigroup.php:101`` 在每个杠杆标的身上各 echo 一张均线表：
+
+    .. code-block:: php
+
+        foreach ($arFundPairRef as $fund_pair_ref)
+        {   EchoSmaParagraph($ref, '', $fund_pair_ref, '_callbackFundPairSma', $callback2); }
+
+    三个容易抄错的点，逐个钉住：
+
+    1. **``''`` 不是 ``false``** —— 传空串，于是这些表没有标题文字
+       （``if ($str === false)`` 是严格比较）；
+    2. **算均线的是同一个 ref**（中间层标的），变的只有 ``$cb_ref``；
+    3. **对照列是 maroon**（``TableColumnStock`` 的构造第三个参数）。
+    """
+
+    class LevRef(FakeRef):
+        """一个杠杆标的：自己有换算因子，也是那一列的显示口径。"""
+
+        def __init__(self, symbol="SPY", factor=10.0, precision=2):
+            FakeRef.__init__(self, symbol=symbol, precision=precision)
+            self.factor = factor
+            self.cny_ref = None
+            self._position = 1.0
+
+        def get_position(self):
+            return self._position
+
+        def get_last_calibration_val(self):
+            return False
+
+    def _two_refs(self):
+        return [self.LevRef(symbol="SH", factor=8.0),
+                self.LevRef(symbol="SPY", factor=10.0)]
+
+    def _tables(self, refs=None, callback2=False):
+        """中间层标的的均线固定成 ``1000.00``，只看对照列怎么变。"""
+        history = FakeHistory(sma=make_sma(value="1000.00"), ref=FakeRef(symbol="^GSPC"))
+        service = make_service(history)
+        return service.fund_pair_tables(FakeRef(symbol="^GSPC"),
+                                        self._two_refs() if refs is None else refs,
+                                        callback2)
+
+    def test_one_table_per_pair_ref(self):
+        tables = self._tables()
+        self.assertEqual(len(tables), 2)
+
+    def test_columns_of_each_table_are_the_same_shape(self):
+        """5 列基础 + 对照列 + T+1EST = 7 列。"""
+        for table in self._tables():
+            self.assertEqual(table["column_count"], 7)
+            self.assertEqual(table["cell_count"], 7)
+
+    def test_the_stock_column_carries_this_ref_display(self):
+        """``new TableColumnStock($est_ref, 90)`` —— 列头是**这一个**标的。
+
+        生产端 SZ161125 页上两张表的第 6 列分别是 ``SH`` 与 ``SPY``。
+        """
+        heads = [table["columns"][5]["text"] for table in self._tables()]
+        self.assertEqual(heads, ["SH", "SPY"])
+
+    def test_the_stock_column_is_maroon(self):
+        """``parent::__construct($sym->GetDisplay(), $iWidth, 'maroon')``。
+
+        这一条是**修 bug 时补的**：原先写成不带颜色的 ``column_base``，
+        数值全对、只差一个颜色 —— 生产端是 ``<font color=maroon>SH</font>``。
+        """
+        for table in self._tables():
+            self.assertEqual(table["columns"][5]["color"], "maroon")
+            self.assertEqual(table["columns"][5]["width"], 90)
+
+    def test_memo_is_empty_string_not_the_default(self):
+        """``if ($str === false)`` 是**严格**比较 —— 空串不会被换成默认标题。
+
+        这是整段最反直觉的一点：``''`` 在 PHP 里是假值，但 ``=== false``
+        挡住了替换。后果是这几张表**没有**"2026-10-09数据 牛市"那行说明，
+        只有循环外自己的那张才有。
+        """
+        for table in self._tables():
+            self.assertEqual(table["memo"], "")
+
+    def test_each_table_converts_with_its_own_factor(self):
+        """同一个均线值，两个标的按各自的因子换算：``1000 / factor``。"""
+        cells = [_cells(table["rows"][0])[5] for table in self._tables()]
+        self.assertEqual(cells, ["125.00", "100.00"])
+
+    def test_no_pair_refs_means_no_tables(self):
+        """``if (count($arLev) > 0)`` —— 没有杠杆标的整段不出现。"""
+        self.assertEqual(self._tables(refs=[]), [])
+
+    def test_a_table_without_history_is_skipped(self):
+        """建不出 ``StockHistory`` 的那张不进列表，但不影响其它张。"""
+        history = FakeHistory(sma=make_sma(value="1000.00"), ref=FakeRef(symbol="^GSPC"))
+        count = {"n": 0}
+
+        def factory(ref, wide):
+            count["n"] += 1
+            return history if count["n"] == 2 else None
+
+        service = SmaService(history_factory=factory)
+        tables = service.fund_pair_tables(FakeRef(), self._two_refs())
+        self.assertEqual(len(tables), 1)
+        self.assertEqual(tables[0]["columns"][5]["text"], "SPY")
+
+    def test_callback2_adds_one_more_column(self):
+        """``if ($callback2) $ar[] = new TableColumn(call_user_func($callback2), 90)``。
+
+        不传价格 → 列头文本；传 ``($strVal, $strNext)`` → 那一格。
+        ``_qdiigroup.php`` 走这条路径时什么都没传，所以生产端是 7 列；
+        这里验证"传了就多一列"这个机制本身还在。
+        """
+        tables = self._tables(callback2=lambda *args: "理论价" if not args else "1.05")
+        self.assertEqual(len(tables[0]["columns"]), 8)
+        self.assertEqual(tables[0]["columns"][7]["text"], "理论价")
+        self.assertEqual(_cells(tables[0]["rows"][0])[7], "1.05")
+
+
 def _cells(row):
     """把行的格子统一成文本列表（丢掉颜色）。
 
