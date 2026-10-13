@@ -32,10 +32,11 @@
         EchoFundHistoryParagraph($fund_pair_ref);
     }
 
-本版做了前两段与第四段，**第三段（``EchoFundListParagraph``）与
-``EchoFundHistoryParagraph`` 留作缺口** —— 见 :meth:`get_fund_pair_detail`
-的说明：它们各自要一张新的表（跟踪表 / 净值估计对照表），属于"段落迁移"
-而不是"引用层迁移"，不必堵在 CK2b 这条线上。
+四段**都做了**。第三段（``EchoFundListParagraph``）与第四段
+（``EchoFundHistoryParagraph``）落在 :meth:`get_fund_pair_detail` 的
+``fundlist`` / ``fundhistory`` 两个键上 —— 它们各自是一张新表（跟踪表 /
+净值估计对照表），取数分别复用 ``qdii_fund_list.fund_reference_table`` 与
+``detail_sections.build_fund_history``，本模块只做装配。
 
 第 4 分支的源码照抄如下：
 
@@ -96,11 +97,13 @@ install_paths()
 from calc.futurepremium import get_future_interest_premium, php_round  # noqa: E402
 from ref.refobj import StockGetFundPairReference, StockGetPairReferences  # noqa: E402
 from web.services.detail_sections import (  # noqa: E402
+    build_fund_history,
     build_netvalue_close,
     build_shares,
     build_stock_history,
 )
 from web.services.pair_service import build_pair_table  # noqa: E402
+from web.services.qdii_fund_list import fund_reference_table  # noqa: E402
 
 
 #: ``_callbackCnhSma``（``_mystock.php:108``）里写死的两个常量。
@@ -175,11 +178,16 @@ def _number_format(value: Any, digits: int = 4) -> str:
 class StockDetailService:
     """把 ``_mystock.php`` 第 4 分支的段落整理成模板要的 dict。"""
 
-    def __init__(self, source: Any = None, wide: bool = False):
+    def __init__(self, source: Any = None, wide: bool = False, link_builder: Any = None):
         #: 数据源：``StockGetPairReferences`` 要用它查四张配对表
         self.source = source
         #: ``LayoutUseWide()`` —— 宽屏时表格多几列
         self.wide = wide
+        #: 链接构造器：``link_builder(符号, 页面名) -> URL``。跟踪表里有两格要
+        #: 挂链接（校准记录页 / 标的详情页），都得 ``url_for`` 才拼得出来，
+        #: 而服务层跑在没有请求上下文的地方（脚本导出、单测），只能由装配层注入。
+        #: 不给就是"没有链接"，表格照常渲染。
+        self.link_builder = link_builder
 
     # -- 第 2 分支：StockGetFundPairReference（CK2b） ---------------------
     def get_fund_pair_detail(
@@ -195,6 +203,13 @@ class StockDetailService:
         ``ref`` 是 :class:`~ref.refobj.FundPairReference`；**没有配对记录时返回
         ``None``**，由调用方决定是退化到第 4 分支还是整页空。
 
+        ## 四段的顺序照抄 PHP
+
+        1. ``est``        —— ``EchoFundArrayEstParagraph``（``:132``）；
+        2. ``fundlist``   —— ``EchoFundListParagraph``（``:133``）；
+        3. ``fund_pair_sma`` —— ``EchoFundPairSmaParagraph``（``:134``）；
+        4. ``fundhistory``   —— ``EchoFundHistoryParagraph``（``:135``）。
+
         这一段能画出东西，靠的是 CK2b 迁过来的那四个方法 ——
         ``get_official_net_value`` / ``get_fair_net_value`` /
         ``get_realtime_net_value`` / ``get_official_date``。``fundest_service``
@@ -202,17 +217,14 @@ class StockDetailService:
         实时 EST）：只有官方一档时表格是 3 列，有参考/实时时是 5 或 7 列。
         换句话说，**这一层的迁移在页面上是肉眼可见的**，不是"测试绿了但页面没变"。
 
-        刻意不做的两段：
+        ``fundlist`` 用的是 :func:`~web.services.qdii_fund_list.fund_reference_table`
+        —— ``EchoFundListParagraph()`` **不带回调**那一版。``qdii_fund_list`` 里
+        原有的 ``fund_list_table`` 并不是"接不上"：PHP 里它们本来就是同一个函数
+        的两个分支（末列对冲值 / 末列参考值），本版把不带回调那支也补齐了。
 
-        * ``EchoFundListParagraph(array($fund_pair_ref))``（``:133``）—— 跟踪表
-          要一行"符号 / 跟踪 / 仓位 / 校准值 / 日期 / 参考值"。现有的
-          ``qdii_fund_list.fund_list_table`` 是**另一形态**（给"谁跟踪了我的
-          中间层标的"那张杠杆表用的，末尾一列是对冲值），接不上；这里要的是
-          ref 自己的持仓校准信息。
-        * ``EchoFundHistoryParagraph($fund_pair_ref)``（``:135``）—— 净值 +
-          估计值的历史对照表，Python 侧还没有这张表。它的数据来源倒是现成的：
-          PHP 走 ``$ref->GetPairRef()``，而 ``FundPairReference.get_pair_ref()``
-          CK2 就迁好了。
+        ``fundhistory`` 走 :func:`~web.services.detail_sections.build_fund_history`，
+        与 ``/history/fundhistory/<sym>`` 同一张表 —— PHP 那边详情页与独立页
+        也是共用 ``_echoHistoryTableData()`` 的，没有第二套取数。
         """
         if ref is None:
             ref = self._build_fund_pair_ref(symbol)
@@ -228,8 +240,12 @@ class StockDetailService:
             "ref": ref,
             #: ``EchoFundArrayEstParagraph(array($fund_pair_ref))``
             "est": self._fund_est_table(fundest_service, ref),
+            #: ``EchoFundListParagraph(array($fund_pair_ref))`` —— 末列是参考值
+            "fundlist": self._fund_list_table(ref),
             #: ``EchoFundPairSmaParagraph($fund_pair_ref)``
             "fund_pair_sma": self._fund_pair_sma(sma_service, ref),
+            #: ``EchoFundHistoryParagraph($fund_pair_ref)`` —— 净值 + 估计值对照
+            "fundhistory": build_fund_history(history_service, symbol),
             "stockhistory": build_stock_history(history_service, symbol),
             "netvalueclose": build_netvalue_close(history_service, symbol),
             "shares": build_shares(history_service, symbol),
@@ -243,6 +259,24 @@ class StockDetailService:
         try:
             return StockGetFundPairReference(symbol, source=self.source)
         except Exception:
+            return None
+
+    def _fund_list_table(self, ref: Any) -> Any:
+        """``EchoFundListParagraph(array($ref))``（``_mystock.php:133``）。
+
+        只有**一个** ref —— PHP 传的就是 ``array($fund_pair_ref)``，问的是
+        "我跟踪谁、仓位多少、上一次校准是多少"，不是"谁跟踪了我"。
+
+        取不到数据（数据库连不上、``lastcalibration`` 表里没有这一行）时
+        ``fund_reference_table`` 仍然会摆出一行，只是末两格空 —— 与 PHP 一致，
+        PHP 那边也没有"这行是空的就不摆"的守卫。
+        """
+        try:
+            return fund_reference_table(
+                [ref], source=self.source, link_builder=self.link_builder
+            )
+        except Exception:
+            #: 一张装饰性的表不该让整页 500
             return None
 
     @staticmethod

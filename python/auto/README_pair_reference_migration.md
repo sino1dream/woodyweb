@@ -200,18 +200,73 @@ PHP 在**构造函数里**无条件调 `AverageCalibraion()`，`GetOfficialNetVa
 
 ### 8.4 页面出口（`/stock/<symbol>` 第 2 分支）
 
-`_mystock.php:131` 的四段里做了**两段 + 尾部三段**：
+`_mystock.php:131-136` 的四段**全做了**，顺序与 PHP 一致：
 
 * ✅ `EchoFundArrayEstParagraph` → `fundest_service`；
+* ✅ `EchoFundListParagraph` → `qdii_fund_list.fund_reference_table`；
 * ✅ `EchoFundPairSmaParagraph` → `sma_service.fund_pair_table`；
-* ❌ `EchoFundListParagraph`（`:133`）—— 跟踪表要"符号/跟踪/仓位/校准值/日期/
-  参考值"六列，现有 `qdii_fund_list.fund_list_table` 是**另一形态**（杠杆标的
-  列表 + 对冲值），接不上；
-* ❌ `EchoFundHistoryParagraph`（`:135`）—— 净值+估计值历史对照表，Python 侧
-  还没有这张表（数据倒是现成的：PHP 走 `GetPairRef()`，CK2 已迁）。
+* ✅ `EchoFundHistoryParagraph` → `detail_sections.build_fund_history`。
 
 演示库 `fundpair` 有 8 行，`^NDX` / `^GSPC` / `QQQ` / `TQQQ` / `SPY`
 五个符号会走这一分支，页面上**多出估值表**，肉眼可见。
+
+#### 跟踪表：PHP 是同一个函数的两种形态
+
+`EchoFundListParagraph($arRef, $callback = false)` 的第二个参数决定末列：
+
+============  ========================  ==========================
+调用点          末列                      每格的值
+============  ========================  ==========================
+`_qdiigroup`    `TableColumnHedge`        `_callbackFundListHedge`
+`_mystock:134`  `TableColumn('参考值')`    `lastcalibration` 表
+============  ========================  ==========================
+
+此前只迁了第一种（``fund_list_table``，QDII 分组页那张杠杆表），
+所以当时记的是"接不上" —— 其实**不是两种表，是同一个函数的两个分支**。
+本轮补了第二种 ``fund_reference_table``，与前五列的组装共用 ``_build``。
+
+两处细节（PHP 逐例对照 `case.1` / `case.8` 钉住）：
+
+* **参考值的染色基准是 ref 自己的现价**，不是 0 —— `GetPriceDisplay()` 只传一个
+  参数时走 `stockref.php:162` 的 `$fPrev = floatval($this->strPrice)`。同行的
+  「仓位」/「校准值」走 `GetNumberDisplay()`，基准恒为 0，**两列不是一套规则**；
+* 精度取 `$ref->GetPrecision()`，ref 说不出来才兜底 3。
+
+对照：`_scratch/_php_fundlistitem_check.php` + `_php_fundlistitem_compare.py`
+—— **10 例，8 例逐格一致 + 2 例已知差异**（`lastcalibration` 里是 `0` /
+没记录时 PHP 那行只有五格，本版补空串），自检 4/4。
+
+#### 基金溢价记录：与 `/history/fundhistory/<sym>` 同一张表
+
+PHP 那边详情页与独立页共用 `_echoHistoryTableData()`，本版同样复用
+`history_service` 的 `fundhistory`（`detail_sections.build_fund_history`），
+没有第二套取数。唯一多出来的是 PHP 的第一行守卫
+`if ($ref->IsYahooNetValue()) return;` —— 雅虎净值符号没有场内价格，
+摆溢价表没有意义；本版**按符号判断**（这一层还没有 ref）。
+
+对照：`_scratch/_php_fundhistory_check.php` + `_php_fundhistory_compare.py`
+—— **8 例逐格一致**，自检 4/4。三类列的颜色不参与比较，理由见下节。
+
+#### 对照顺带修掉的一个真 bug
+
+`case.4`（官方 EST 的 `close` 是 `"0"`）暴露出 `history_service._row_fundhistory`
+用了 `if estimate_close:`：Python 里非空字符串 `"0"` 是**真值**，于是会给 0 值的
+EST 摆出「官方EST / 时间 / 误差」三格；PHP 的
+`if ($strEstValue = $arFundEst['close'])` 判它为假，那三格不出现。
+已改成 `_php_val_is_false()`（`""` 与 `"0"` 为假，`"0.0"` 为真），
+并补了单测 `test_fundhistory_est_of_zero_shows_no_est_cells`（变异确认有牙）。
+
+#### 已知偏差：净值 / 溢价 / 误差三格不染色
+
+`_row_fundhistory` 只给文本、不给颜色，与 PHP 不同：
+
+* **净值格**：PHP 的 `GetNetValueDisplay()` 调 `GetPriceDisplay($fNetValue, false)`，
+  单参数时基准取 **ref 的现价**（`stockref.php:162`）；本版的数据层不持有 ref。
+* **溢价 / 误差格**：PHP 的 `GetPercentageDisplay()` 把负数染红、正数不染
+  （`stockref.php:148`）；本版的 `format_percentage_display()` 只返回文本。
+
+三处都是"数据层不持有引用对象"这个架构差异的结果（PHP 的 ref 既是数据源
+又是显示对象）。对照时只比文本。会**严格**比颜色的是价格与官方 EST 两列。
 
 ### 8.5 已知偏差：中间层 ETF 的 EST 数值不可用
 

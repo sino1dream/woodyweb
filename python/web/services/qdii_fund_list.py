@@ -7,10 +7,18 @@
 * 同文件 ``:14`` ``_echoFundListItem()`` 一行六格；
 * ``woody/res/php/_qdiigroup.php:41`` ``_callbackFundListHedge()`` 最后一格。
 
-只有 QDII 详情页传回调（``_qdiigroup.php:100``），其它调用点
-（``fundlistcn.php`` / ``_chinaindex.php`` / ``_qdiimix.php``）传的是默认
-``$callback = false``，那一列显示「参考值」——那一版在
-:mod:`web.services.fund_list_service` 里，本模块不管。
+``EchoFundListParagraph()`` 有**两种形态**，由第二个参数 ``$callback`` 决定，
+PHP 里是同一个函数：
+
+* 传回调（``_qdiigroup.php:100``）      → 末列是「对冲值」；
+* 不传（``_mystock.php:134`` 的个股详情页，以及 ``fundlistcn.php`` /
+  ``_chinaindex.php`` / ``_qdiimix.php``）→ 末列是「参考值」，读
+  ``lastcalibration`` 表。
+
+本模块两种都装（``fund_list_table`` 的 ``callback`` 参数），因为**前五列与
+逐行组装完全共用** —— 分成两个函数只会让"仓位/校准值/日期三格怎么来"
+出现两处实现。分组列表页那一版（``fundlistcn.php`` 的整页形态）另在
+:mod:`web.services.fund_list_service`，本模块不管。
 
 生产端 ``sz161125cn.php`` 实测（``fundlisttable``，宽 540）::
 
@@ -70,8 +78,13 @@ from web.bootstrap import install_paths
 
 install_paths()
 
-from sql.historytable import TableRow, format_number_display  # noqa: E402
+from sql.historytable import (  # noqa: E402
+    TableRow,
+    format_number_display,
+    format_price_display,
+)
 from ui.uicolumn import (  # noqa: E402
+    column_base,
     column_calibration,
     column_date,
     column_hedge,
@@ -94,6 +107,14 @@ POSITION_PRECISION = 2
 
 #: 对冲值列：``GetNumberDisplay($val, 0)`` —— 明确传 0，取整。
 HEDGE_PRECISION = 0
+
+#: 没有回调时末列的列名（``new TableColumn('参考值')``，``fundlistparagraph.php:46``）。
+#: PHP 那里是**直接 new 基类**，所以宽 80、无色 —— 没有对应的列预置类。
+REFERENCE_COLUMN_TEXT = "参考值"
+
+#: 参考值那一格的精度兜底。PHP ``GetPriceDisplay()`` 用的是 ref 自带的
+#: ``GetPrecision()``（多数符号是 3）；ref 说不出来时才用这个。
+REFERENCE_PRECISION = 3
 
 #: ``GetStockHedge()`` 三条失败路径共同的返回值（``php/stock.php:428``）。
 DEFAULT_HEDGE = 1.0
@@ -136,7 +157,7 @@ def fund_list_table(
     link_builder: Any = None,
     pair_symbol: str = "",
 ) -> dict[str, Any] | None:
-    """``EchoFundListParagraph($arLev, '_callbackFundListHedge')``。
+    """``EchoFundListParagraph($arLev, '_callbackFundListHedge')`` —— 带回调那版。
 
     ``fund`` 是被看的基金（``$acct->GetRef()``），``leverage_refs`` 是
     ``$arLev``。两者缺一个都返回 ``None`` —— PHP 那边的守卫是
@@ -154,18 +175,77 @@ def fund_list_table(
     refs = [ref for ref in (leverage_refs or ()) if ref is not None]
     if not refs or fund is None:
         return None
-
     callback = build_hedge_callback(fund, source)
-    # 第二列是 ``new TableColumnSymbol('跟踪')`` —— PHP 的 ``$strPrefix`` 会拼在
-    # 文本前面（生产端是「跟踪」+ 栗色的「代码」）。``columns_to_dicts`` 负责拼，
-    # 直接把 TableColumn 丢给模板会**丢掉前缀**。
+    return _build(
+        _symbol_of(fund), refs, source, link_builder, pair_symbol,
+        callback, column_hedge(),
+    )
+
+
+#: PHP 原名（``AGENTS.md`` 第 3 条）。
+EchoFundListParagraph = fund_list_table
+
+
+def fund_reference_table(
+    refs: Sequence[Any] = (),
+    source: Any = None,
+    link_builder: Any = None,
+    pair_symbol: str = "",
+) -> dict[str, Any] | None:
+    """``EchoFundListParagraph($arRef)`` —— **不带回调**那版，末列是「参考值」。
+
+    与 :func:`fund_list_table` 是 PHP 里**同一个函数**的两种形态
+    （``fundlistparagraph.php:38`` 的 ``$callback = false`` 默认值）：
+
+    ==========================  =========================  ====================
+    调用点                        末列                       每格的值
+    ==========================  =========================  ====================
+    ``_qdiigroup.php:100``       ``TableColumnHedge``        ``_callbackFundListHedge``
+    ``_mystock.php:134``         ``TableColumn('参考值')``    ``lastcalibration`` 表
+    ==========================  =========================  ====================
+
+    个股详情页走的是第二种：那里 ``$arRef`` 只有**一个** ref（本符号自己），
+    问的是"我跟踪谁、仓位多少、上一次校准值是多少"，没有"谁跟踪了我的标的"
+    这个问题，自然也就没有对冲值。
+
+    **刻意分成两个函数而不是加一个 ``callback`` 参数**：前五列与逐行组装共用，
+    但两个调用点给出的东西不一样（一个要给"被看的基金"去算对冲，一个只给
+    行列表），合成一个函数的签名会变成"``fund`` 有时是基金、有时是行自己"。
+    共用部分收在 :func:`_build` 里，不会因此出现两份实现。
+
+    表格 id 的符号前缀取 ``refs[0]`` —— 这一版没有"被看的基金"那个参数。
+    """
+    rows_refs = [ref for ref in (refs or ()) if ref is not None]
+    if not rows_refs:
+        return None
+    return _build(
+        _symbol_of(rows_refs[0]), rows_refs, source, link_builder, pair_symbol,
+        None, column_base(REFERENCE_COLUMN_TEXT),
+    )
+
+
+def _build(
+    symbol: str,
+    refs: Sequence[Any],
+    source: Any,
+    link_builder: Any,
+    pair_symbol: str,
+    callback: Any,
+    last_column: Any,
+) -> dict[str, Any]:
+    """两种形态共用的装配：五列固定 + 末列由调用方给。
+
+    第二列是 ``new TableColumnSymbol('跟踪')`` —— PHP 的 ``$strPrefix`` 会拼在
+    文本前面（生产端是「跟踪」+ 栗色的「代码」）。``columns_to_dicts`` 负责拼，
+    直接把 TableColumn 丢给模板会**丢掉前缀**。
+    """
     columns = columns_to_dicts([
         column_symbol(),
         column_symbol(prefix="跟踪"),
         column_position(),
         column_calibration(),
         column_date(),
-        column_hedge(),
+        last_column,
     ])
 
     # PHP 的 ``static $arSymbol``：同一份「跟踪」符号只在第一次出现时给链接。
@@ -176,7 +256,6 @@ def fund_list_table(
         for ref in refs
     ]
 
-    symbol = _symbol_of(fund) or ""
     return {
         "id": "%s%s" % (symbol, FUNDLIST_ID_SUFFIX),
         "title": FUNDLIST_TITLE,
@@ -185,10 +264,6 @@ def fund_list_table(
         "rows": rows,
         "count": len(rows),
     }
-
-
-#: PHP 原名（``AGENTS.md`` 第 3 条）。
-EchoFundListParagraph = fund_list_table
 
 
 # ---------------------------------------------------------------------------
@@ -218,9 +293,7 @@ def _row_of(
         _number_cell(_invoke(ref, "get_position", "GetPosition"), POSITION_PRECISION),
         _number_cell(_invoke(ref, "get_factor", "GetFactor"), CALIBRATION_PRECISION),
         _calibration_date(source, stock_id),
-        _number_cell(
-            callback(symbol) if callable(callback) else None, HEDGE_PRECISION
-        ),
+        _last_cell(ref, source, stock_id, callback),
     ]
 
     row = TableRow(cells=cells)
@@ -268,6 +341,75 @@ def _hedge_of(source: Any, symbol: Any, stock_id: Any, row_symbol: Any) -> Any:
     except Exception:
         return DEFAULT_HEDGE
     return DEFAULT_HEDGE if value is None else value
+
+
+def _last_cell(ref: Any, source: Any, stock_id: Any, callback: Any) -> Any:
+    """末格：有回调算对冲值，没有就读 ``lastcalibration`` 当参考值。
+
+    对应 ``fundlistparagraph.php:27-34`` 那段 ``if ($callback) ... else ...``。
+    """
+    if callback is None:
+        return _reference_cell(ref, source, stock_id)
+    return _number_cell(
+        callback(_symbol_of(ref)) if callable(callback) else None, HEDGE_PRECISION
+    )
+
+
+def _reference_cell(ref: Any, source: Any, stock_id: Any) -> Any:
+    """``$ref->GetPriceDisplay(floatval($strVal))`` —— 「参考值」那一格。
+
+    ``$strVal`` 来自 ``LastCalibrationSql::ReadVal($strStockId, true)``
+    （``php/sql/sqlval.php:98`` / ``:53``，表 ``lastcalibration`` 的 ``close``
+    字段）。它是"上一次校准算出来的值"，与同一行的「校准值」列**不是一回事**：
+    校准值取自 ``calibration`` 表当日那一条，参考值取自 ``lastcalibration``
+    这张每个 id 只留一个值的表。
+
+    三处容易抄错的地方：
+
+    1. **染色基准是 ref 自己的现价，不是 0** —— ``GetPriceDisplay()`` 只传一个
+       参数时 PHP 走 ``stockref.php:162`` 那条 ``$fPrev = floatval($this->strPrice)``。
+       所以它与「仓位」/「校准值」两列（``GetNumberDisplay``，以 0 为基准）
+       不是一套规则。
+    2. 精度取 ref 自带的 ``GetPrecision()``（多数符号是 3），ref 说不出来才用
+       :data:`REFERENCE_PRECISION`。
+    3. PHP 用 ``if ($strVal = ...)`` 守卫：``"0"`` / ``""`` 都算没取到，那一格
+       **不 push**，整行会比表头少一格。本版补一个空串 —— HTML 里少一个
+       ``<td>`` 与补空串的渲染结果一致（行尾留白），但补空串能让"这行有几格"
+       始终与列数对得上。
+    """
+    value = _last_calibration_val(source, stock_id)
+    if value is None or value == "":
+        return ""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    if number == 0.0:
+        #: PHP 那边库里存的是 ``strval(0.0)`` 即 ``"0"``，``if`` 判定为假
+        return ""
+    precision = _invoke(ref, "get_precision", "GetPrecision")
+    try:
+        precision = int(precision)
+    except (TypeError, ValueError):
+        precision = REFERENCE_PRECISION
+    return format_price_display(number, _invoke(ref, "get_val", "GetVal"), precision)
+
+
+def _last_calibration_val(source: Any, stock_id: Any) -> Any:
+    """``LastCalibrationSql::ReadVal($strStockId, true)``（``sqlval.php:53``）。
+
+    数据源没有这个方法（内存数据源 / 测试替身常见）时返回 ``None``，
+    那一格留空 —— 不编造一个值。
+    """
+    if source is None or not stock_id:
+        return None
+    reader = getattr(source, "get_last_calibration", None)
+    if reader is None or not callable(reader):
+        return None
+    try:
+        return reader(stock_id)
+    except Exception:
+        return None
 
 
 def _calibration_date(source: Any, stock_id: Any) -> str:

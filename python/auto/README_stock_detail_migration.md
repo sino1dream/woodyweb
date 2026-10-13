@@ -134,6 +134,52 @@ PHP 是一串三分支，返回四个互斥的槽位而不是压成一个键，�
 同理 `fx_susdcny` / `hf_CL` 这类符号页面空，是因为它们的 `stockhistory`
 行数为 0（已查证：`^NDX`=800、`SPY`=3、这两个=0），不是渲染问题。
 
+## 7. CK2b 的两个缺口（跟踪表 / 基金溢价记录）
+
+CK3 之后 `/stock/<symbol>` 的第 2 分支（``_mystock.php:131-136``）还差两段，
+本轮补齐 —— 至此四段齐全（估值 / 跟踪 / 配对均线 / 基金溢价记录）。
+
+### 7.1 文件
+
+| 文件 | 改动 |
+|---|---|
+| `web/services/qdii_fund_list.py` | 新增 `fund_reference_table`（不带回调那版）；`fund_list_table` 抽出共用的 `_build` |
+| `web/services/detail_sections.py` | 新增 `build_fund_history` + `IsYahooNetValue` 守卫 |
+| `web/services/stock_detail_service.py` | 构造函数加 `link_builder`；`get_fund_pair_detail` 加 `fundlist` / `fundhistory` |
+| `web/routes/stock.py` | 新增 `_table_link`（`(符号, 页面名) -> URL`）注入给服务层 |
+| `web/templates/stock_detail.html` | fundpair 分支多两段 |
+| `web/services/history_service.py` | 修 EST 为 `"0"` 时的假值判断（对照发现） |
+| `web/tests/test_stock_detail.py` / `test_qdii_fund_list.py` / `test_history.py` | +19 例 |
+
+### 7.2 为什么不复用 `fund_list_table` 加个参数
+
+PHP 的 `EchoFundListParagraph($arRef, $callback = false)` 是**同一个函数**，
+但两个调用点给出的东西不一样：QDII 分组页要给"被看的基金"（用于算对冲值），
+个股详情页只给行列表（就是 ref 自己）。合成一个函数的签名会变成
+"`fund` 有时是基金、有时是行自己"，所以分成两个具名函数、共用 `_build`。
+
+### 7.3 链接构造器为什么由路由层给
+
+跟踪表有两格要挂 URL（校准记录页 / 标的详情页），都得 `url_for` 才拼得出来，
+而服务层跑在没有请求上下文的地方（脚本导出、单测）。`_table_link` 里
+``kind == 'fund'`` 那一支**复用列表页那套分流**（`get_symbol_group()` 为空走
+`/stock`）—— 跟踪列可能指向中间层标的（`^NDX`），直接送进 `/fund/<symbol>`
+会落到一个没有这一行的分组页。
+
+### 7.4 演示库上的样子
+
+真实库冒烟（`_scratch/_ck2b_gaps_smoke.py`）::
+
+    QQQ      HTTP 200  跟踪表 1 行  溢价记录 2 行
+    SPY      HTTP 200  跟踪表 1 行  溢价记录 2 行
+    ^NDX     HTTP 200  跟踪表 1 行  溢价记录 0 行
+    TQQQ     HTTP 200  跟踪表 1 行  溢价记录 0 行
+    HF_CL    HTTP 200  跟踪表 0 行  溢价记录 0 行
+
+`^NDX` / `^GSPC` 有 800 条行情但**没有净值** → 溢价记录整段不出现（PHP 同样：
+`GetClose()` 取不到就整行不 echo）。跟踪表的「参考值」格在中间层标的上是空的，
+因为 `lastcalibration` 表只有 id=1/2/3 三行（SZ161130 / SZ161125 / SH513100）。
+
 ## 5. 验证
 
 - CK1：web **619** OK（+2 `test_fund_detail_history.py`）、auto 988 OK、compileall 双绿；
@@ -165,3 +211,15 @@ PHP 是一串三分支，返回四个互斥的槽位而不是压成一个键，�
   结果相同 —— 换了个落在两个刻度之间的值才测出差别。
 - 顺带修复 `test_sma_route.FundPairSmaRouteTest` 的隔离缺口：该测试未注入 `history_service`
   （走真实库），CK1 新段落暴露后补了 `_EmptyHistory` 注入，使测试只验 SMA 列顺序。
+- CK2b 两个缺口：web **669** OK（650 + 19 新增）、auto **1045** OK、compileall 双绿。
+  **真实 PHP 逐例对照两套**：
+
+  | 脚本 | 例数 | 结果 |
+  |---|---|---|
+  | `_php_fundlistitem_check.php` + `_php_fundlistitem_compare.py` | 10 | 8 例逐格一致 + 2 例已知差异（`lastcalibration` 为 `0` / 缺记录时 PHP 只有五格），自检 4/4 |
+  | `_php_fundhistory_check.php` + `_php_fundhistory_compare.py` | 8 | 8 例逐格一致，自检 4/4 |
+
+  对照顺带抓到并修掉一个真 bug：`history_service._row_fundhistory` 用
+  `if estimate_close:` 判断官方 EST —— Python 里非空字符串 `"0"` 是真值，
+  于是 0 值的 EST 会多摆三格；PHP 判它为假。已改 `_php_val_is_false()`
+  并补单测（变异确认有牙：8 格 vs 4 格）。

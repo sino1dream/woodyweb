@@ -35,6 +35,16 @@
         {{ data_table(detail.est, "est-table") }}
       {% endif %}
 
+      {# 跟踪表（EchoFundListParagraph，_mystock.php:133）。
+
+         只有一行 —— PHP 传的是 array($fund_pair_ref)，问的是"我跟踪谁、
+         仓位多少、上一次校准是多少"，末列是「参考值」而不是 QDII 那张
+         杠杆表的「对冲值」。 #}
+      {% if detail.fundlist %}
+        <h2>{{ detail.fundlist.title }}</h2>
+        {{ data_table(detail.fundlist, "fundlist-table") }}
+      {% endif %}
+
       {# 配对标的的均线（EchoFundPairSmaParagraph，_mystock.php:134）。 #}
       {% if detail.fund_pair_sma %}
         <h2>配对均线</h2>
@@ -43,6 +53,18 @@
             <strong>{{ detail.fund_pair_sma.memo.bull_bear }}</strong>{% endif %}</p>
         {% endif %}
         {{ data_table(detail.fund_pair_sma, "sma-table") }}
+      {% endif %}
+
+      {# 基金溢价记录（EchoFundHistoryParagraph，_mystock.php:135）。
+
+         与 /history/fundhistory/<sym> 是同一张表：场内价格相对净值的溢价，
+         有官方 EST 记录时才多出「官方EST / 时间 / 误差」三列。 #}
+      {% if detail.fundhistory %}
+        <h2>{{ detail.fundhistory.title }}</h2>
+        {{ history_table(detail.fundhistory, "history-table fundhistory-table") }}
+        <p class="table-note">
+          <a href="{{ url_for('history.history_page', kind='fundhistory', symbol=symbol) }}">查看全部基金溢价记录</a>
+        </p>
       {% endif %}
     {% else %}
       {# ---- 第 4 分支：else（CK3） ---- #}

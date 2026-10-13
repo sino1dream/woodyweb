@@ -192,6 +192,23 @@ class RecordingFundEst:
         return self.table
 
 
+class FakeFundHistoryService(FakeHistoryService):
+    """``fundhistory`` 有行的历史服务 —— 用来验证那一段**真的接上了**。
+
+    单独开一个而不是改 :class:`FakeHistoryService`，是因为那边"只有
+    ``stockhistory`` 有行"正是尾部三段那条用例要钉的前提。
+    """
+
+    def get_table(self, kind, symbol, start=0, num=10):
+        if kind == "fundhistory":
+            return {
+                "title": "基金溢价记录",
+                "columns": [{"text": "日期"}, {"text": "价格"}],
+                "rows": [{"cells": ["2026-10-01", "742.03"]}],
+            }
+        return FakeHistoryService.get_table(self, kind, symbol, start, num)
+
+
 class FakePairSource:
     """假数据源：只回答"这条符号有没有配对记录"。"""
 
@@ -473,8 +490,10 @@ class FundPairDetailTest(unittest.TestCase):
     def _detail(self, **kwargs):
         svc = sds.StockDetailService(source=None)
         return svc.get_fund_pair_detail(
-            "^NDX", ref=self.ref, sma_service=self.sma,
-            history_service=self.history, fundest_service=self.fundest, **kwargs)
+            kwargs.pop("symbol", "^NDX"), ref=kwargs.pop("ref", self.ref),
+            sma_service=kwargs.pop("sma_service", self.sma),
+            history_service=kwargs.pop("history_service", self.history),
+            fundest_service=kwargs.pop("fundest_service", self.fundest), **kwargs)
 
     def test_returns_none_without_ref(self):
         """ref 建不出来返回 ``None`` —— 由路由层退化到第 4 分支。"""
@@ -562,6 +581,52 @@ class FundPairDetailTest(unittest.TestCase):
         detail = svc.get_fund_pair_detail("^NDX", ref=self.ref)
         self.assertIsNone(detail["est"])
         self.assertIsNone(detail["fund_pair_sma"])
+        self.assertIsNone(detail["fundhistory"])
+
+    # -- 跟踪表（EchoFundListParagraph，_mystock.php:133）-------------------
+    def test_fundlist_is_the_reference_variant(self):
+        """末列是「参考值」而不是 QDII 那张杠杆表的「对冲值」。
+
+        PHP 里两者是同一个函数的两个分支（``$callback`` 传不传）；个股详情页
+        只传一个 ref（本符号自己），没有"谁跟踪了我的标的"这个问题。
+        """
+        detail = self._detail()
+        self.assertIsNotNone(detail["fundlist"])
+        self.assertEqual(detail["fundlist"]["columns"][-1]["text"], "参考值")
+        self.assertEqual(len(detail["fundlist"]["rows"]), 1)
+
+    def test_fundlist_links_need_the_injected_builder(self):
+        """链接构造器由装配层注入 —— 服务层不认识 ``url_for``。"""
+        svc = sds.StockDetailService(
+            source=None, link_builder=lambda symbol, kind: "/%s/%s" % (kind, symbol)
+        )
+        detail = svc.get_fund_pair_detail("^NDX", ref=self.ref)
+        row = detail["fundlist"]["rows"][0]
+        self.assertEqual(row.href, "/calibrationhistory/^NDX")
+
+    # -- 基金溢价记录（EchoFundHistoryParagraph，_mystock.php:135）----------
+    def test_fundhistory_uses_the_history_service(self):
+        """与 ``/history/fundhistory/<sym>`` 同一张表 —— 没有第二套取数。"""
+        detail = self._detail(history_service=FakeFundHistoryService())
+        self.assertIsNotNone(detail["fundhistory"])
+        self.assertEqual(detail["fundhistory"]["title"], "基金溢价记录")
+
+    def test_fundhistory_hidden_when_there_are_no_rows(self):
+        """取不到行就整段不摆 —— 与尾部三段同一条约定。"""
+        detail = self._detail()
+        self.assertIsNone(detail["fundhistory"])
+
+    def test_fundhistory_hidden_for_yahoo_net_value_symbols(self):
+        """``if ($ref->IsYahooNetValue()) return;``（``fundhistoryparagraph.php:52``）。
+
+        雅虎净值符号（``^SZ162411-IV``）没有场内价格，摆溢价表没有意义。
+        **必须换一个真的有行的服务**：用空服务的话，这条断言在守卫被删掉时
+        照样成立 —— 空表本来就不显示。
+        """
+        detail = self._detail(
+            symbol="^SZ162411-IV", history_service=FakeFundHistoryService()
+        )
+        self.assertIsNone(detail["fundhistory"])
 
 
 class FundPairRouteTest(unittest.TestCase):
@@ -593,6 +658,19 @@ class FundPairRouteTest(unittest.TestCase):
         html = self.client.get("/stock/^NDX").get_data(as_text=True)
         self.assertIn("est-table", html)
         self.assertIn("估值", html)
+
+    def test_fundlist_table_renders(self):
+        """跟踪表：末列是「参考值」那一版（``_mystock.php:133``）。"""
+        html = self.client.get("/stock/^NDX").get_data(as_text=True)
+        self.assertIn("fundlist-table", html)
+        self.assertIn("参考值", html)
+
+    def test_fundhistory_table_renders(self):
+        """基金溢价记录：历史服务给出 ``fundhistory`` 的行时才出现。"""
+        self.app.extensions["history_service_factory"] = lambda: FakeFundHistoryService()
+        html = self.client.get("/stock/^NDX").get_data(as_text=True)
+        self.assertIn("fundhistory-table", html)
+        self.assertIn("查看全部基金溢价记录", html)
 
     def test_non_paired_symbol_falls_through_to_generic(self):
         """没有配对记录的符号不能因为 Jinja 缺键就 500。"""

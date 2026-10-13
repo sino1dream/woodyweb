@@ -124,6 +124,22 @@ def _link_builders() -> tuple:
     return detail_link, xueqiu_link
 
 
+def _table_link(symbol: str, kind: str) -> str:
+    """跟踪表那两格链接用的构造器：``(符号, 页面名) -> URL``。
+
+    ``kind == 'fund'`` 是「跟踪」列（``_getFundPairLink()`` 给的
+    ``$ref->GetMyStockLink()``，指向标的自己的详情页）；其余是历史页
+    （这里是 ``calibrationhistory``）。
+
+    **详情页链接必须走 :func:`_link_builders` 的那份分流**：跟踪列可能指向
+    中间层标的（``^NDX`` 这类非基金符号），直接 ``url_for("fund.fund_page")``
+    会落到一个没有这一行的分组页。
+    """
+    if kind == "fund":
+        return _link_builders()[0](symbol)
+    return url_for("history.history_page", kind=kind, symbol=symbol)
+
+
 def _get_table(start: int, num: int, admin: bool = False):
     """取表格数据。注入了工厂就用注入的，否则走默认实现。
 
@@ -194,7 +210,8 @@ def stock_detail_page(symbol: str):
     所以第 4 分支建不出来就直接渲染空页，不进服务层。
     """
     service = StockDetailService(
-        source=getattr(_get_reference_service(), "source", None)
+        source=getattr(_get_reference_service(), "source", None),
+        link_builder=_table_link,
     )
 
     #: 第 2 分支优先，且**不**给它传 ref —— 让它自己按 ``fundpair`` 表判断。

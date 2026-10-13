@@ -355,6 +355,34 @@ class HistoryRouteTest(unittest.TestCase):
         # (5.0 / 4.5452 - 1) * 100 = 10.0055...% -> 两位小数去尾零 -> 10.01%
         self.assertEqual(cells[6], "10.01%")
 
+    def test_fundhistory_est_of_zero_shows_no_est_cells(self):
+        """官方 EST 为 ``"0"`` 时那三格不出现 —— PHP 的 ``== false`` 语义。
+
+        PHP 的守卫是 ``if ($strEstValue = $arFundEst['close'])``
+        （``fundhistoryparagraph.php:17``）：``""`` 与 ``"0"`` 都是**假值**。
+        Python 里非空字符串 ``"0"`` 是**真值**，直接写 ``if estimate_close:``
+        会给 0 值的 EST 摆出三格 —— 这是接详情页时做 PHP 逐例对照才发现的
+        （``_php_fundhistory_check.php`` case.4），单测里没这条例就会一直绿。
+        """
+        source = make_source()
+        connection = FakeConnection(TABLES)
+        connection.tables = dict(TABLES)
+        connection.tables["fundest"] = [
+            {"id": 1, "stock_id": "1", "date": "2026-09-29", "close": "0",
+             "time": "04:00:00"},
+        ]
+        app = create_app(
+            {"TESTING": True},
+            history_service_factory=lambda: HistoryService(source, connection),
+        )
+        client = app.test_client()
+
+        data = client.get("/api/history/fundhistory/SZ161130").get_json()
+        # 列仍然在（列集由 fundest.count 决定，不是由这一行的值决定），
+        # 但这一行只到「溢价」为止
+        self.assertIn("官方EST", [c["text"] for c in data["columns"]])
+        self.assertEqual(len(data["rows"][0]["cells"]), 4)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -353,7 +353,15 @@ class HistoryService:
 
         if estimate is not None:
             estimate_close = estimate.get("close")
-            if estimate_close:
+            #: PHP 的守卫是 ``if ($strEstValue = $arFundEst['close'])``
+            #: （``fundhistoryparagraph.php:17``）—— ``""`` 与 ``"0"`` 都是**假值**，
+            #: 那三格（官方EST / 时间 / 误差）整段不出现。
+            #:
+            #: Python 里非空字符串 ``"0"`` 是**真值**，直接写 ``if estimate_close:``
+            #: 会给 0 值的 EST 摆出三格 —— 这是 PHP 逐例对照（case.4）实测抓到的。
+            #: ``"0.0"`` 在 PHP 里反而是真值，所以只排除这两个字符串，
+            #: 不能用 ``float(...) == 0`` 近似。
+            if not _php_val_is_false(estimate_close):
                 # 官方 EST 与净值同一量纲，直接比
                 row.add(format_price_display(estimate_close, net_value))
                 # 时间截到分，对应 PHP GetHM()
@@ -639,6 +647,22 @@ class HistoryService:
         目的是把"每克多少美元"换算成"每克多少人民币"。
         """
         return "USCNY"
+
+
+def _php_val_is_false(value: Any) -> bool:
+    """PHP 的 ``== false`` 松散比较（``fundhistoryparagraph.php:17``）。
+
+    库里取出来的 ``close`` 是字符串，PHP 只有 ``""`` 与 ``"0"`` 是假值 ——
+    ``"0.0"``、``"0.000"`` 都是真值。数字 0 同样算假。
+    """
+    if value is None or value is False:
+        return True
+    if isinstance(value, str):
+        return value.strip() in ("", "0")
+    try:
+        return float(value) == 0.0
+    except (TypeError, ValueError):
+        return False
 
 
 def _columns_netvalueclose() -> list:

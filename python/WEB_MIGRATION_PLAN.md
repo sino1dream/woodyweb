@@ -246,9 +246,16 @@ Flask 路由
    用"与 `EstFromPair` 往返"的断言钉住。自动校准`auto_write`默认关 —— PHP 在构造
    函数里就写库，本项目 web 只读。已接线到`/stock/<symbol>`第 2 分支，演示库 5 个
    符号（^NDX/^GSPC/QQQ/TQQQ/SPY）多出估值表。详见
-   `README_pair_reference_migration.md` §8。 **仍存在的关键石 / 后续 checkpoint**：CK2b 缺口 `EchoFundListParagraph`（跟踪表，
-   现有`fund_list_table`是杠杆标的形态接不上）与`EchoFundHistoryParagraph`（净值
-   估计对照表）；校准口径统一（演示库中间层 cal 是"基金净值/ETF价"，与生产端
+   `README_pair_reference_migration.md` §8。
+
+   **CK2b 的两个缺口已收**（第 2 分支四段齐全）：`EchoFundListParagraph` 走
+   `qdii_fund_list.fund_reference_table`（末列「参考值」，读 `lastcalibration`；
+   此前迁的 `fund_list_table` 是同一 PHP 函数**带回调**那支，不是接不上），
+   `EchoFundHistoryParagraph` 复用 `history_service` 的 `fundhistory`。两个都有
+   真实 PHP 逐例对照（10 例 / 8 例，各带自检 4/4），顺带修掉"官方 EST 为 `0`
+   时本版多摆三格"的偏差。
+
+   **仍存在的关键石 / 后续 checkpoint**：校准口径统一（演示库中间层 cal 是"基金净值/ETF价"，与生产端
    "指数/ETF价"相反，导致`/stock/QQQ`算出 345 万）；CK4 Holdings 分支（含
    `HoldingsReference`，441 行/24 方法）；CK5 交易块 + 链接（账号可演示）；
    CK6 order book 写 snapshot。 **仍未迁**：`_mystock.php` 个股详情大页的 AH/AB/ADR 对比、A 股带配对溢价的 trading、

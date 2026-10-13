@@ -95,3 +95,37 @@ def build_shares(service: Any, symbol: str) -> dict[str, Any] | None:
     这段不带鉴权。本版跟随详情页（不鉴权）。
     """
     return build_history_table(service, "shareshistory", symbol)
+
+
+def build_fund_history(service: Any, symbol: str) -> dict[str, Any] | None:
+    """「基金溢价记录」表（``php/ui/fundhistoryparagraph.php``）。
+
+    与 ``/history/fundhistory/<sym>`` 是**同一张表、同一个服务** —— PHP 那边
+    ``EchoFundHistoryParagraph()`` 与独立页 ``fundhistorycn.php`` 走的是同一个
+    ``_echoHistoryTableData()``（``fundhistoryparagraph.php:31``），本版沿用
+    这个复用，不另写一份取数。
+
+    PHP 的第一行守卫是 ``if ($ref->IsYahooNetValue()) return;``（``:52``）：
+    雅虎净值符号（``^SZ162411-IV`` 这种）没有"场内价格"，摆溢价表没有意义。
+    这里**按符号判断而不是按 ref 判断** —— 详情页这一层 ref 还没建出来，
+    而 ``IsYahooNetValue()`` 本身只看符号（``stocksymbol.php:552``）。
+    """
+    if _is_yahoo_net_value(symbol):
+        return None
+    return build_history_table(service, "fundhistory", symbol)
+
+
+def _is_yahoo_net_value(symbol: Any) -> bool:
+    """``StockSymbol::IsYahooNetValue()``（``php/stock/stocksymbol.php:552``）。
+
+    认不出的符号按"不是"处理 —— 这条守卫只用来**跳过**一段，判断失败时
+    宁可多摆一张表，也不要因为一个符号解析异常整段消失。
+    """
+    if not symbol:
+        return False
+    try:
+        from core.stocksymbol import StockSymbol
+
+        return bool(StockSymbol(str(symbol)).is_yahoo_net_value())
+    except Exception:
+        return False

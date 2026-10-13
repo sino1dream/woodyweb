@@ -39,6 +39,7 @@ from web.services.qdii_fund_list import (  # noqa: E402
     build_hedge_callback,
     callbackFundListHedge,
     fund_list_table,
+    fund_reference_table,
 )
 
 
@@ -57,16 +58,24 @@ class FakeSource:
     以正确的姿势取到"，公式本身由 `auto/stockdata.py` 负责。
     """
 
-    def __init__(self, hedges=None, names=None, dates=None, ids=None):
+    def __init__(self, hedges=None, names=None, dates=None, ids=None, last=None):
         self.hedges = hedges or {}
         self.names = names or {}
         self.dates = dates or {}
         self.ids = ids or {}
+        #: ``lastcalibration`` 表：`stock_id -> close`。参考值那一格读它。
+        self.last = {} if last is None else last
         self.hedge_calls = []
+        self.last_calls = []
 
     def get_stock_hedge(self, symbol, stock_id, leverage_symbol=None):
         self.hedge_calls.append((symbol, stock_id, leverage_symbol))
         return self.hedges.get(leverage_symbol)
+
+    def get_last_calibration(self, stock_id):
+        """``LastCalibrationSql::ReadVal($strStockId, true)``（``sqlval.php:53``）。"""
+        self.last_calls.append(stock_id)
+        return self.last.get(stock_id)
 
     def get_stock_name(self, symbol):
         return self.names.get(symbol)
@@ -102,13 +111,16 @@ class FakeRef:
     """
 
     def __init__(self, symbol="SPY", display=None, position=1.0, factor=10.035,
-                 pair_ref=None, stock_id=None):
+                 pair_ref=None, stock_id=None, price=None, precision=None):
         self._symbol = symbol
         self._display = symbol if display is None else display
         self._position = position
         self._factor = factor
         self._pair_ref = FakePairRef() if pair_ref is None else pair_ref
         self.stock_id = stock_id
+        #: ``GetVal()``：参考值那一格的染色基准（``stockref.php:162``）
+        self._price = price
+        self._precision = precision
 
     def get_symbol(self):
         return self._symbol
@@ -124,6 +136,12 @@ class FakeRef:
 
     def get_pair_ref(self):
         return self._pair_ref
+
+    def get_val(self):
+        return self._price
+
+    def get_precision(self):
+        return self._precision
 
 
 class FakeFund:
@@ -332,6 +350,108 @@ class RowContentTest(unittest.TestCase):
         table = fund_list_table(FakeFund(), [self.sh, self.spy], source=self.source)
         self.assertEqual(table["rows"][0].href, "")
         self.assertEqual(table["rows"][0].hrefs, {})
+
+
+class ReferenceTableTest(unittest.TestCase):
+    """``EchoFundListParagraph($arRef)`` **不带回调**那版 —— 末列「参考值」。
+
+    PHP 里它与带回调那版是**同一个函数**（``$callback = false`` 走 else 分支，
+    ``fundlistparagraph.php:33``）：
+
+    .. code-block:: php
+
+        if ($strVal = $last_sql->ReadVal($strStockId, true))
+            $ar[] = $ref->GetPriceDisplay(floatval($strVal));
+
+    个股详情页（``_mystock.php:134``）走的就是这一版。
+    """
+
+    def setUp(self):
+        self.source = FakeSource(last={"spy": 1.5234}, dates={"spy": "2026-10-09"})
+        self.ref = FakeRef("SPY", position=1.0, factor=1.5234, stock_id="spy",
+                           price=1.5, precision=3)
+
+    def _table(self, **kwargs):
+        return fund_reference_table([self.ref], source=self.source, **kwargs)
+
+    def test_the_last_column_is_reference_not_hedge(self):
+        """末列列名是「参考值」—— PHP 直接 ``new TableColumn('参考值')``。
+
+        宽 80 是 ``TableColumn`` 的默认值，且**没有颜色**：PHP 那个基类
+        ``TableColumn::__construct($strText = '', $iWidth = 80,
+        $strColor = false, ...)`` 不传色就不包 ``<font>``。
+        """
+        column = self._table()["columns"][-1]
+        self.assertEqual(column["text"], "参考值")
+        self.assertEqual(column["width"], 80)
+        self.assertEqual(column["color"], "")
+
+    def test_the_value_comes_from_lastcalibration(self):
+        """参考值读 ``lastcalibration`` 表，不是本行的「校准值」列。"""
+        table = self._table()
+        self.assertEqual(self.source.last_calls, ["spy"])
+        self.assertEqual(table["rows"][0].cells[5], ("1.523", "red"))
+
+    def test_the_color_baseline_is_the_refs_own_price(self):
+        """染色基准是 ref 的现价（``GetPriceDisplay`` 单参），不是 0。
+
+        与「仓位」/「校准值」两列（``GetNumberDisplay``，以 0 为基准）不是
+        一套规则：这里 ref 现价 1.5、参考值 1.5234 → 涨 → 红；
+        换成"以 0 为基准"也会是红，所以**再补一条跌的方向**才钉得住。
+        """
+        self.ref._price = 1.6
+        self.assertEqual(self._table()["rows"][0].cells[5], ("1.523", "green"))
+
+    def test_precision_comes_from_the_ref(self):
+        """精度取 ``$ref->GetPrecision()``；ref 不给时用模块兜底的 3。"""
+        self.source.last["spy"] = 1.23456
+        self.ref._precision = 2
+        self.assertEqual(self._table()["rows"][0].cells[5][0], "1.23")
+        #: ref 不给精度时兜底 3 —— 多数符号的 ``GetPrecision()`` 就是 3
+        self.ref._precision = None
+        self.assertEqual(self._table()["rows"][0].cells[5][0], "1.235")
+
+    def test_zero_value_is_left_blank(self):
+        """库里存 ``0`` 时 PHP 的 ``if ($strVal = ...)`` 判为假 —— 那格不显示。
+
+        PHP 存的是 ``strval(0.0)`` 即 ``"0"``，``"0"`` 是 PHP 里少数几个
+        "字符串为假"的值之一。写成 ``if ($strVal != '')`` 就会显示 ``0.000``，
+        与生产端对不上。
+        """
+        self.source.last["spy"] = 0.0
+        self.assertEqual(self._table()["rows"][0].cells[5], "")
+
+    def test_source_without_the_reader_leaves_the_cell_blank(self):
+        """数据源没有 ``get_last_calibration`` 时留空，不编造一个值。"""
+        table = fund_reference_table([self.ref], source=object())
+        self.assertEqual(table["rows"][0].cells[5], "")
+
+    def test_the_first_five_columns_match_the_hedge_version(self):
+        """两版只有末列不同 —— 前五列与逐行组装是同一份实现。"""
+        reference = self._table()["columns"][:5]
+        hedge = fund_list_table(FakeFund(), [self.ref])["columns"][:5]
+        self.assertEqual(reference, hedge)
+
+    def test_shared_cells_match_the_hedge_version(self):
+        """同一 ref 走两版，前五格必须逐格相同。"""
+        reference = self._table()["rows"][0].cells[:5]
+        hedge = fund_list_table(FakeFund(), [self.ref], source=self.source)
+        self.assertEqual(reference, hedge["rows"][0].cells[:5])
+
+    def test_no_refs_means_no_table(self):
+        """PHP 的 ``if (count($arRef) > 0)``。"""
+        self.assertIsNone(fund_reference_table([]))
+        self.assertIsNone(fund_reference_table(None))
+
+    def test_the_id_uses_the_first_refs_symbol(self):
+        """这一版没有"被看的基金"那个参数，id 前缀取行里的第一个符号。"""
+        self.assertEqual(self._table()["id"], "SPY" + FUNDLIST_ID_SUFFIX)
+
+    def test_links_are_built_the_same_way(self):
+        """两格链接（校准记录页 / 标的详情页）与带回调版同一套约定。"""
+        table = self._table(link_builder=_link_builder)
+        self.assertEqual(table["rows"][0].href, "/calibrationhistory/SPY")
+        self.assertEqual(table["rows"][0].hrefs.get(1), "/fund/^GSPC")
 
 
 if __name__ == "__main__":
