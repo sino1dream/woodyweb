@@ -270,13 +270,33 @@ Flask 路由
    `[900000, 1000000)`；根因是**没先 grep 代码库里已有的 `is_shanghai_b()`**
    就新增了一个 `is_shang_hai_b()`。已撤掉重复实现，记 pitfalls #54。详见
    `python/auto/README_pair_reference_migration.md`。
+   **第 14 轮（_mystock.php 详情栈 · CK3 出口）**：给 CK2 的成果一个能看见的地方。
+   侦察发现一个结构性问题：CK2 迁完的 AH/AB/ADR 段落**没有页面承载** ——
+   `/fund/<symbol>` 按号段推断分组、只服务基金。于是新建 `/stock/<symbol>`，
+   渲染 `_mystock.php:144-170` 的 else 分支（四个分支里的最后一个）。
+   三个落点：① 新建 `web/services/detail_sections.py` 抽出 `_mystock.php:167-169`
+   那三段（netvalueclose / shares / stockhistory，四个分支走完都要执行），
+   `routes/fund.py` 改为委托调用，CK1 测试仍全绿；② 新建
+   `stock_detail_service.py` 组装段落，重点是均线的**四个互斥槽位**
+   （`EchoAhPairSmaParagraph` / `EchoFundPairSmaParagraph` / 空串标题那张 /
+   普通 `EchoSmaParagraph`，其中 `fx_susdcnh` 带 `_callbackCnhSma`）；
+   ③ `routes/stock.py` 加路由（**复用已有的 `stock_bp`**，没新建 Blueprint），
+   列表页链接按 `get_symbol_group()` 分流：基金 → `/fund/`、其它 → `/stock/`。
+   测试：web **640** OK（619 + 21 `test_stock_detail.py`）、auto 1010 OK、
+   compileall 双绿；真实库冒烟 `/stock/^NDX` 与 `/stock/SPY` 段落渲染正常，
+   `/stock?num=0` 的 21 个符号分流正确（4 基金 / 17 其它）。变异测试抓到一处
+   测试盲区：`_callbackCnhSma` 的"放大-取整-缩小"原用例 `est=7.0` 恰好整除、
+   测不出差别，换成落在两个 0.0005 刻度之间的值后断言才有牙。详见
+   `python/auto/README_stock_detail_migration.md` §6。
    **仍存在的关键石 / 后续 checkpoint**：CK2b `FundPairReference` 的期货自动校准
    （与已迁的 `fundestcalc` / `futurescalib` 及独立 `autocalibration` 任务高度重叠，单列）；
-   CK3 新建 `/stock/<symbol>` 承载非基金详情（A/H/ADR/外汇/Holdings，路由策略已与用户
-   确认）；CK4 Holdings 分支（含 `HoldingsReference`）；CK5 交易块 + 链接（账号可演示）；
+   CK4 Holdings 分支（含 `HoldingsReference`，`php/stock/holdingsref.php` 441 行 /
+   24 方法，完全未迁）；CK5 交易块 + 链接（账号可演示）；
+   **CK3 遗留**：A 股 generic `EchoTradingParagraph($ref, $ah_ref, $adr_ref)`
+   （`trading_service` 只有 `fund_table`，且演示库无非基金 A 股可验证）；
    CK6 order book 写 snapshot。
-   **仍未迁**：`_mystock.php` 个股详情大页的 AH/AB/ADR 对比、A 股带配对溢价的 trading、
-   配对 SMA、`EchoAhPairSmaParagraph` 接线、Holdings 分支；三个整页外壳（登录、
+   **仍未迁**：`_mystock.php` 个股详情大页的 A 股带配对溢价的 trading、Holdings 分支；
+   三个整页外壳（登录、
    `GetGroupSql()`、`StockEditTransactionForm` / `StockMergeTransactionForm`）随账号体系暂缓。
 5. `php/layout.php`、`php/menu.php`、`php/stocklink.php`：站点布局和导航。
 

@@ -30,6 +30,11 @@ from web.services.fund_list_service import (  # noqa: E402
     FundGroupNotFoundError,
     FundListService,
 )
+from web.services.detail_sections import (  # noqa: E402
+    build_netvalue_close,
+    build_shares,
+    build_stock_history,
+)
 from web.services.fund_service import FundService  # noqa: E402
 from web.services.qdii_page_service import build_qdii_page  # noqa: E402
 from web.services.reference_service import reference_symbols_for_fund  # noqa: E402
@@ -481,15 +486,11 @@ def _build_shares(symbol: str) -> dict[str, Any] | None:
     **权限差异要注意**：生产端的独立页面 ``fundsharecn.php`` 要登录
     （见 ``README_history_migration.md``），而详情页里这段是不带鉴权的。
     本版跟随详情页（不鉴权），因为演示库里那份数据本来就只有 4 行样本。
+
+    取表的逻辑已抽到 ``web/services/detail_sections.py``（CK3 的 ``/stock`` 页
+    要复用同一批尾部段落），这里只负责把历史服务传进去。
     """
-    service = _get_history_service()
-    if service is None:
-        return None
-    try:
-        table = service.get_table("shareshistory", symbol, 0, 10)
-    except Exception:
-        return None
-    return table if table.get("rows") else None
+    return build_shares(_get_history_service(), symbol)
 
 
 def _build_stock_history(symbol: str) -> dict[str, Any] | None:
@@ -502,15 +503,10 @@ def _build_stock_history(symbol: str) -> dict[str, Any] | None:
 
     **没有行情历史就整段跳过**：``EchoStockHistoryParagraph`` 在 ``$result``
     为空时循环不执行、表自然不出现，本版用 ``rows`` 为空来触发同样的隐藏。
+
+    取表逻辑见 ``web/services/detail_sections.py``（CK3 的 ``/stock`` 页复用）。
     """
-    service = _get_history_service()
-    if service is None:
-        return None
-    try:
-        table = service.get_table("stockhistory", symbol, 0, 10)
-    except Exception:
-        return None
-    return table if table.get("rows") else None
+    return build_stock_history(_get_history_service(), symbol)
 
 
 def _build_netvalue_close(symbol: str) -> dict[str, Any] | None:
@@ -520,15 +516,10 @@ def _build_netvalue_close(symbol: str) -> dict[str, Any] | None:
     ``/history/netvalueclose/<sym>`` 同源）。PHP 的守卫是
     ``if ($ref->CountNetValue() == 0) return;`` —— 本版照办：基金没有净值数据时
     整段不显示，而不是摆一张空表。
+
+    取表逻辑见 ``web/services/detail_sections.py``（CK3 的 ``/stock`` 页复用）。
     """
-    service = _get_history_service()
-    if service is None:
-        return None
-    try:
-        table = service.get_table("netvalueclose", symbol, 0, 10)
-    except Exception:
-        return None
-    return table if table.get("rows") else None
+    return build_netvalue_close(_get_history_service(), symbol)
 
 
 def _build_sma(symbol: str) -> dict[str, Any] | None:
