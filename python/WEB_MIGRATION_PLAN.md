@@ -255,6 +255,12 @@ Flask 路由
    真实 PHP 逐例对照（10 例 / 8 例，各带自检 4/4），顺带修掉"官方 EST 为 `0`
    时本版多摆三格"的偏差。
 
+   **CK2b 的一处自身回归已修**：`stock_detail.html` 调 `data_table` 渲染估值表时
+   漏了 `first_cell_is_html=True`，首格 `GetStockLink()` 的 `<a>` 被 Jinja 转义成
+   可见文本（`/fund/<symbol>` 与 `/qdii` 那两处是对的）。已补渲染用例并做变异
+   测试；替身首格也改成真形态的 `<a>` 串 —— 原先给纯文本时"漏传"与"传了"
+   渲染结果一样，测不出来。详见 `README_stock_detail_migration.md` §8、pitfalls #59。
+
    **仍存在的关键石 / 后续 checkpoint**：校准口径统一（演示库中间层 cal 是"基金净值/ETF价"，与生产端
    "指数/ETF价"相反，导致`/stock/QQQ`算出 345 万）；CK4 Holdings 分支（含
    `HoldingsReference`，441 行/24 方法）；CK5 交易块 + 链接（账号可演示）；

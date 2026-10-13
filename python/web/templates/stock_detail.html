@@ -29,10 +29,16 @@
          列数是浮动的：只有官方净值时 3 列，ref 上还有
          get_fair_net_value / get_realtime_net_value 时才加到 5 / 7 列，
          由 fundest_service 探测决定 —— 与 EST 有关的那一层迁移
-         在页面上是肉眼可见的。 #}
+         在页面上是肉眼可见的。
+
+         ``first_cell_is_html=True`` 不能省：首格是 ``$ref->GetStockLink()``
+         （``fundestparagraph.php:9``）拼好的 ``<a>`` 标签，服务层交给模板的
+         就是 HTML 串（``fundest_service.py:225``）。漏掉它，Jinja 会把整串
+         转义成 ``&lt;a href=...&gt;`` 显示在页面上 —— 与 ``fund_detail.html``
+         / ``qdii.html`` 那两处同一张表的写法保持一致。 #}
       {% if detail.est %}
         <h2>{{ detail.est.title or "估值" }}</h2>
-        {{ data_table(detail.est, "est-table") }}
+        {{ data_table(detail.est, "est-table", first_cell_is_html=True) }}
       {% endif %}
 
       {# 跟踪表（EchoFundListParagraph，_mystock.php:133）。

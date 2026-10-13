@@ -174,7 +174,15 @@ class RecordingFundEst:
 
     用替身而不是真服务，是因为真服务要查符号名称（连库）；
     而这里要验的是"**是不是把它接上了**"，不是"它内部怎么算"。
+
+    首格刻意做成 ``<a>`` 标签串：真服务那一格是 ``GetStockLink()``
+    （``fundest_service.py:225``），交给模板的就是 HTML，不是纯文本。
+    CK2b 把这张表接进 ``/stock/<symbol>`` 时漏了 ``first_cell_is_html=True``，
+    页面上直接显示了这串标签 —— 用真形态的替身才能钉住这个回归。
     """
+
+    #: 首格的 HTML，形态取自 PHP ``GetStockLink()``。
+    FIRST_CELL_HTML = '<a href="/woody/res/mystockcn.php?symbol=^NDX">^NDX</a>'
 
     def __init__(self):
         self.refs_seen = []
@@ -184,7 +192,7 @@ class RecordingFundEst:
             "id": "estimation",
             "title": "估值",
             "columns": [{"text": "代码"}],
-            "rows": [{"cells": ["^NDX"], "hrefs": {}, "href": ""}],
+            "rows": [{"cells": [self.FIRST_CELL_HTML], "hrefs": {}, "href": ""}],
         }
 
     def get_table(self, refs, wide=False, title=None, sort=None):
@@ -658,6 +666,18 @@ class FundPairRouteTest(unittest.TestCase):
         html = self.client.get("/stock/^NDX").get_data(as_text=True)
         self.assertIn("est-table", html)
         self.assertIn("估值", html)
+
+    def test_est_first_cell_is_a_link_not_escaped_html(self):
+        """估值表首格是 ``GetStockLink()`` 的 ``<a>``，不能被引擎转义。
+
+        PHP 是 ``$ar = array($ref->GetStockLink())``（``fundestparagraph.php:9``），
+        ``fund_detail.html`` / ``qdii.html`` 那两处都为此传了
+        ``first_cell_is_html=True``；CK2b 新接的 ``/stock/<symbol>`` 漏了，
+        页面上整段 ``<a href=...>`` 变成可见文本。
+        """
+        html = self.client.get("/stock/^NDX").get_data(as_text=True)
+        self.assertIn(RecordingFundEst.FIRST_CELL_HTML, html)
+        self.assertNotIn("&lt;a ", html)
 
     def test_fundlist_table_renders(self):
         """跟踪表：末列是「参考值」那一版（``_mystock.php:133``）。"""

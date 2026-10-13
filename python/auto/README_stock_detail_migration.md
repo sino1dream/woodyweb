@@ -223,3 +223,32 @@ PHP 的 `EchoFundListParagraph($arRef, $callback = false)` 是**同一个函数*
   `if estimate_close:` 判断官方 EST —— Python 里非空字符串 `"0"` 是真值，
   于是 0 值的 EST 会多摆三格；PHP 判它为假。已改 `_php_val_is_false()`
   并补单测（变异确认有牙：8 格 vs 4 格）。
+
+## 8. CK2b 回归：估值表首格被转义成可见文本
+
+两个缺口收完后跑真实库冒烟时发现：`/stock/<symbol>` 的估值表「代码」格
+显示的是一整串文本 `<a href="/woody/res/mystockcn.php?symbol=QQQ">QQQ</a>`，
+而同一张表在 `/fund/SZ161130` 上是正常链接。
+
+**根因**：`_data_table.html` 的 `data_table` 宏默认对首格做 HTML 转义，
+透传标签要显式传 `first_cell_is_html=True`。估值表首格是
+`$ref->GetStockLink()`（`fundestparagraph.php:9`）拼好的 `<a>`，
+`fundest_service.py:225` 交给模板的就是 HTML 串；
+`fund_detail.html:86` 与 `qdii.html:37` 都传了，CK2b（`91d188ce`）
+新接的 `stock_detail.html` 那一处漏了。
+
+**为什么单测没挡住**：替身 `RecordingFundEst` 的首格给的是纯文本 `"^NDX"`，
+"漏传"与"传了"的渲染结果完全相同。已把替身首格改成真形态的 `<a>` 串，
+并补 `test_est_first_cell_is_a_link_not_escaped_html`，断言页面里
+既要有未转义的 `<a href=...>`、也不能出现 `&lt;a `。
+变异确认有牙：回退模板那一行后，渲染出
+`<td>&lt;a href=&#34;...&#34;&gt;^NDX&lt;/a&gt;</td>`。
+
+**顺带扫了全站**：服务层只有 `fundest_service`（`GetStockLink`）与
+`reference_service`（`GetExternalLink`）产 HTML 首格，
+对应的模板调用点现在**全部**开了开关；走 `row.href` / `row.hrefs`
+的表（跟踪表、交易明细）保持关闭 —— 宏里那是独立分支，
+开了会把业务文本一并解转义。真实库复验：`/stock/*`、
+`/fund/SZ161130`、`/qdii` 的 `&lt;a ` 计数均为 0。
+
+记录见 pitfalls **#59**。
