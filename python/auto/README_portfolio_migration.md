@@ -191,11 +191,13 @@ PHP 的 `strstr($filled, ' ', true)` 找不到空格时返回 `false`。初版�
    额外做的事）。服务层已支持（`RawGroupArrayTest` 钉住"给什么顺序渲染什么
    顺序"；多张表共享同一个 `PortfolioCnyTotal` 由 `CnyTotalTest` 钉住），
    但页面外壳属于账号体系：`StockAccount`（登录 / `GetGroupSql`）、
-   `StockEditTransactionForm`、`EchoTransactionParagraph`（交易明细段落，
-   仍未迁）、`EchoMoneyParagraphs`（分组资金汇总）、`MyStockGroup` 模型
-   都要等 `stockgroup` 三张表与账号体系。真实调用方
-   （`_mystockgroup.php:143`、`_stockgroup.php:71`）都是**一页一组**，
-   所以 `static $fCny` 的跨表累积在那一页只会涉及一张表。
+   `StockEditTransactionForm` 都要等 `stockgroup` 三张表与账号体系。
+   真实调用方（`_mystockgroup.php:143`、`_stockgroup.php:71`）都是
+   **一页一组**，所以 `static $fCny` 的跨表累积在那一页只会涉及一张表。
+
+   > **2026-10-13 更新**：这一段里"仍未迁"的三件（`EchoTransactionParagraph`
+   > / `EchoMoneyParagraphs` / `MyStockGroup` 模型）已在下一轮补齐，见
+   > `README_account_migration.md`；页面外壳仍按上面的理由挂着。
 2. **`MyStockTransaction.group_item_id` 恒为 false** —— PHP 构造函数当场
    查库，本版等数据库层接入后由调用方传入。
 3. **参考数据段落**（`_transEchoReferenceParagraph`，`_myportfolio.php:31`）

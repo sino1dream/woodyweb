@@ -120,13 +120,24 @@ def format_price_display(value: Any, prev: Any = None, precision: int = 3) -> tu
 
 
 def _trim_number_text(number: float, precision: int) -> str:
-    """按 PHP 的 ``number_format`` + ``rtrim('0')`` + ``rtrim('.')`` 出文本。"""
+    """按 PHP 的 ``number_format`` + ``rtrim('0')`` + ``rtrim('.')`` 出文本。
+
+    **负零要归零**：PHP 的 ``number_format(-0.004, 2)`` 是 ``'0.00'`` ——
+    **不带负号**，而 Python 的 ``'%.2f' % -0.004`` 是 ``'-0.00'``。
+    于是 ``(-0.005, 0)`` 这一小段区间里的值（比如 -0.001 的手续费、
+    -0.002 的盈亏）在 PHP 里显示成 ``0``，在 Python 里会是 ``-0``。
+    是 PHP 逐例对照（``_php_transaction_compare.py`` 的 ``number_display``
+    组）抓出来的，见那个脚本 docstring 的"这个脚本抓到的真 bug"一节
+    与 pitfalls 第 51 条。
+    """
     if precision <= 0:
         # PHP 的 number_format(x, 0) 会四舍五入成整数（无小数点）
-        return "%.0f" % number
+        text = "%.0f" % number
+        # number_format(-0.4) 同样是 '0' 而不是 '-0'
+        return text if text != "-0" else "0"
     text = "%.*f" % (precision, number)
     text = text.rstrip("0").rstrip(".")
-    return text if text not in ("", "-") else "0"
+    return text if text not in ("", "-", "-0") else "0"
 
 
 def format_number_display(value: Any, precision: int = 2) -> str:
@@ -299,6 +310,17 @@ class TableRow:
     #: 例：``row.hrefs[1] = "https://xueqiu.com/S/SZ161130"``
     #:     ``row.hrefs[2] = [{"text": "编辑", "url": "/stock/edit/SZ161130"}]``
     hrefs: dict = field(default_factory=dict)
+    #: 需要**透传 HTML** 的格子下标（0 起）。模板对下标在列表里的格子
+    #: 不做转义，其余格子照常转义。
+    #:
+    #: 为什么需要它：``hrefs`` 只能表达"纯链接"，而交易明细段落的备注格是
+    #: ``清空链接 + 备注原文 + 校准链接`` —— 文本夹在两个链接**中间**，
+    #: 且链接带 ``onclick`` 确认。PHP 的 ``EchoTableColumn($ar)`` 收到的
+    #: 本来就是拼好的 HTML 串，这里保留同样形态，由模板按 ``|safe`` 渲染。
+    #:
+    #: 与 :attr:`hrefs` 是互斥的两套方案：一个格子要么走 ``hrefs``（数据），
+    #: 要么出现在 ``html_indexes`` 里（HTML）。不要两个都给。
+    html_indexes: list = field(default_factory=list)
 
     def add(self, value: Any, color: str = "") -> "TableRow":
         """追加一格。``color`` 为空表示普通文本。"""

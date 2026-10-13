@@ -28,13 +28,30 @@ install_paths()
 from ref.stocklink import (  # noqa: E402
     ALL_STOCK_DISPLAY,
     OVERNIGHT_CNH_DISPLAY,
+    STOCK_GROUP_DISPLAY,
+    STOCK_TRANSACTION_DISPLAY,
+    get_delete_link,
+    get_edit_link,
     get_group_stock_link,
+    get_my_stock_group_link,
     get_my_stock_link,
+    get_on_click_link,
     get_overnight_cnh_link,
     get_php_link,
     get_stock_link,
     get_transaction_link,
+    stock_get_all_transaction_link,
 )
+
+
+class _Ref:
+    """``$ref`` 的最小替身 —— 只有一个 ``GetSymbol()``。"""
+
+    def __init__(self, symbol):
+        self._symbol = symbol
+
+    def GetSymbol(self):
+        return self._symbol
 
 
 class GetPhpLinkTest(unittest.TestCase):
@@ -182,6 +199,124 @@ class GetOvernightCnhLinkTest(unittest.TestCase):
         link = get_overnight_cnh_link('$1234K', '-123456')
         self.assertIn('overnightcnh=-123456', link)
         self.assertIn('>$1234K</a>', link)
+
+
+class GetOnClickLinkTest(unittest.TestCase):
+    """``GetOnClickLink()``（``php/httplink.php:26``）：确认弹窗链接。
+
+    期望值由 PHP 实测得出（``php -r`` 载入 ``ui/htmlelement.php`` +
+    ``httplink.php``，``UrlGetServer()`` 打桩成空串）。
+    """
+
+    def test_question_becomes_confirm_call(self):
+        self.assertEqual(
+            '<a href="/woody/res/submittransaction.php?empty=12" '
+            'onclick="return confirm(\'确认清空备注：申购 3？\')">清空</a>',
+            get_on_click_link("/woody/res/submittransaction.php?empty=12",
+                              "确认清空备注：申购 3？", "清空"),
+        )
+
+    def test_double_quotes_are_removed_not_escaped(self):
+        """PHP 用 ``str_replace('"', '', ...)`` 删引号 —— 不是转义。
+
+        问句要塞进 ``onclick="..."`` 里，留着双引号会把 HTML 属性截断。
+        """
+        self.assertEqual(
+            '<a href="/x" onclick="return confirm(\'say hi\')">d</a>',
+            get_on_click_link("/x", 'say "hi"', "d"),
+        )
+
+    def test_extra_attribute_comes_after_href(self):
+        """``GetLinkElement()`` 先放 ``href``，属性按数组顺序追加。"""
+        link = get_on_click_link("/x", "q", "d")
+        self.assertTrue(link.startswith('<a href="/x" onclick='))
+
+
+class GetDeleteLinkTest(unittest.TestCase):
+    """``GetDeleteLink()``：中文用全角问号，英文分支自带尾空格。"""
+
+    def test_chinese_uses_fullwidth_question_mark(self):
+        self.assertEqual(
+            '<a href="/woody/res/submittransaction.php?delete=12" '
+            'onclick="return confirm(\'确认删除2026-10-13 100交易记录？\')">删除</a>',
+            get_delete_link("/woody/res/submittransaction.php?delete=12",
+                            "2026-10-13 100交易记录"),
+        )
+
+    def test_english_uses_halfwidth_and_trailing_space(self):
+        self.assertEqual(
+            '<a href="/x.php?delete=1" '
+            'onclick="return confirm(\'Confirm delete us str?\')">Delete</a>',
+            get_delete_link("/x.php?delete=1", "cn", "us str", False),
+        )
+
+    def test_chinese_branch_ignores_us_text(self):
+        """中文分支的问句只用 ``$strCn`` —— ``$strUs`` 是英文分支专用的。"""
+        link = get_delete_link("/x.php?delete=1", "中文", "English")
+        self.assertIn("确认删除中文？", link)
+        self.assertNotIn("English", link)
+
+
+class GetEditLinkTest(unittest.TestCase):
+    """``GetEditLink()``：``edit=`` 查询串 + 中英文显示文本。"""
+
+    def test_chinese(self):
+        self.assertEqual(
+            '<a href="/woody/res/editstocktransactioncn.php?edit=34">修改</a>',
+            get_edit_link("/woody/res/editstocktransaction", "34"),
+        )
+
+    def test_english_page_has_no_cn_suffix(self):
+        self.assertEqual(
+            '<a href="/woody/res/editstocktransaction.php?edit=34">Edit</a>',
+            get_edit_link("/woody/res/editstocktransaction", "34", False),
+        )
+
+
+class StockGetAllTransactionLinkTest(unittest.TestCase):
+    """``StockGetAllTransactionLink()``（``php/stocklink.php:349``）。
+
+    与 :func:`get_transaction_link` 的差别只有显示文本恒为 ``交易记录``。
+    """
+
+    def test_without_ref(self):
+        self.assertEqual(
+            '<a href="/woody/res/mystocktransactioncn.php?groupid=g7">交易记录</a>',
+            stock_get_all_transaction_link("g7"),
+        )
+
+    def test_with_ref_appends_symbol(self):
+        self.assertEqual(
+            '<a href="/woody/res/mystocktransactioncn.php?groupid=g7'
+            '&symbol=hf_ES">交易记录</a>',
+            stock_get_all_transaction_link("g7", _Ref("hf_ES")),
+        )
+
+    def test_display_is_never_the_symbol(self):
+        """显示文本恒为 ``交易记录`` —— 链接语境是"这一组全部"。"""
+        link = stock_get_all_transaction_link("g7", _Ref("hf_ES"))
+        self.assertIn(">%s</a>" % STOCK_TRANSACTION_DISPLAY, link)
+        self.assertNotIn(">ES</a>", link)
+
+
+class GetMyStockGroupLinkTest(unittest.TestCase):
+    """``GetMyStockGroupLink()``（``php/stocklink.php:329``）。
+
+    PHP 走到 ``GetPageLink()``，后者在"目标就是当前页"时返回蓝色文本。
+    按模块 docstring 的取舍 2，Python 不判当前页 —— 恒给链接。
+    """
+
+    def test_defaults_to_group_display(self):
+        self.assertEqual(
+            '<a href="/woody/res/mystockgroupcn.php">%s</a>' % STOCK_GROUP_DISPLAY,
+            get_my_stock_group_link(),
+        )
+
+    def test_query_and_display(self):
+        self.assertEqual(
+            '<a href="/woody/res/mystockgroupcn.php?groupid=g7">分组甲</a>',
+            get_my_stock_group_link("groupid=g7", "分组甲"),
+        )
 
 
 class StockLinkDiffersFromExternalLinkTest(unittest.TestCase):

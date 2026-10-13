@@ -75,6 +75,26 @@ OVERNIGHT_CNH_PAGE = "overnightcnh"
 #: （``php/stocklink.php:18``）。
 OVERNIGHT_CNH_DISPLAY = "义工群对冲计算器"
 
+#: ``GetMyStockGroupLink()`` 用的页面名（``php/stocklink.php:329``）。
+MYSTOCKGROUP_PAGE = "mystockgroup"
+
+#: PHP ``define('STOCK_GROUP_DISPLAY', '股票分组')``（``php/stocklink.php:328``）。
+STOCK_GROUP_DISPLAY = "股票分组"
+
+#: PHP ``define('STOCK_TRANSACTION_DISPLAY', '交易记录')``
+#: （``php/stocklink.php:347``）。
+STOCK_TRANSACTION_DISPLAY = "交易记录"
+
+#: ``GetDeleteLink()`` 的两个分支（``php/httplink.php:32``）。
+DELETE_DISPLAY_CN = "删除"
+DELETE_DISPLAY_US = "Delete"
+DELETE_QUESTION_CN = "确认删除"
+DELETE_QUESTION_US = "Confirm delete "
+
+#: ``GetEditLink()`` 的显示文本（``php/account.php:11``、``:15``）。
+DISP_EDIT_CN = "修改"
+DISP_EDIT_US = "Edit"
+
 
 def _php_truthy(value: Any) -> bool:
     """PHP 布尔上下文：``''`` / ``'0'`` / ``False`` / ``None`` 都是假值。
@@ -224,6 +244,110 @@ def get_overnight_cnh_link(display: Any = OVERNIGHT_CNH_DISPLAY,
     return get_php_link(PATH_STOCK + page, "%s=%s" % (page, amount), display, chinese)
 
 
+def get_on_click_link(path: Any, question: Any, display: Any) -> str:
+    """对应 ``GetOnClickLink()``（``php/httplink.php:26``）：带确认弹窗的链接。
+
+    PHP 原文::
+
+        $strQuestion = str_replace('"', '', $strQuestion);
+        return GetLinkElement($strDisplay, UrlGetServer().$strPath,
+            array('onclick' => GetDoubleQuotes("return confirm('$strQuestion')")));
+
+    两处必须照抄：
+
+    * **先去掉问句里的双引号** —— 问句要塞进 ``onclick="..."`` 里，
+      带双引号会把 HTML 属性截断。PHP 用 ``str_replace`` 删，不是转义；
+    * ``onclick`` 的值由 :func:`get_link_element` **统一加双引号**，
+      与 ``href`` 一样走 ``%s="%s"`` 那一段，所以这里传不带引号的内层文本。
+
+    ``UrlGetServer()`` 按模块 docstring 的取舍 1 不拼（返回站点相对路径）。
+    """
+    text = "" if question is None else str(question).replace('"', '')
+    extra = {"onclick": "return confirm('%s')" % text}
+    return get_link_element(display, path, extra)
+
+
+def get_delete_link(path: Any, cn: Any = "", us: Any = "",
+                    chinese: bool = True) -> str:
+    """对应 ``GetDeleteLink()``（``php/httplink.php:32``）。
+
+    PHP 是 ``GetOnClickLink()`` 的薄封装，中英文两套问句::
+
+        $strDisplay  = '删除' / 'Delete'
+        $strQuestion = '确认删除'.$strCn.'？' / 'Confirm delete '.$strUs.'?'
+
+    注意中文问句末尾是**全角问号 ``？``**、英文是半角 ``?``，
+    且英文分支的 ``Confirm delete `` 自带尾空格。
+    """
+    if chinese:
+        display = DELETE_DISPLAY_CN
+        question = "%s%s？" % (DELETE_QUESTION_CN, "" if cn is None else cn)
+    else:
+        display = DELETE_DISPLAY_US
+        question = "%s%s?" % (DELETE_QUESTION_US, "" if us is None else us)
+    return get_on_click_link(path, question, display)
+
+
+def get_edit_link(path_page: Any, edit: Any, chinese: bool = True) -> str:
+    """对应 ``GetEditLink()``（``php/httplink.php:168``）：``edit=`` 修改链接。
+
+    PHP 是 ``GetPhpLink($strPathPage, 'edit='.$strEdit, 修改/Edit)`` 的封装，
+    与 :func:`get_php_link` 的差别只在查询串固定为 ``edit=`` 这一段。
+    """
+    return get_php_link(path_page, "edit=%s" % ("" if edit is None else edit),
+                        DISP_EDIT_CN if chinese else DISP_EDIT_US, chinese)
+
+
+def stock_get_all_transaction_link(group_id: Any, ref: Any = False,
+                                   chinese: bool = True) -> str:
+    """对应 ``StockGetAllTransactionLink()``（``php/stocklink.php:349``）。
+
+    PHP 原文::
+
+        if ($ref)	$strSymbol = $ref->GetSymbol();
+        else		$strSymbol = false;
+        return StockGetTransactionLink($strGroupId, $strSymbol, STOCK_TRANSACTION_DISPLAY);
+
+    与 :func:`get_transaction_link` 的差别只有**显示文本**：这里恒为
+    ``交易记录``，不是该符号的展示名 —— 因为链接的语境是"这一组全部交易"，
+    显示某个具体符号反而会让人以为只看得到它。
+
+    ``$ref`` 为真时取 ``GetSymbol()``；假值（含 ``None``）时按 PHP 的
+    ``$strSymbol = false`` 处理，于是 :func:`get_transaction_link` 不加
+    ``symbol=`` 段。
+    """
+    symbol = _symbol_of(ref) if ref else False
+    return get_transaction_link(group_id, symbol, STOCK_TRANSACTION_DISPLAY, chinese)
+
+
+def get_my_stock_group_link(query: Any = False, display: Any = False,
+                            chinese: bool = True) -> str:
+    """对应 ``GetMyStockGroupLink()``（``php/stocklink.php:329``）。
+
+    PHP 原文::
+
+        if ($strDisplay == false)	$strDisplay = STOCK_GROUP_DISPLAY;
+        return GetStockPageLink('mystockgroup', $strDisplay, $strQuery);
+
+    ``GetStockPageLink()`` 会走到 ``GetPageLink()``，后者在"目标就是当前页"
+    时返回纯文本。按模块 docstring 的取舍 2，这里不判当前页，直接给链接。
+    """
+    text = display if display else STOCK_GROUP_DISPLAY
+    return get_php_link(PATH_STOCK + MYSTOCKGROUP_PAGE, query, text, chinese)
+
+
+def _symbol_of(ref: Any) -> Any:
+    """从引用对象取符号：先 ``get_symbol`` 再 ``GetSymbol``。"""
+    if ref is None:
+        return None
+    getter = getattr(ref, "get_symbol", None)
+    if getter is None:
+        getter = getattr(ref, "GetSymbol", None)
+    if getter is None:
+        return None
+    return getter()
+
+
 # ---------------------------------------------------------------------------
 # PHP 原名别名（见 AGENTS.md：保留 camelCase 别名）
 # ---------------------------------------------------------------------------
@@ -233,3 +357,8 @@ GetMyStockLink = get_my_stock_link
 GetStockLink = get_stock_link
 GetOvernightCnhLink = get_overnight_cnh_link
 StockGetTransactionLink = get_transaction_link
+GetOnClickLink = get_on_click_link
+GetDeleteLink = get_delete_link
+GetEditLink = get_edit_link
+StockGetAllTransactionLink = stock_get_all_transaction_link
+GetMyStockGroupLink = get_my_stock_group_link

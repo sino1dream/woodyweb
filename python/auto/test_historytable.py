@@ -132,6 +132,28 @@ class NumberDisplayTest(unittest.TestCase):
         self.assertEqual(format_number_display(1358.4, 0), "1358")
         self.assertEqual(format_number_display(1358.6, 0), "1359")
 
+    def test_negative_zero_is_shown_as_zero(self):
+        """PHP 的 ``number_format`` 对"四舍五入后落在负零"的值**不给负号**。
+
+        实测（PHP 8.0.10）::
+
+            number_format(-0.004, 2) = '0.00'      ← 没有 '-'
+            number_format(-0.006, 2) = '-0.01'
+
+        而 Python 的 ``'%.2f' % -0.004`` 是 ``'-0.00'``，rtrim 之后是 ``'-0'``。
+        这一小段区间（``-0.005 < x < 0``）在页面上是"≈0 的手续费 / 盈亏"，
+        显示成 ``-0`` 会让人以为算错了符号。
+        是 ``_php_transaction_compare.py`` 逐例对照抓出来的。
+        """
+        self.assertEqual(format_number_display(-0.004), "0")
+        self.assertEqual(format_number_display(-0.001), "0")
+        self.assertEqual(format_number_display(-0.0), "0")
+        # 真正跨过半位的值仍然带负号
+        self.assertEqual(format_number_display(-0.006), "-0.01")
+        self.assertEqual(format_number_display(-0.5), "-0.5")
+        # 精度 0 那一支同样如此（number_format(-0.4) = '0'）
+        self.assertEqual(format_number_display(-0.4, 0), "0")
+
     def test_ratio_display_uses_four_digits_by_default(self):
         # PHP GetRatioDisplay 精度 4
         self.assertEqual(format_ratio_display(1.23456789), "1.2346")

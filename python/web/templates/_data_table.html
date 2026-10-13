@@ -12,6 +12,16 @@
    first_cell_is_html —— 首格是否为 HTML（PHP 那里首格恒为 GetStockLink() 之类的 <a>）。
                          默认 False：只有确实需要透传标签的表格才打开，
                          避免把业务文本也一并关掉转义。
+   row.html_indexes    —— 需要透传 HTML 的**格子下标列表**（0 起）。它与
+                         ``first_cell_is_html`` 是两码事：后者只管首格，
+                         而交易明细段落的备注格（清空链接 + 原文 + 校准链接）
+                         与操作格（修改 + 删除）在中间和末尾。
+
+                         为什么不能走 ``row.hrefs``：那两个口子只能表达
+                         "纯链接"，而这里的链接带 ``onclick`` 确认，
+                         且备注文本夹在两个链接**中间**。PHP 的
+                         ``EchoTableColumn($ar)`` 收到的本来就是拼好的
+                         HTML 串，这里保留同样的形态。
 #}
 {% macro data_table(table, css_class="", first_cell_is_html=False) %}
   {% if table %}
@@ -37,6 +47,9 @@
               {% set classes = ("cell-" ~ color if color else "") ~ (" with-hint" if hinted else "") %}
               <td{% if classes %} class="{{ classes }}"{% endif %}{% if hinted %} title="{{ row.title }}"{% endif %}>
                 {%- if loop.first and first_cell_is_html -%}
+                  {{ text|safe }}
+                {%- elif index in row.html_indexes -%}
+                  {# 备注格 / 操作格：服务层给的就是 PHP 同形态的 HTML #}
                   {{ text|safe }}
                 {%- elif row.hrefs.get(index) is string -%}
                   {# 非首格也能挂单个链接：URL 在这里包一层 <a> #}

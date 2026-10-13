@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+{% from "_data_table.html" import data_table %}
+{% block title %}账户 - 基金估值{% endblock %}
+{% block content %}
+  {# 交易明细段落（php/ui/transactionparagraph.php 的 EchoTransactionParagraph）
+     + 资金汇总段落（woody/res/php/_stockaccount.php:213 的 EchoMoneyParagraphs）。
+
+     PHP 那边两段在同一个页面里挨着：_mystockgroup.php:143 先
+     EchoStockTransaction($group)（内部出交易明细 + 投资组合），再
+     EchoMoneyParagraph($group)。本页少了投资组合那段 —— 它已经单独有
+     /portfolio 演示页。
+
+     两处需要说明的渲染取舍：
+
+     1. 交易明细的备注格与操作格是**拼好的 HTML**，走 row.html_indexes
+        透传（清空链接 + 备注原文 + 校准链接 / 修改 + 删除）。那两个链接
+        带 onclick 确认，hrefs 表达不了。
+     2. 资金汇总的首格是分组链接，于是 data_table 要开
+        first_cell_is_html —— 与交易明细的 html_indexes 是两个不同的口子。 #}
+  <h1>账户</h1>
+  <p class="group-description">
+    交易明细与资金汇总两段，对应 PHP 的
+    <code>EchoTransactionParagraph()</code>（<code>php/ui/transactionparagraph.php</code>）
+    与 <code>EchoMoneyParagraphs()</code>（<code>woody/res/php/_stockaccount.php:213</code>）。
+  </p>
+
+  <p class="hint">
+    <strong>演示数据</strong>：真实页面需要登录后读取
+    <code>stockgroup</code> / <code>stockgroupitem</code> / <code>stocktransaction</code>
+    三张表，演示库里没有这些表，账号体系也暂缓，所以这里用一份写死的样例
+    数据。价格与净值都是样例值，不对应任何一天的行情。<strong>分组名</strong>
+    可以点（切下面的交易明细），其余链接指向 PHP 页面，在这个演示环境里点不通。
+  </p>
+
+  <h2>交易明细（{{ group_name }}）</h2>
+  <p class="table-note">
+    当前分组 {{ record_count }} 条{% if record_count > table_common_display %}，
+    按 PHP 的 <code>TABLE_COMMON_DISPLAY</code>（{{ table_common_display }}）只显示最新这么多条
+    {% endif %}。切分组：
+    {% for gid, name in groups %}
+      {% if gid == group_id %}<span class="current">{{ name }}</span>
+      {% else %}<a href="{{ url_for('account.account_page', groupid=gid) }}">{{ name }}</a>{% endif %}
+      {% if not loop.last %} · {% endif %}
+    {% endfor %}
+  </p>
+
+  {% if transaction_table.title_link %}
+    {# PHP 的 $bAll 为假时：标题是"交易记录"链接、页脚为空。
+       两者在同一时刻只有一个有内容（见 transaction_service 的说明）。 #}
+    <p class="table-note">{{ transaction_table.title_link|safe }}（PHP 把它当表格标题）</p>
+  {% endif %}
+
+  {{ data_table(transaction_table, "transaction-table") }}
+
+  <p class="table-note">
+    备注格是<strong>三个部分拼出来的</strong>：清空链接 + 备注原文 + 校准链接，
+    原文夹在两个链接中间。校准链接只在备注含<code>申购</code>时出现，
+    且净值不等于成交价时才追加 —— <code>SZ161125</code> 那一行<code>2.0950</code>
+    对<code>2.0950</code>，所以只有清空链接。操作格是"修改 + 空格 + 删除"，
+    只读且非管理员时两边都空，留下<strong>一个空格</strong>而不是空串。
+  </p>
+
+  <h2>{% if money_table.title_link %}{{ money_table.title_link|safe }}{% endif %}{{ money_table.title }}</h2>
+  {{ data_table(money_table, "money-table", first_cell_is_html=True) }}
+
+  <p class="table-note">
+    一行 = 一个分组的一种货币。<strong>人民币行恒有</strong>，美元行与港币行
+    按 <code>empty()</code> 判定 —— 分组「A股与港股」只有港币行、分组
+    「QDII与美股」只有美元行、<code>全部</code> 三行都有。中间两列是该币种
+    原始桶的数，右边两列是"折成人民币之后"再按该币种单位表示的数，
+    所以三行的"全部持有"口径不同但指向同一个人民币总数。
+    末列「测试」只对 <code>全部</code> 行出现，且按会员邮箱分两种算法
+    —— 演示页没有注入邮箱（等价于没登录），于是这一列不出现。
+  </p>
+
+  <p><a href="{{ url_for('main.index') }}">返回首页</a></p>
+{% endblock %}

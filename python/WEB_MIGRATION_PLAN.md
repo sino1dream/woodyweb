@@ -213,6 +213,26 @@ Flask 路由
    （`_stockaccount.php:207`，单分组原始数组）服务层已验证
    （`RawGroupArrayTest`），页面外壳仍随账号体系暂缓。
    记 pitfalls 第 49 条（`foreach` 键泄漏"碰巧正确" + PHP 数组键铸 `false` 为 `0`）。
+   **第 12 轮（交易明细 + 资金汇总）**：同条线上的另两个段落 ——
+   `php/ui/transactionparagraph.php` → `web/services/transaction_service.py`、
+   `_stockaccount.php:213 EchoMoneyParagraphs` + `_stock.php:13-91` →
+   `web/services/money_service.py`，底层模型
+   `php/class/multi_currency.php` + `php/stockgroup.php` →
+   `auto/core/stockgroup.py`。`/account` 演示页（可切分组）把两段并在一起，
+   `stockgroup` 三张表与账号体系仍暂缓。
+   三处新机制：① `TableRow.html_indexes` —— 备注格（清空链接 + 原文 +
+   校准链接）与操作格（修改 + 删除）是**拼好的 HTML 且带 `onclick`**，
+   现有 `hrefs` 与 `first_cell_is_html` 都表达不了，于是按格子下标开口子；
+   ② `ref/stocklink.py` 补五个链接助手；
+   ③ `historytable._trim_number_text` 修负零（数字层，全站受益）。
+   PHP 逐例对照 **481 例 0 差异**，注入自检三类旧 bug
+   （操作格空格、`empty()` 闸门、PHP 松散比较）分别复现 90 / 40 / 5 处。
+   抓到两个真 bug：清空链接的确认文字漏了「确认」（**单测也照着错的写**，
+   见 pitfalls 第 53 条）、负零不归零（pitfalls 第 51 条）。
+   详见 `python/auto/README_account_migration.md`。
+   **仍未迁**：三个整页 `_mystock.php` / `_mystockgroup.php` /
+   `_mystocktransaction.php` 的外壳（登录、`GetGroupSql()`、
+   `StockEditTransactionForm` / `StockMergeTransactionForm`），等账号体系。
 5. `php/layout.php`、`php/menu.php`、`php/stocklink.php`：站点布局和导航。
 
 第 1、2、3 步已经落地：
