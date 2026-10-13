@@ -230,9 +230,21 @@ Flask 路由
    抓到两个真 bug：清空链接的确认文字漏了「确认」（**单测也照着错的写**，
    见 pitfalls 第 53 条）、负零不归零（pitfalls 第 51 条）。
    详见 `python/auto/README_account_migration.md`。
-   **仍未迁**：三个整页 `_mystock.php` / `_mystockgroup.php` /
-   `_mystocktransaction.php` 的外壳（登录、`GetGroupSql()`、
-   `StockEditTransactionForm` / `StockMergeTransactionForm`），等账号体系。
+   **第 13 轮（分组页 + 交易页）**：把"账号体系阻塞、且能用已迁服务演示接出"
+   的两页迁成演示页 —— `_mystockgroup.php` 的 `mystockgroup` 分支 → `/group`
+   （单组交易明细 + 该组资金汇总，无"全部"行）、`_mystocktransaction.php` →
+   `/transactions`（分组交易明细，支持 `?symbol=` 过滤）。复用第 12 轮的
+   `transaction_service` / `money_service`，演示数据抽到共用模块
+   `web/routes/account_demo_data.py`（账户 / 分组 / 交易三页一起复用，避免
+   三份重复）；`/account` 同步重构为从该模块导入。导航与首页加入口。
+   `_mystock.php` 的主体是整条 stock-detail 渲染栈（trading/sma/fundest/ah…
+   ），**远大于账号体系阻塞**，列为后续大项，本轮只迁了它的"我的交易"叠加
+   （已并入 `/group`、`/transactions`、`/account`）。测试：web **617** OK
+   （+14）、auto 988 OK、compileall 双绿。详见
+   `python/auto/README_group_transactions_migration.md`。
+   **仍未迁**：`_mystock.php` 个股详情大页（整条详情渲染栈）；三个整页的外壳
+   （登录、`GetGroupSql()`、`StockEditTransactionForm` /
+   `StockMergeTransactionForm`）仍随账号体系暂缓。
 5. `php/layout.php`、`php/menu.php`、`php/stocklink.php`：站点布局和导航。
 
 第 1、2、3 步已经落地：

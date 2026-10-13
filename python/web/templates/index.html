@@ -29,5 +29,9 @@
     <li><a href="{{ url_for('portfolio.portfolio_page') }}">投资组合</a>（对应 PHP 的 <code>portfolioparagraph.php</code>，演示数据）</li>
     {# 账户（woody/res/mystockgroupcn.php 的账号两段）—— 演示数据，见 routes/account.py 的说明 #}
     <li><a href="{{ url_for('account.account_page') }}">账户</a>（对应 PHP 的 <code>transactionparagraph.php</code> 与 <code>EchoMoneyParagraphs()</code>，演示数据）</li>
+    {# 分组（_mystockgroup.php 的 mystockgroup 分支）—— 单组交易+资金，演示数据 #}
+    <li><a href="{{ url_for('group.group_page') }}">分组</a>（对应 PHP 的 <code>_mystockgroup.php</code> 的 <code>mystockgroup</code> 分支，演示数据）</li>
+    {# 交易管理（_mystocktransaction.php）—— 分组交易明细，演示数据 #}
+    <li><a href="{{ url_for('transactions.transactions_page') }}">交易</a>（对应 PHP 的 <code>_mystocktransaction.php</code>，演示数据）</li>
   </ul>
 {% endblock %}

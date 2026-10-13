@@ -17,6 +17,10 @@
       <a href="{{ url_for('portfolio.portfolio_page') }}">投资组合</a>
       {# 账户页（woody/res/mystockgroupcn.php 的账号两段）—— 同样是演示数据 #}
       <a href="{{ url_for('account.account_page') }}">账户</a>
+      {# 分组页（_mystockgroup.php 的 mystockgroup 分支）—— 单组交易+资金，演示数据 #}
+      <a href="{{ url_for('group.group_page') }}">分组</a>
+      {# 交易管理页（_mystocktransaction.php）—— 分组交易明细，演示数据 #}
+      <a href="{{ url_for('transactions.transactions_page') }}">交易</a>
       <a href="{{ url_for('status.status_page') }}">状态</a>
     </nav>
   </header>

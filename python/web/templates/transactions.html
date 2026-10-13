@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% from "_data_table.html" import data_table %}
+{% block title %}交易 - 基金估值{% endblock %}
+{% block content %}
+  {# 分组交易管理页（woody/res/php/_mystocktransaction.php 的 EchoAll）。
+
+     对应 PHP 的 EchoTransactionParagraph($acct, $groupId) —— 整组的交易明细，
+     带 ?symbol= 时只看那一支标的。备注格 / 操作格是拼好的 HTML，走
+     row.html_indexes 透传，说明同 /account、/group。 #}
+  <h1>交易</h1>
+  <p class="group-description">
+    分组交易明细，对应 PHP 的 <code>EchoTransactionParagraph()</code>
+    （<code>php/ui/transactionparagraph.php</code>）。这是
+    <code>_mystocktransaction.php</code> 迁出的演示页 —— 真实页面是登录后按分组
+    管理交易记录（含编辑 / 删除链接），演示页用写死的样例。
+  </p>
+
+  <p class="hint">
+    <strong>演示数据</strong>：演示库没有 <code>stocktransaction</code> 表、账号体系
+    也暂缓，所以这里用一份写死的样例。价格与净值都是样例值。其余链接指向 PHP
+    页面，在这个演示环境里点不通。
+  </p>
+
+  <h2>交易明细（{{ group_name }}{% if symbol %} · {{ symbol }}{% endif %}）</h2>
+  <p class="table-note">
+    当前{% if symbol %}该标的{% else %}分组{% endif %} {{ record_count }} 条，
+    按 PHP 的 <code>TABLE_COMMON_DISPLAY</code>（{{ table_common_display }}）只显示最新这么多条。
+    切分组：
+    {% for gid, name in groups %}
+      {% if gid == group_id %}<span class="current">{{ name }}</span>
+      {% else %}<a href="{{ url_for('transactions.transactions_page', groupid=gid) }}">{{ name }}</a>{% endif %}
+      {% if not loop.last %} · {% endif %}
+    {% endfor %}
+  </p>
+
+  {% if transaction_table.title_link %}
+    {# PHP 的 $bAll 为假时：标题是"交易记录"链接、页脚为空。 #}
+    <p class="table-note">{{ transaction_table.title_link|safe }}（PHP 把它当表格标题）</p>
+  {% endif %}
+
+  {{ data_table(transaction_table, "transaction-table") }}
+
+  <p class="table-note">
+    备注格是<strong>三个部分拼出来的</strong>：清空链接 + 备注原文 + 校准链接，
+    原文夹在两个链接中间。校准链接只在备注含<code>申购</code>时出现，
+    且净值不等于成交价时才追加。操作格是"修改 + 空格 + 删除"，只读且非管理员时
+    两边都空，留下<strong>一个空格</strong>而不是空串。
+  </p>
+
+  <p><a href="{{ url_for('main.index') }}">返回首页</a></p>
+{% endblock %}
