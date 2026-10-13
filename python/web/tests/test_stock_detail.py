@@ -104,6 +104,111 @@ class FakeHistoryService:
         return {"title": kind, "columns": [], "rows": []}
 
 
+class FakeEstRef:
+    """第 2 分支（``FundPairReference``）的替身，**带三个 EST 方法**。
+
+    ``fundest_service`` 靠 ``_invoke`` 探测 ``get_fair_net_value`` /
+    ``get_realtime_net_value`` 决定要不要多画两列（参考 / 实时 EST），
+    所以这个类必须把它们都实现出来 —— 少了任何一个，页面就少一档数据，
+    而测试所要验证的正是"这一层迁过来之后它们有没有被接上"。
+
+    每个方法被调用时都记账，测试据此断言消费链路真的通了。
+    """
+
+    def __init__(self, symbol="^NDX", official=100.0, fair=101.0, realtime=99.0):
+        self._symbol = symbol
+        self._official = official
+        self._fair = fair
+        self._realtime = realtime
+        self.calls = []
+
+    def _log(self, name):
+        self.calls.append(name)
+
+    def get_symbol(self):
+        return self._symbol
+
+    def get_stock_link(self):
+        return self._symbol
+
+    def get_official_net_value(self):
+        self._log("get_official_net_value")
+        return self._official
+
+    def get_fair_net_value(self):
+        self._log("get_fair_net_value")
+        return self._fair
+
+    def get_realtime_net_value(self):
+        self._log("get_realtime_net_value")
+        return self._realtime
+
+    def get_official_date(self):
+        self._log("get_official_date")
+        return "2026-01-05"
+
+    def get_price_display(self, value=False):
+        self._log("get_price_display")
+        return "%.2f" % (value if value else 0.0)
+
+    def has_data(self):
+        """``RefHasData()``（``stockcomm.php:3``）—— **没有它整行会被跳过**。
+
+        ``fundest_service._row`` 开头就是 ``if not ref_has_data(ref): return None``，
+        而真实的 ``FundPairReference`` 从 ``MysqlReference`` 继承到了这个方法。
+        演示库里的 ``TQQQ`` 之所以没有估值表，就是因为它在库里没行情、
+        ``has_data`` 为假 —— PHP 那边同样跳过，属于正确行为。
+        """
+        return True
+
+    def get_percentage_text(self, value=False):
+        self._log("get_percentage_text")
+        return "1.00%"
+
+    def __repr__(self):
+        return "FakeEstRef(%s)" % self._symbol
+
+
+class RecordingFundEst:
+    """``FundEstService`` 替身：记下收到的 refs，返回一张带标记的假表。
+
+    用替身而不是真服务，是因为真服务要查符号名称（连库）；
+    而这里要验的是"**是不是把它接上了**"，不是"它内部怎么算"。
+    """
+
+    def __init__(self):
+        self.refs_seen = []
+        #: ``hrefs`` / ``href`` 不能少 —— ``_data_table.html`` 会对每一行取
+        #: ``row.hrefs.get(index)``，缺了它会抛 UndefinedError 而不是留空白。
+        self.table = {
+            "id": "estimation",
+            "title": "估值",
+            "columns": [{"text": "代码"}],
+            "rows": [{"cells": ["^NDX"], "hrefs": {}, "href": ""}],
+        }
+
+    def get_table(self, refs, wide=False, title=None, sort=None):
+        self.refs_seen.extend(refs)
+        return self.table
+
+
+class FakePairSource:
+    """假数据源：只回答"这条符号有没有配对记录"。"""
+
+    def __init__(self, pairs=None):
+        self.pairs = pairs or {}
+
+    def get_stock_id(self, symbol):
+        return "1"
+
+
+class _SourceHolder:
+    """``create_app`` 的 ``reference_service_factory`` 要一个对象给它取 ``source``。"""
+
+    def __init__(self, source):
+        self.source = source
+
+
 class StockDetailServiceTest(unittest.TestCase):
     """段落组装：三张对比表 + 均线四个槽位 + 尾部三段。"""
 
@@ -350,6 +455,149 @@ class StockDetailRouteTest(unittest.TestCase):
         html = self.client.get("/stock/SZ162411").get_data(as_text=True)
         self.assertIn('href="/stock"', html)
         self.assertIn("返回股票列表", html)
+
+
+class FundPairDetailTest(unittest.TestCase):
+    """``get_fund_pair_detail`` —— ``_mystock.php:131`` 第 2 分支（CK2b）。
+
+    ref 直接注入而不走 ``StockGetFundPairReference``：真实类的构造要连库，
+    而这里要验的是**段落组装**与**EST 那几个方法有没有被接上**。
+    """
+
+    def setUp(self):
+        self.ref = FakeEstRef()
+        self.fundest = RecordingFundEst()
+        self.sma = FakeSmaService()
+        self.history = FakeHistoryService()
+
+    def _detail(self, **kwargs):
+        svc = sds.StockDetailService(source=None)
+        return svc.get_fund_pair_detail(
+            "^NDX", ref=self.ref, sma_service=self.sma,
+            history_service=self.history, fundest_service=self.fundest, **kwargs)
+
+    def test_returns_none_without_ref(self):
+        """ref 建不出来返回 ``None`` —— 由路由层退化到第 4 分支。"""
+        svc = sds.StockDetailService(source=None)
+        self.assertIsNone(svc.get_fund_pair_detail("ZZ999", ref=None))
+
+    def test_branch_marker(self):
+        """``branch`` 字段不能删 —— 模板靠它避开 Undefined 链式访问。
+
+        Jinja 里写 ``detail.sma.ah_pair`` 而 dict 没有 ``sma`` 键时会抛
+        ``UndefinedError`` 而不是返回假值，所以两个分支必须显式区分。
+        """
+        self.assertEqual(self._detail()["branch"], "fundpair")
+
+    def test_generic_branch_marker(self):
+        """第 4 分支的标记同样要有，两个分支各管一段渲染。"""
+        svc = sds.StockDetailService(source=None)
+        detail = svc.get_detail("SZ162411", ref=FakeRef("SZ162411"),
+                                sma_service=self.sma, history_service=self.history)
+        self.assertEqual(detail["branch"], "generic")
+
+    def test_est_table_uses_fundest_service(self):
+        """``EchoFundArrayEstParagraph`` 走的是注入的估值服务。"""
+        detail = self._detail()
+        self.assertIs(detail["est"], self.fundest.table)
+        self.assertEqual(len(self.fundest.refs_seen), 1)
+        self.assertIs(self.fundest.refs_seen[0], self.ref)
+
+    def test_est_methods_actually_consumed(self):
+        """三个 EST 方法被真正调用 —— **CK2b 迁移的意义就在这儿**。
+
+        **这里必须用真实的 ``FundEstService``，不能用替身**：替身压根不会去调
+        ref 上的方法，这条断言会永远成立 —— 等于替身把缺口盖住了（同 AGENTS.md
+        里"替身多实现一个方法把缺口盖住"那条踩过的坑）。
+
+        ``fundest_service`` 探测它们决定列数：只有官方档是 3 列，有参考 /
+        实时估值时加到 5 / 7 列。换句说，这一层迁不迁，页面上少的就是两"档"
+        数据，而不只是"代码里少几个方法"。
+        """
+        from web.services.fundest_service import FundEstService
+
+        ref = FakeEstRef()
+        table = FundEstService(source=None).get_table([ref])
+        self.assertIsNotNone(table, "真实的估值表应当能画出来")
+
+        called = set(ref.calls)
+        self.assertIn("get_official_net_value", called)
+        self.assertIn("get_fair_net_value", called)
+        self.assertIn("get_realtime_net_value", called)
+
+    def test_real_fund_pair_reference_has_est_methods(self):
+        """真实的 ``FundPairReference`` **必须**提供这四个方法。
+
+        上一条测的是"消费方会不会调用"，这一条测的是"生产方有没有提供" ——
+        **两条都不能少**：只留上一条时，替身自己带着这三个方法，把真实类里的
+        方法改个名照样全绿（变异测试确认过）。穷的时候正是这样漏的：
+        ``fundest_service`` 靠 ``_invoke`` 探测，方法不存在时不报错、
+        只是悄悄少两列 —— 页面上少的是"档"，不是报错。
+        """
+        from ref.refobj import FundPairReference
+
+        for name in ("get_official_net_value", "get_fair_net_value",
+                     "get_realtime_net_value", "get_official_date"):
+            #: 查 ``__dict__`` 而不是 ``hasattr`` —— 继承链上本来就有这四个方法
+            #: （``FundReference`` 里的同名 getters），``hasattr`` 恒为真、把
+            #: "本类没覆盖"这个缺口藏住。这里要钉的是**本类重写了**它们。
+            self.assertIsNotNone(
+                FundPairReference.__dict__.get(name),
+                "%s 应当在 FundPairReference 里被覆盖" % name,
+            )
+            #: camelCase 别名同样要有 —— ``_invoke`` 两条腿走路
+            camel = "".join(part.capitalize() for part in name.split("_"))
+            self.assertTrue(hasattr(FundPairReference, camel), camel)
+
+    def test_sma_and_history_sections_present(self):
+        detail = self._detail()
+        self.assertIsNotNone(detail["fund_pair_sma"])
+        names = [call[0] for call in self.sma.calls]
+        self.assertIn("fund_pair_table", names)
+        self.assertIsNotNone(detail["stockhistory"])
+
+    def test_none_when_service_missing(self):
+        """没注入服务时段落为 ``None`` 而不是崩 —— 缺什么少什么。"""
+        svc = sds.StockDetailService(source=None)
+        detail = svc.get_fund_pair_detail("^NDX", ref=self.ref)
+        self.assertIsNone(detail["est"])
+        self.assertIsNone(detail["fund_pair_sma"])
+
+
+class FundPairRouteTest(unittest.TestCase):
+    """``/stock/<symbol>`` 的第 2 分支渲染（离线）。"""
+
+    def setUp(self):
+        from web.app import create_app
+
+        #: 假 source：带一条 fundpair 记录，够工厂的门禁通过就好
+        from unittest.mock import patch
+
+        fake_source = FakePairSource({"^NDX": "hf_NQ"})
+        self.app = create_app(
+            {"TESTING": True},
+            reference_service_factory=lambda: _SourceHolder(fake_source),
+            sma_service_factory=lambda: FakeSmaService(),
+            history_service_factory=lambda: FakeHistoryService(),
+            fundest_service_factory=lambda: RecordingFundEst(),
+        )
+        self.client = self.app.test_client()
+        self.ref = FakeEstRef()
+        target = "web.services.stock_detail_service.StockGetFundPairReference"
+        self._patch = patch(target, lambda symbol, source=None, **kw: (
+            self.ref if symbol == "^NDX" else None))
+        self._patch.start()
+        self.addCleanup(self._patch.stop)
+
+    def test_fundpair_branch_renders_est(self):
+        html = self.client.get("/stock/^NDX").get_data(as_text=True)
+        self.assertIn("est-table", html)
+        self.assertIn("估值", html)
+
+    def test_non_paired_symbol_falls_through_to_generic(self):
+        """没有配对记录的符号不能因为 Jinja 缺键就 500。"""
+        response = self.client.get("/stock/SZ162411")
+        self.assertEqual(response.status_code, 200)
 
 
 if __name__ == "__main__":

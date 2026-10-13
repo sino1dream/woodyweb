@@ -106,8 +106,8 @@ python -B -m unittest discover -s auto -p "test_*.py"        # 222 个
 python -B -m unittest discover -s web\tests -p "test_*.py"   # 30 个
 ```
 
-`python\auto` 自 2026-10-12 起按职责分成子包（`core` / `sql` / `source` /
-`calc` / `ref` / `updater` / `ui` / `cli` / `_scratch`），测试文件仍留在根目录，
+`python\auto` 自 2026-10-12 起按职责分成子包（`core` / `sql` / `source` /  
+`calc` / `ref` / `updater` / `ui` / `cli` / `_scratch`），测试文件仍留在根目录，  
 所以测试还是要在该目录内运行，让 `python/auto` 进 `sys.path`：
 
 ```powershell
@@ -148,156 +148,111 @@ Flask 路由
    到 `/fund/<symbol>`）。**第 2 轮**：`pricepoolparagraph` → `auto/pricepool.py`、  
    `ahparagraph` → `web/services/pair_service.py`、`fundestparagraph` →  
    `web/services/fundest_service.py`，并抽出 `web/templates/_data_table.html` 宏。  
-   **第 3 轮**：`tradingparagraph` → `web/services/trading_service.py`、
-   `stockparagraph` → `web/services/stock_service.py`（含五档盘口进快照表）。
-   **第 4 轮**：`smaparagraph` → `web/services/sma_service.py`，外加两个
-   支撑模块 `auto/pairestimate.py`（配对双向估算）与
+   **第 3 轮**：`tradingparagraph` → `web/services/trading_service.py`、     
+   `stockparagraph` → `web/services/stock_service.py`（含五档盘口进快照表）。     
+   **第 4 轮**：`smaparagraph` → `web/services/sma_service.py`，外加两个     
+   支撑模块 `auto/pairestimate.py`（配对双向估算）与     
    `auto/futurepremium.py`（期货理论溢价，走 `futurepremium` 表）。  
-   **第 5 轮**：`calibrationhistoryparagraph` → `web/services/calibration_service.py`
-   （详情页两张「校准记录」，复用历史服务而不是重写取数），以及
-   `_qdiigroup.php` 的 `_tradingUserDefined` → `web/services/qdii_trading_column.py`
+   **第 5 轮**：`calibrationhistoryparagraph` → `web/services/calibration_service.py`     
+   （详情页两张「校准记录」，复用历史服务而不是重写取数），以及     
+   `_qdiigroup.php` 的 `_tradingUserDefined` → `web/services/qdii_trading_column.py`     
    （五档表最后一列「换算价」），附 PHP 逐项对照 5 例全一致。  
-   详见 `python/auto/README_calibration_record.md` 与
+   详见 `python/auto/README_calibration_record.md` 与     
    `python/auto/README_qdii_trading_column.md`。  
-   **第 6 轮**：`fundlistparagraph` 带回调那一版 →
-   `web/services/qdii_fund_list.py`（详情页「基金指数对照表」，末列「对冲值」
-   由 `_callbackFundListHedge` 提供；公式复用已迁好的
-   `stockdata.get_stock_hedge`），附 PHP 逐项对照 5 例一致、2 条已知差异、
-   自检 4/4。详见 `python/auto/README_qdii_fund_list.md`。
-   **第 7 轮**：`_qdiigroup.php:101 EchoFundPairSmaParagraphs` —— 每个杠杆标的
-   各一张均线表，服务层复用已有的 `SmaService.fund_pair_tables()`，本轮只补
-   接线（`web/routes/fund.py`）、模板循环与测试（`fund_pair_tables` 此前零覆盖）。
-   PHP 逐项对照 5 例 0 差异（列组装用 PHP 自己的 `TableColumn` 真身）、自检 4/4。
-   顺带修掉 `_stock_column` 漏掉的 maroon 染色（同时影响 `EchoQdiiSmaParagraph`）。
-   详见 `python/auto/README_qdii_fund_pair_sma.md`。
-   **第 8 轮**：补 `php/stock/fundref.php:19` 那句
-   `if ($this->IsFundA()) $this->stock_ref = new MyStockReference($strSymbol)` ——
-   `FundReference.__init__` 现在自动建 stock_ref，`MyStockReference` 未迁、
-   由 `MysqlReference` 顶上（同样读库快照行情）。修掉了 QDII 均线换算列整列
-   空白的问题。改共享构造，所以按规矩先留页面基线再改：受影响面只有那一列，
-   其余九张表一行未动。PHP 逐例对照 5 例 0 差异（验的是四个委托方法的转发与
-   参数个数）、自检 4/4。详见 `python/auto/README_stock_ref_autobuild.md`。
-   **第 9 轮（分类页）**：`woody/res/qdiicn.php` → `/qdii`，本项目第一个
-   **按分类汇总**的基金页。装配套 `func:`web.services.qdii_page_service`
-   （PHP `_mystockgroup.php:_echoStockGroupArray` 的 foreach：非宽屏时全部
+   **第 6 轮**：`fundlistparagraph` 带回调那一版 →     
+   `web/services/qdii_fund_list.py`（详情页「基金指数对照表」，末列「对冲值」     
+   由 `_callbackFundListHedge` 提供；公式复用已迁好的     
+   `stockdata.get_stock_hedge`），附 PHP 逐项对照 5 例一致、2 条已知差异、     
+   自检 4/4。详见 `python/auto/README_qdii_fund_list.md`。     
+   **第 7 轮**：`_qdiigroup.php:101 EchoFundPairSmaParagraphs` —— 每个杠杆标的     
+   各一张均线表，服务层复用已有的 `SmaService.fund_pair_tables()`，本轮只补     
+   接线（`web/routes/fund.py`）、模板循环与测试（`fund_pair_tables` 此前零覆盖）。     
+   PHP 逐项对照 5 例 0 差异（列组装用 PHP 自己的 `TableColumn` 真身）、自检 4/4。     
+   顺带修掉 `_stock_column` 漏掉的 maroon 染色（同时影响 `EchoQdiiSmaParagraph`）。     
+   详见 `python/auto/README_qdii_fund_pair_sma.md`。     
+   **第 8 轮**：补 `php/stock/fundref.php:19` 那句     
+   `if ($this->IsFundA()) $this->stock_ref = new MyStockReference($strSymbol)` ——     
+   `FundReference.__init__` 现在自动建 stock_ref，`MyStockReference` 未迁、     
+   由 `MysqlReference` 顶上（同样读库快照行情）。修掉了 QDII 均线换算列整列     
+   空白的问题。改共享构造，所以按规矩先留页面基线再改：受影响面只有那一列，     
+   其余九张表一行未动。PHP 逐例对照 5 例 0 差异（验的是四个委托方法的转发与     
+   参数个数）、自检 4/4。详见 `python/auto/README_stock_ref_autobuild.md`。     
+   **第 9 轮（分类页）**：`woody/res/qdiicn.php` → `/qdii`，本项目第一个     
+   **按分类汇总**的基金页。装配套 `func:`web.services.qdii_page_service`（PHP`\_mystockgroup.php:\_echoStockGroupArray`的 foreach：非宽屏时全部
    符号进参考数据表、A 股基金且有官方净值的另进 EST 表），两张表分别复用
-   已有的 `reference_service` / `fundest_service`。
-   ① **符号数以生产端为准**：本地 PHP 仓库的 `QdiiGetSymbolArray()` 是 33 个，
+   已有的`reference_service`/`fundest_service`。
+   ① **符号数以生产端为准**：本地 PHP 仓库的 `QdiiGetSymbolArray()`是 33 个，
    生产端（2026-10-12 抓取）已是 **41 个**；逐个抓了 qqqfund / spyfund /
    mscius50 / commodity / oilfund 五个子页面，确认多出的 8 只系"额外并入
-   qdii"而非从原分组搬走，且整块追加在 SPY 组之后 —— 据此改
-   `core/stocksymbol.py` 并逐位对齐（顺带影响 qdiilof 22→26、qdiietf 21→25）。
-   ② **抓出一个真 bug**：`MysqlReference.GetStockLink` 被错别名成
-   `get_external_link`，估值表首格于是渲染成新浪外链，而生产端是站内详情页
+   qdii"而非从原分组搬走，且整块追加在 SPY 组之后 —— 据此改`core/stocksymbol.py` 并逐位对齐（顺带影响 qdiilof 22→26、qdiietf 21→25）。
+   ② **抓出一个真 bug**：`MysqlReference.GetStockLink`被错别名成`get_external_link`，估值表首格于是渲染成新浪外链，而生产端是站内详情页
    `res/<sym>cn.php`。详情页只有一张表所以一直没暴露，是分类页把两张表
-   摆到一起、用 `_scratch/_prod_qdiipage_compare.py` 逐格比 href 才发现的。
-   新建 `auto/ref/stocklink.py` 修掉，并留了一条"两个链接必须不相等"的
-   回归测试。详见 `python/auto/README_qdii_page_migration.md`。
-   **仍未迁**：`stockgroup` / `fundpurchase` / `transaction` / `comment`
-   （都要等账号登录体系）。
-   **已迁但受数据所限**：ETF（如 `SH513100`）走即期外汇分支，演示库
-   `fx_susdcny` 无行情快照，换算格仍为空 —— 列头已正确。
-   **第 10 轮（投资组合）**：`php/ui/portfolioparagraph.php` →
-   `web/services/portfolio_service.py` + `auto/core/stocktrans.py`，
-   `/portfolio` 演示页（内存交易集，`stockgroup` 三张表与账号体系暂缓）。
-   PHP 逐例对照 **86 例 0 差异**，并抓到一个真 bug：
-   `_getArbitrageTestStr()` 的 `while ($record = fetch())` 在**自然耗尽时
+   摆到一起、用 `\_scratch/\_prod_qdiipage_compare.py`逐格比 href 才发现的。
+   新建`auto/ref/stocklink.py`修掉，并留了一条"两个链接必须不相等"的
+   回归测试。详见`python/auto/README_qdii_page_migration.md`。 **仍未迁**：`stockgroup`/`fundpurchase`/`transaction`/`comment`（都要等账号登录体系）。 **已迁但受数据所限**：ETF（如`SH513100`）走即期外汇分支，演示库
+   `fx_susdcny` 无行情快照，换算格仍为空 —— 列头已正确。 **第 10 轮（投资组合）**：`php/ui/portfolioparagraph.php`→`web/services/portfolio_service.py`+`auto/core/stocktrans.py`，
+   `/portfolio` 演示页（内存交易集，`stockgroup`三张表与账号体系暂缓）。
+   PHP 逐例对照 **86 例 0 差异**，并抓到一个真 bug：`_getArbitrageTestStr()`的`while ($record = fetch())` 在**自然耗尽时
    把 null 写回 `$record`**，初版误实现成"取最后一行"（pitfalls 第 47 条）。
-   详见 `python/auto/README_portfolio_migration.md`。
-   **第 11 轮（合并段落 + 第二调用点）**：同页第三张表
-   `_transEchoMergeParagraph` / `_echoMergeParagraph`（`_myportfolio.php:51-119`）
-   一并迁入 `portfolio_service.py`（`merge_transactions_by_symbol` /
-   `build_merge_table`），演示页加第二个分组让 KWEB/SPY 有符号重叠。
+   详见 `python/auto/README_portfolio_migration.md`。 **第 11 轮（合并段落 + 第二调用点）**：同页第三张表
+   `_transEchoMergeParagraph`/`_echoMergeParagraph`（`_myportfolio.php:51-119`）
+   一并迁入 `portfolio_service.py`（`merge_transactions_by_symbol`/`build_merge_table`），演示页加第二个分组让 KWEB/SPY 有符号重叠。
    PHP 逐例对照扩到 **125 例 0 差异**（+39），注入自检三类旧 bug
    （吞并、KWEB 口径、耗尽路径）全部精确复现。第二调用点
    （`_stockaccount.php:207`，单分组原始数组）服务层已验证
    （`RawGroupArrayTest`），页面外壳仍随账号体系暂缓。
-   记 pitfalls 第 49 条（`foreach` 键泄漏"碰巧正确" + PHP 数组键铸 `false` 为 `0`）。
-   **第 12 轮（交易明细 + 资金汇总）**：同条线上的另两个段落 ——
-   `php/ui/transactionparagraph.php` → `web/services/transaction_service.py`、
-   `_stockaccount.php:213 EchoMoneyParagraphs` + `_stock.php:13-91` →
-   `web/services/money_service.py`，底层模型
-   `php/class/multi_currency.php` + `php/stockgroup.php` →
-   `auto/core/stockgroup.py`。`/account` 演示页（可切分组）把两段并在一起，
-   `stockgroup` 三张表与账号体系仍暂缓。
-   三处新机制：① `TableRow.html_indexes` —— 备注格（清空链接 + 原文 +
-   校准链接）与操作格（修改 + 删除）是**拼好的 HTML 且带 `onclick`**，
-   现有 `hrefs` 与 `first_cell_is_html` 都表达不了，于是按格子下标开口子；
-   ② `ref/stocklink.py` 补五个链接助手；
-   ③ `historytable._trim_number_text` 修负零（数字层，全站受益）。
+   记 pitfalls 第 49 条（`foreach`键泄漏"碰巧正确" + PHP 数组键铸`false`为`0`）。 **第 12 轮（交易明细 + 资金汇总）**：同条线上的另两个段落 ——
+   `php/ui/transactionparagraph.php`→`web/services/transaction_service.py`、
+   `_stockaccount.php:213 EchoMoneyParagraphs`+`_stock.php:13-91`→`web/services/money_service.py`，底层模型
+   `php/class/multi_currency.php`+`php/stockgroup.php`→`auto/core/stockgroup.py`。`/account`演示页（可切分组）把两段并在一起，`stockgroup`三张表与账号体系仍暂缓。
+   三处新机制：①`TableRow.html_indexes`—— 备注格（清空链接 + 原文 +
+   校准链接）与操作格（修改 + 删除）是**拼好的 HTML 且带`onclick`**，
+   现有 `hrefs`与`first_cell_is_html`都表达不了，于是按格子下标开口子；
+   ②`ref/stocklink.py`补五个链接助手；
+   ③`historytable.\_trim_number_text` 修负零（数字层，全站受益）。
    PHP 逐例对照 **481 例 0 差异**，注入自检三类旧 bug
-   （操作格空格、`empty()` 闸门、PHP 松散比较）分别复现 90 / 40 / 5 处。
+   （操作格空格、`empty()`闸门、PHP 松散比较）分别复现 90 / 40 / 5 处。
    抓到两个真 bug：清空链接的确认文字漏了「确认」（**单测也照着错的写**，
    见 pitfalls 第 53 条）、负零不归零（pitfalls 第 51 条）。
-   详见 `python/auto/README_account_migration.md`。
-   **第 13 轮（分组页 + 交易页）**：把"账号体系阻塞、且能用已迁服务演示接出"
-   的两页迁成演示页 —— `_mystockgroup.php` 的 `mystockgroup` 分支 → `/group`
-   （单组交易明细 + 该组资金汇总，无"全部"行）、`_mystocktransaction.php` →
-   `/transactions`（分组交易明细，支持 `?symbol=` 过滤）。复用第 12 轮的
-   `transaction_service` / `money_service`，演示数据抽到共用模块
+   详见`python/auto/README_account_migration.md`。 **第 13 轮（分组页 + 交易页）**：把"账号体系阻塞、且能用已迁服务演示接出"
+   的两页迁成演示页 —— `_mystockgroup.php`的`mystockgroup`分支 →`/group`
+   （单组交易明细 + 该组资金汇总，无"全部"行）、`_mystocktransaction.php`→`/transactions`（分组交易明细，支持 `?symbol=`过滤）。复用第 12 轮的`transaction_service`/`money_service`，演示数据抽到共用模块
    `web/routes/account_demo_data.py`（账户 / 分组 / 交易三页一起复用，避免
-   三份重复）；`/account` 同步重构为从该模块导入。导航与首页加入口。
-   `_mystock.php` 的主体是整条 stock-detail 渲染栈（trading/sma/fundest/ah…
+   三份重复）；`/account`同步重构为从该模块导入。导航与首页加入口。`_mystock.php`的主体是整条 stock-detail 渲染栈（trading/sma/fundest/ah…
    ），**远大于账号体系阻塞**，列为后续大项，本轮只迁了它的"我的交易"叠加
-   （已并入 `/group`、`/transactions`、`/account`）。测试：web **617** OK
+   （已并入`/group`、`/transactions`、`/account`）。测试：web **617** OK
    （+14）、auto 988 OK、compileall 双绿。详见
-   `python/auto/README_group_transactions_migration.md`。
-   **第 14 轮（_mystock.php 详情栈 · CK1 快赢）**：启动 `_mystock.php` 个股详情大页
+   `python/auto/README_group_transactions_migration.md`。 **第 14 轮（_mystock.php 详情栈 · CK1 快赢）**：启动 `_mystock.php` 个股详情大页
    这条大线。先做了侦察，结论比预期关键 —— 详情栈的**服务层大部分已迁**，真正卡住
    整条非基金详情线的是底层**配对引用层**（`php/stock/fundpairref.php`，约 278 行，
-   含 `MyPairReference` / `FundPairReference` / `HoldingsReference` 及
-   `StockGetFundPairReference` / `StockGetHoldingsReference` / `StockGetPairReferences`
-   ），**尚未迁入 `auto/ref/refobj.py`**（refobj.py:523、pair_service.py 文档都标注
-   "未迁移"）。CK1 只做不依赖该层的快赢：把已迁的 `stockhistory` + `netvalueclose`
-   两段（`history_service` 已支持，原仅供 `/history/*` 页）接进 `/fund/<symbol>`
-   详情页（仅接线 + 模板，顺序对齐 PHP：netvalueclose → shares → stockhistory）。
-   测试：web **619** OK（+2）、auto 988 OK、compileall 双绿；并修复一处
-   `test_sma_route.FundPairSmaRouteTest` 的隔离缺口（CK1 新段落暴露其未注入
-   `history_service`，已补 `_EmptyHistory` 注入）。详见
-   `python/auto/README_stock_detail_migration.md`。
-   **第 14 轮（_mystock.php 详情栈 · CK2 关键石）**：迁移 `fundpairref.php` 配对引用层。
-   `MyPairReference` → `refobj.PairReference`，外加 `Ab` / `Ah` / `Adr` 三子类（只是
-   `pair_table` 不同）、四张配对表（`abpair`/`adrpair`/`ahpair`/`fundpair`）的正查与反查
-   （对应 PHP `StockPairSql::GetPairSymbol` / `GetSymbol`）、`StockGetPairReferences`
-   链式双向工厂，以及构造里的 `cny_ref` 推导分支表与 `LoadCalibration()`。
-   `EstFromPair` / `EstToPair` 委托给已迁的 `calc.pairestimate` 自由函数（公式只留一份实现）。
-   消费方 `pair_service` / `trading_service` / `sma_service` 走 `_invoke` 鸭子类型，
-   **零改动自动通电**。测试：auto **1010** OK（988 + 22 `test_pairref.py`）、web 619 OK、
+   含 `MyPairReference`/`FundPairReference`/`HoldingsReference`及`StockGetFundPairReference`/`StockGetHoldingsReference`/`StockGetPairReferences`），**尚未迁入`auto/ref/refobj.py`**（refobj.py:523、pair_service.py 文档都标注
+   "未迁移"）。CK1 只做不依赖该层的快赢：把已迁的 `stockhistory`+`netvalueclose`
+   两段（`history_service`已支持，原仅供`/history/*`页）接进`/fund/<symbol>`详情页（仅接线 + 模板，顺序对齐 PHP：netvalueclose → shares → stockhistory）。
+   测试：web **619** OK（+2）、auto 988 OK、compileall 双绿；并修复一处`test_sma_route.FundPairSmaRouteTest`的隔离缺口（CK1 新段落暴露其未注入`history_service`，已补 `_EmptyHistory`注入）。详见`python/auto/README_stock_detail_migration.md`。 **第 14 轮（_mystock.php 详情栈 · CK2 关键石）**：迁移 `fundpairref.php`配对引用层。`MyPairReference`→`refobj.PairReference`，外加 `Ab`/`Ah`/`Adr`三子类（只是`pair_table` 不同）、四张配对表（`abpair`/`adrpair`/`ahpair`/`fundpair`）的正查与反查
+   （对应 PHP `StockPairSql::GetPairSymbol`/`GetSymbol`）、`StockGetPairReferences`链式双向工厂，以及构造里的`cny_ref`推导分支表与`LoadCalibration()`。
+   `EstFromPair`/`EstToPair`委托给已迁的`calc.pairestimate`自由函数（公式只留一份实现）。
+   消费方`pair_service`/`trading_service`/`sma_service`走`_invoke`鸭子类型， **零改动自动通电**。测试：auto **1010** OK（988 + 22`test_pairref.py`）、web 619 OK、
    compileall 双绿；**PHP 逐例对照 15 例 0 差异**
-   （`_scratch/_php_pairref_check.php` + `_php_pairref_compare.py`，同时比对汇率符号与
-   建出来的类 —— PHP 两条赋值路径 `new` 的是 `CnyReference` 与 `MyStockReference`
-   两个不同的类）。对照抓到一个真 bug：B 股判定写成字符串前缀 `900`，而 PHP 是数值区间
+   （`\_scratch/\_php_pairref_check.php`+`\_php_pairref_compare.py`，同时比对汇率符号与
+   建出来的类 —— PHP 两条赋值路径 `new`的是`CnyReference`与`MyStockReference`两个不同的类）。对照抓到一个真 bug：B 股判定写成字符串前缀`900`，而 PHP 是数值区间
    `[900000, 1000000)`；根因是**没先 grep 代码库里已有的 `is_shanghai_b()`**
    就新增了一个 `is_shang_hai_b()`。已撤掉重复实现，记 pitfalls #54。详见
    `python/auto/README_pair_reference_migration.md`。
-   **第 14 轮（_mystock.php 详情栈 · CK3 出口）**：给 CK2 的成果一个能看见的地方。
-   侦察发现一个结构性问题：CK2 迁完的 AH/AB/ADR 段落**没有页面承载** ——
-   `/fund/<symbol>` 按号段推断分组、只服务基金。于是新建 `/stock/<symbol>`，
-   渲染 `_mystock.php:144-170` 的 else 分支（四个分支里的最后一个）。
-   三个落点：① 新建 `web/services/detail_sections.py` 抽出 `_mystock.php:167-169`
-   那三段（netvalueclose / shares / stockhistory，四个分支走完都要执行），
-   `routes/fund.py` 改为委托调用，CK1 测试仍全绿；② 新建
-   `stock_detail_service.py` 组装段落，重点是均线的**四个互斥槽位**
-   （`EchoAhPairSmaParagraph` / `EchoFundPairSmaParagraph` / 空串标题那张 /
-   普通 `EchoSmaParagraph`，其中 `fx_susdcnh` 带 `_callbackCnhSma`）；
-   ③ `routes/stock.py` 加路由（**复用已有的 `stock_bp`**，没新建 Blueprint），
-   列表页链接按 `get_symbol_group()` 分流：基金 → `/fund/`、其它 → `/stock/`。
-   测试：web **640** OK（619 + 21 `test_stock_detail.py`）、auto 1010 OK、
-   compileall 双绿；真实库冒烟 `/stock/^NDX` 与 `/stock/SPY` 段落渲染正常，
-   `/stock?num=0` 的 21 个符号分流正确（4 基金 / 17 其它）。变异测试抓到一处
-   测试盲区：`_callbackCnhSma` 的"放大-取整-缩小"原用例 `est=7.0` 恰好整除、
-   测不出差别，换成落在两个 0.0005 刻度之间的值后断言才有牙。详见
-   `python/auto/README_stock_detail_migration.md` §6。
-   **仍存在的关键石 / 后续 checkpoint**：CK2b `FundPairReference` 的期货自动校准
-   （与已迁的 `fundestcalc` / `futurescalib` 及独立 `autocalibration` 任务高度重叠，单列）；
-   CK4 Holdings 分支（含 `HoldingsReference`，`php/stock/holdingsref.php` 441 行 /
-   24 方法，完全未迁）；CK5 交易块 + 链接（账号可演示）；
-   **CK3 遗留**：A 股 generic `EchoTradingParagraph($ref, $ah_ref, $adr_ref)`
-   （`trading_service` 只有 `fund_table`，且演示库无非基金 A 股可验证）；
-   CK6 order book 写 snapshot。
-   **仍未迁**：`_mystock.php` 个股详情大页的 A 股带配对溢价的 trading、Holdings 分支；
-   三个整页外壳（登录、
-   `GetGroupSql()`、`StockEditTransactionForm` / `StockMergeTransactionForm`）随账号体系暂缓。
+
+   **CK2b `FundPairReference` 已完成**：迁了四个 EST 取值（`GetOfficialDate` /
+   `GetOfficialNetValue` / `GetFairNetValue` / `GetRealtimeNetValue`）、`netvalue_ref`
+   与自动校准结构，外加工厂 `StockGetFundPairReference`。关键坑是 `CalcFactor`
+   **两个分支的汇率方向相反**（A 股乘、其它除），写成同向会差 `cny²` 且不报错，
+   用"与 `EstFromPair` 往返"的断言钉住。自动校准`auto_write`默认关 —— PHP 在构造
+   函数里就写库，本项目 web 只读。已接线到`/stock/<symbol>`第 2 分支，演示库 5 个
+   符号（^NDX/^GSPC/QQQ/TQQQ/SPY）多出估值表。详见
+   `README_pair_reference_migration.md` §8。 **仍存在的关键石 / 后续 checkpoint**：CK2b 缺口 `EchoFundListParagraph`（跟踪表，
+   现有`fund_list_table`是杠杆标的形态接不上）与`EchoFundHistoryParagraph`（净值
+   估计对照表）；校准口径统一（演示库中间层 cal 是"基金净值/ETF价"，与生产端
+   "指数/ETF价"相反，导致`/stock/QQQ`算出 345 万）；CK4 Holdings 分支（含
+   `HoldingsReference`，441 行/24 方法）；CK5 交易块 + 链接（账号可演示）；
+   CK6 order book 写 snapshot。 **仍未迁**：`_mystock.php` 个股详情大页的 AH/AB/ADR 对比、A 股带配对溢价的 trading、
+   配对 SMA、`EchoAhPairSmaParagraph`接线、Holdings 分支；三个整页外壳（登录、`GetGroupSql()`、`StockEditTransactionForm`/`StockMergeTransactionForm\`）随账号体系暂缓。
 5. `php/layout.php`、`php/menu.php`、`php/stocklink.php`：站点布局和导航。
 
 第 1、2、3 步已经落地：
@@ -469,7 +424,7 @@ Flask 路由
   `fundestcalc`，避免重演"估值 4.59 变 20245"那次两条实现并存的事故）、  
   **外部依赖全部可注入**。四个地区合成一个类 + `region` 查表。  
   已知偏差：PHP 这个位置用的 `FundPairReference` / `HoldingsReference` 未迁移，  
-  由 `EstReference` 顶上；`MyStockReference`（`stock_ref`）同样未迁，
+  由 `EstReference` 顶上；`MyStockReference`（`stock_ref`）同样未迁，    
   `is_fund_a()` 为真时由 `MysqlReference` 顶上（第 8 轮补的自动建）。  
   详见 `python/auto/README_refobj_migration.md`。
 - **渲染层（第 4 步，已做三轮）**：先说一个推翻预设的事实 —— `php/ui` 里  
@@ -485,268 +440,257 @@ Flask 路由
   `LayoutGetDisplayWidth()`）。  
   顺带查清：**7 个段落早就在 `python/web` 里了**（`history_service.py` 6 个 +  
   `fund_list_service.py`），真正待迁的是约 13 个。  
-  已迁：`reference` / `pricepool` / `ah` / `fundest` / `trading` / `stock`
+  已迁：`reference` / `pricepool` / `ah` / `fundest` / `trading` / `stock`    
   六个段落 + 列定义地基。**🟡 档（第三轮）的两个**要点：
-
-  * `tradingparagraph` 是 `php/ui` 里**唯一依赖实时五档**的段落。写这一轮时
-    库快照没有买卖档位，所以它**默认不渲染**、需 `?live=1`；
-    **第四轮**（`README_ui_column_migration.md` 的第四轮那一节）已把盘口写进
-    快照表的 `orderbook` 列，现在默认就读库渲染，`?live=1` 退化为
+  - `tradingparagraph` 是 `php/ui` 里**唯一依赖实时五档**的段落。写这一轮时      
+    库快照没有买卖档位，所以它**默认不渲染**、需 `?live=1`；      
+    **第四轮**（`README_ui_column_migration.md` 的第四轮那一节）已把盘口写进      
+    快照表的 `orderbook` 列，现在默认就读库渲染，`?live=1` 退化为      
     "这一请求额外联网补一次"。
-  * 按用户指令**删掉了 `strlen()*11` 的像素宽度估算** —— 它在 CSS 布局下
+  - 按用户指令**删掉了 `strlen()*11` 的像素宽度估算** —— 它在 CSS 布局下      
     没有意义，还依赖未迁移的 `LayoutGetDisplayWidth()` 与 `$_SESSION['mobile']`。
-  * `stockparagraph` 只有 45 行，但它把 `GetMenuLink()` 的 HTML 塞在标题里；
-    本版把翻页数据化（复用上一轮的 `stocksql.stock_paging_columns()`），
+  - `stockparagraph` 只有 45 行，但它把 `GetMenuLink()` 的 HTML 塞在标题里；      
+    本版把翻页数据化（复用上一轮的 `stocksql.stock_paging_columns()`），      
     新增 `/stock` 与 `/api/stock`，顺带把孤着的 `auto/stocksql.py` 接上线。
-  * 两个 PHP 陷阱：`_checkTradingQuantity()` 里那句 `!= '0'` 是**不可达的**
-    （`'0'` 在 PHP 是假值），而它在 Python 里是真值 —— 照字面翻译会多摆一张
+  - 两个 PHP 陷阱：`_checkTradingQuantity()` 里那句 `!= '0'` 是**不可达的**      
+    （`'0'` 在 PHP 是假值），而它在 Python 里是真值 —— 照字面翻译会多摆一张      
     空盘口表；`GetMenuLink()` 的候选项允许**超出总数**（250 条时给到 300）。
-
   **配色裁决**：涨跌幅统一成**涨红跌绿**。PHP 自身在这件事上是矛盾的 ——  
   `php/stock/stockref.php:147` 的 `GetPercentageDisplay()` 是"跌红涨黑"，  
   而 `php/stock.php:91` 的 `StockGetPriceDisplay()` 默认参数（被 `GetRatioDisplay()`  
   等一大片函数共用）是"涨红跌绿"。选后者：前者是孤例、后者是主流口径，  
   改动面也最小。  
   详见 `python/auto/README_ui_column_migration.md`。
-- **引用对象行情装填（P0）**：`refobj` 迁好了、列定义也迁好了，
-  但**行情注入点从没接上**，所以详情页「参考数据」表六格里只有名称有值
-  （价格/涨幅/日期/时间全空）。根因：`MysqlReference` 刻意"构造不联网"，
-  而本项目的行情在 `realtimequote`（daemon 写的）里，没有任何东西把它读进来。
-  新增 `refquote.py`（**先读库快照、再兜底联网**）与 `externallink.py`
-  （补首格外链；PHP 靠它在没有外链时退回符号文本，保证列不错位）。
-  `build_stock_references()` 从 `stockref.StockReference` 改走
-  `refobj.MysqlReference`，并接上 `source` 用于读快照。
-  途中被既有测试抓出一个真缺陷：第一版**构造期就联网**，而
-  `QdiiReference` 构造里还会算实时 EST，等于**每个请求都抓一遍新浪**；
-  已改成"构造只读快照、请求期才兜底"（`refquote.refresh_quotes()`）。
-  验收：三只基金的参考数据与生产端 `qdiicn.php` **逐格一致**
-  （`4.884 / 1.45% / 2026-10-09 / 15:00` 等）。
+- **引用对象行情装填（P0）**：`refobj` 迁好了、列定义也迁好了，    
+  但**行情注入点从没接上**，所以详情页「参考数据」表六格里只有名称有值    
+  （价格/涨幅/日期/时间全空）。根因：`MysqlReference` 刻意"构造不联网"，    
+  而本项目的行情在 `realtimequote`（daemon 写的）里，没有任何东西把它读进来。    
+  新增 `refquote.py`（**先读库快照、再兜底联网**）与 `externallink.py`    
+  （补首格外链；PHP 靠它在没有外链时退回符号文本，保证列不错位）。    
+  `build_stock_references()` 从 `stockref.StockReference` 改走    
+  `refobj.MysqlReference`，并接上 `source` 用于读快照。    
+  途中被既有测试抓出一个真缺陷：第一版**构造期就联网**，而    
+  `QdiiReference` 构造里还会算实时 EST，等于**每个请求都抓一遍新浪**；    
+  已改成"构造只读快照、请求期才兜底"（`refquote.refresh_quotes()`）。    
+  验收：三只基金的参考数据与生产端 `qdiicn.php` **逐格一致**    
+  （`4.884 / 1.45% / 2026-10-09 / 15:00` 等）。    
   详见 `python/auto/README_refquote_migration.md`。
-- **补上跨层集成测试**：`web/tests/test_reference.py` 新增"真数据源 →
-  引用对象 → 六格全有值"。这一层以前缺测试，正是"整张表是空的"
+- **补上跨层集成测试**：`web/tests/test_reference.py` 新增"真数据源 →    
+  引用对象 → 六格全有值"。这一层以前缺测试，正是"整张表是空的"    
   能一路绿灯溜过去的原因（原有单测都在 service 边界打桩）。
-- **refobj 的 PHP 对照验证（P1）**：`refobj` + 渲染层约 2600 行新代码
-  **没走项目已有的对照方法**，单测覆盖的是"我给的行为"，抓不到"我理解错了 PHP"。
-  新增 `_php_refobj_compare.py` / `_php_refobj_check.php`，对照 9 个纯数学函数
-  （`QdiiGetCalibration` / `QdiiGetVal` / `QdiiGetPeerVal` /
-  `FundAdjustPosition` / `FundReverseAdjustPosition` / `StockGetPercentage` /
-  `StockCalcHedge` / 两个份额换算）：**98 例，0 意外差异**。
-  用例集里刻意放了 `4e-7 / 5e-7 / 6e-7` 三个值 —— `StockGetPercentage` 的
-  `> MIN_FLOAT_VAL`（`5e-7`）判据只有在这个量级才暴露 `>` 写成 `>=` 的错误。
-  另加 `--selftest`：在内存里把公式改错，断言对照抓得到（实测抓到 4 / 10 例），
-  避免"从不失败的对照脚本等于没有"。
-  途中三个坑：① PHP 注释里写 `?>` 会让解析器提前结束、源码被当 JSON 输出；
-  ② PHP 与 Python 的 `%.12E` 对同一个数给出 `E-9` / `E-09`，用数值拼 key 会让
-  87 个用例全部误报，改用**序号做 key**；③ 返回值比较也要按数值而非字符串。
+- **refobj 的 PHP 对照验证（P1）**：`refobj` + 渲染层约 2600 行新代码    
+  **没走项目已有的对照方法**，单测覆盖的是"我给的行为"，抓不到"我理解错了 PHP"。    
+  新增 `_php_refobj_compare.py` / `_php_refobj_check.php`，对照 9 个纯数学函数    
+  （`QdiiGetCalibration` / `QdiiGetVal` / `QdiiGetPeerVal` /    
+  `FundAdjustPosition` / `FundReverseAdjustPosition` / `StockGetPercentage` /    
+  `StockCalcHedge` / 两个份额换算）：**98 例，0 意外差异**。    
+  用例集里刻意放了 `4e-7 / 5e-7 / 6e-7` 三个值 —— `StockGetPercentage` 的    
+  `> MIN_FLOAT_VAL`（`5e-7`）判据只有在这个量级才暴露 `>` 写成 `>=` 的错误。    
+  另加 `--selftest`：在内存里把公式改错，断言对照抓得到（实测抓到 4 / 10 例），    
+  避免"从不失败的对照脚本等于没有"。    
+  途中三个坑：① PHP 注释里写 `?>` 会让解析器提前结束、源码被当 JSON 输出；    
+  ② PHP 与 Python 的 `%.12E` 对同一个数给出 `E-9` / `E-09`，用数值拼 key 会让    
+  87 个用例全部误报，改用**序号做 key**；③ 返回值比较也要按数值而非字符串。    
   详见 `python/auto/README_refobj_php_compare.md`。
-- **基金详情页补齐三样（本步）**：详情页原来只有「参考数据」1 行、没有 EST 表、
-  没有份额表。
-  ① **参考数据标的清单**：新增 `reference_symbols_for_fund()`，
-  对应 PHP `_qdiigroup.php` 的 `$arRef` + `$arLev` 装配
-  （基金 → 估值标的 → 杠杆标的（查 `fundpair`）→ 即期外汇 → 中间价）；
-  缺的符号**照实跳过**，不补空行。本演示库实际 4 行
-  （缺 `TQQQ`/`USDCNH`/`hf_NQ`：不在 `stock` 表，或 `fundpair` 没有"ETF → 指数"行）。
-  `externallink.py` 从"只认基金"扩成 `get_sina_stock_link()` 的**类型分发**，
-  **8 类 href 逐字对齐生产端** `sz161130cn.php`；其中中间价 `USCNY`
-  指向货币网、即期 `USDCNY` 指向新浪外汇页，区分点是 `is_forex()`。
-  ② **EST 表接线**：`fundest_service` 早已写好，缺的只是注入引用对象；
-  现在默认走 `refobj.QdiiReference` 现算（委托 `fundestcalc`，**没有第二套口径**，
-  所以 workbuddy 当初"怕重影"的顾虑不再成立）。实测 `SZ161130` 官方 EST
-  = `4.545196`，与净值一致。
-  当时实时 EST 还是空的（缺配对引用），**已在下面第 ⑤ 条补齐**。
-  ③ **基金份额表**：直接复用历史服务的 `shareshistory`（与
-  `/history/shareshistory/<sym>` 同一张表、同一个 PHP 段落），
-  并顺手把渲染抽成 `_history_table.html` 宏供两处共用。
-  途中修掉三个真 bug：`float('')` 让**整张参考数据表消失**（PHP `floatval('')`
-  给 0；已改走 `_php_floatval`）、`get_table([])` 返回 `None` 让详情页 500、
-  以及一个被 `except` 吞掉的缺 import。
+- **基金详情页补齐三样（本步）**：详情页原来只有「参考数据」1 行、没有 EST 表、    
+  没有份额表。    
+  ① **参考数据标的清单**：新增 `reference_symbols_for_fund()`，    
+  对应 PHP `_qdiigroup.php` 的 `$arRef` + `$arLev` 装配    
+  （基金 → 估值标的 → 杠杆标的（查 `fundpair`）→ 即期外汇 → 中间价）；    
+  缺的符号**照实跳过**，不补空行。本演示库实际 4 行    
+  （缺 `TQQQ`/`USDCNH`/`hf_NQ`：不在 `stock` 表，或 `fundpair` 没有"ETF → 指数"行）。    
+  `externallink.py` 从"只认基金"扩成 `get_sina_stock_link()` 的**类型分发**，    
+  **8 类 href 逐字对齐生产端** `sz161130cn.php`；其中中间价 `USCNY`    
+  指向货币网、即期 `USDCNY` 指向新浪外汇页，区分点是 `is_forex()`。    
+  ② **EST 表接线**：`fundest_service` 早已写好，缺的只是注入引用对象；    
+  现在默认走 `refobj.QdiiReference` 现算（委托 `fundestcalc`，**没有第二套口径**，    
+  所以 workbuddy 当初"怕重影"的顾虑不再成立）。实测 `SZ161130` 官方 EST    
+  = `4.545196`，与净值一致。    
+  当时实时 EST 还是空的（缺配对引用），**已在下面第 ⑤ 条补齐**。    
+  ③ **基金份额表**：直接复用历史服务的 `shareshistory`（与    
+  `/history/shareshistory/<sym>` 同一张表、同一个 PHP 段落），    
+  并顺手把渲染抽成 `_history_table.html` 宏供两处共用。    
+  途中修掉三个真 bug：`float('')` 让**整张参考数据表消失**（PHP `floatval('')`    
+  给 0；已改走 `_php_floatval`）、`get_table([])` 返回 `None` 让详情页 500、    
+  以及一个被 `except` 吞掉的缺 import。    
   详见 `python/auto/README_detail_page_sections.md`。
 
-  ④ **收尾一轮（2026-10-10）**：补上上面第 ① 条漏掉的 `GetRealtimeRef()`
-  那一档（`fundpair` 的反向读法，`_realtime_symbol()`），给零覆盖的
-  `_leverage_symbols()` 补了假 cursor 测试（连 tuple / dict 两种游标行都认），
-  并把参考表里「库里没有」与「没抓到行情」两种空行在页面上区分开
-  （`quote_state_of()` 四态 + 名称格标注）—— PHP 那边两者长得一模一样。
-  同时修掉 `_php_refobj_compare.py --selftest` 的一处**假通过**：
+  ④ **收尾一轮（2026-10-10）**：补上上面第 ① 条漏掉的 `GetRealtimeRef()`    
+  那一档（`fundpair` 的反向读法，`_realtime_symbol()`），给零覆盖的    
+  `_leverage_symbols()` 补了假 cursor 测试（连 tuple / dict 两种游标行都认），    
+  并把参考表里「库里没有」与「没抓到行情」两种空行在页面上区分开    
+  （`quote_state_of()` 四态 + 名称格标注）—— PHP 那边两者长得一模一样。    
+  同时修掉 `_php_refobj_compare.py --selftest` 的一处**假通过**：    
   它按字符串排序取用例，`[10]` 会排在 `[1]` 前面，验的根本不是阈值边界。
 
-  ⑤ **接通实时 EST（2026-10-10）**：第 ④ 条只补了**参考数据那一侧**的
-  `GetRealtimeRef()` 分支，实时 EST **本身**仍然算不出来 —— 实测
-  `est_ref.get_pair_ref()` 不存在、`get_realtime_ref() = None`、
-  `realtime_net_value = None`，页面 EST 表少两列。
+  ⑤ **接通实时 EST（2026-10-10）**：第 ④ 条只补了**参考数据那一侧**的    
+  `GetRealtimeRef()` 分支，实时 EST **本身**仍然算不出来 —— 实测    
+  `est_ref.get_pair_ref()` 不存在、`get_realtime_ref() = None`、    
+  `realtime_net_value = None`，页面 EST 表少两列。    
   根因是 `refobj` 里缺配对引用：
-
-  - `EstReference` 缺 `get_pair_ref()`（`FundReference.get_realtime_ref()`
+  - `EstReference` 缺 `get_pair_ref()`（`FundReference.get_realtime_ref()`      
     靠 `hasattr` 探测它，没有就恒返回 `None`）；
   - 演示库 `fundpair` 缺 `^NDX → hf_NQ`、`^GSPC → hf_ES` 两行。
-
-  本步补上两者（新增 `dbtools/seed_fundpair_index.py`，幂等），实测：
-  `SZ161130` 配对到 `hf_NQ`、实时 EST = `4.555899`；
-  **EST 表 8 列**（官方EST/EST日期/溢价/参考EST/溢价/实时EST/溢价）、
-  参考数据 **5 行**（`NQ 31137.58` 期货行已出现）。
-  验证实时 EST 的计算路径本来就通（`fundestcalc.compute_realtime()` 早有实现
-  与测试），缺的只是把配对引用建出来。
-  `PairReferenceTest` 钉住配对查询（含 tuple / dict 两种游标行、惰性缓存、
+  本步补上两者（新增 `dbtools/seed_fundpair_index.py`，幂等），实测：    
+  `SZ161130` 配对到 `hf_NQ`、实时 EST = `4.555899`；    
+  **EST 表 8 列**（官方EST/EST日期/溢价/参考EST/溢价/实时EST/溢价）、    
+  参考数据 **5 行**（`NQ 31137.58` 期货行已出现）。    
+  验证实时 EST 的计算路径本来就通（`fundestcalc.compute_realtime()` 早有实现    
+  与测试），缺的只是把配对引用建出来。    
+  `PairReferenceTest` 钉住配对查询（含 tuple / dict 两种游标行、惰性缓存、    
   不递归）。
 
-  ⑥ **StockHistory 数值核心（2026-10-10，第一刀）**：`php/stockhis.php` 586 行里
-  **纯算数**的那部分 —— `_estSma`、`GetQuadraticEquationRoot`、
-  `_estBollingerBands`、`_estNextBollingerBands`、`_isWeekEnd`、`_isMonthEnd`、
+  ⑥ **StockHistory 数值核心（2026-10-10，第一刀）**：`php/stockhis.php` 586 行里    
+  **纯算数**的那部分 —— `_estSma`、`GetQuadraticEquationRoot`、    
+  `_estBollingerBands`、`_estNextBollingerBands`、`_isWeekEnd`、`_isMonthEnd`、    
   `MaxMin`、`_getColorAndOrderArray`，落在 `python/auto/sql/stockhistory.py`。
 
-  分刀的理由：`StockHistory` 的构造同时做"算数 / 查库 / **回写配置文件** / 渲染"
+  分刀的理由：`StockHistory` 的构造同时做"算数 / 查库 / **回写配置文件** / 渲染"    
   四件事，第 3 件有外部可见副作用，不能和纯数值混在一起迁。
 
   三个必须照抄的地方（都已在 `README_stockhistory_migration.md` 记明）：
-
   - **数组是最新在前**（`ORDER BY date DESC`），`_estSma` 取的是**开头**那几个；
-  - **`_estSma` 的元素个数与除数都是 `avg - 1`** —— `est_sma(x, 5)` 是最近
+  - **`_estSma` 的元素个数与除数都是 `avg - 1`** —— `est_sma(x, 5)` 是最近      
     **4** 个的均值。看着像 off-by-one，改掉会让所有均线偏移；
-  - **`GetDayOfWeek()` 是 `date('w')`**（周日 = 0 … 周六 = 6），不是 ISO 的
+  - **`GetDayOfWeek()` 是 `date('w')`**（周日 = 0 … 周六 = 6），不是 ISO 的      
     1-7；`_isWeekEnd`/`_isMonthEnd` 的比较依赖它，换成 `weekday()` 会静默错一天。
-
-  两条布林式子的差别是 `iAvg-1` vs `iAvg-2`、`factor` 的 `-4` vs `-8`、
+  两条布林式子的差别是 `iAvg-1` vs `iAvg-2`、`factor` 的 `-4` vs `-8`、    
   `sigma` 的 `/2` vs `/4` —— 抄错**不崩**，只是轨道慢慢偏，所以逐项对照。
 
-  对照：新增 `_php_sma_compare.py` + `_php_sma_check.php`，**454 例 0 意外差异**，
-  带 `--selftest`（注入 off-by-one 抓 20 例、注入 sigma 错误抓 5 例、
+  对照：新增 `_php_sma_compare.py` + `_php_sma_check.php`，**454 例 0 意外差异**，    
+  带 `--selftest`（注入 off-by-one 抓 20 例、注入 sigma 错误抓 5 例、    
   注入收盘边界错误抓 2 例，并断言两条布林式子结果必须不同）。
 
-  已知偏差：`GetNextTradingDayTick()` 走节假日表，本版简化为"下一个工作日"，
+  已知偏差：`GetNextTradingDayTick()` 走节假日表，本版简化为"下一个工作日"，    
   仅节假日边界会差（180 个 `_isMonthEnd` 用例上没触发）。
 
-  ⑦ **StockHistory 第二刀：查库与切片（2026-10-10）**：
-  `_calcStartDate`、`_ignoreCurrentTradingData`、`_getDayWeekMonthData`、
+  ⑦ **StockHistory 第二刀：查库与切片（2026-10-10）**：    
+  `_calcStartDate`、`_ignoreCurrentTradingData`、`_getDayWeekMonthData`、    
   `_get_EMA`、`NeedAfterHourEst`、`_onTest` 全部落地。
 
-  ⚠️ **途中写错一处并被测试抓到**：`GetFromDate` 的判据是
-  ``date <= startDate``（`php/sql/sqldailyclose.php:41`），我第一版写成
-  ``date >= startDate`` —— 于是只返回一行，**所有均线退化成同一个价格且不报错**。
-  正确语义是"先算最新可用日期，再按它**往回**取 620 天"，
+  ⚠️ **途中写错一处并被测试抓到**：`GetFromDate` 的判据是    
+  `date <= startDate`（`php/sql/sqldailyclose.php:41`），我第一版写成    
+  `date >= startDate` —— 于是只返回一行，**所有均线退化成同一个价格且不报错**。    
+  正确语义是"先算最新可用日期，再按它**往回**取 620 天"，    
   即 `start_date` 是**上界**。这条已加进对照（自检第 ⑤⑥ 项）。
 
-  另外 `IsStockTradingHourEnd()` 的边界是 `GetHour() <= 16` ——
+  另外 `IsStockTradingHourEnd()` 的边界是 `GetHour() <= 16` ——    
   **当地 16:59 仍算未收盘、17:00 才算**，不是 15:00 收盘价出来就算。
 
-  **配置改成可替换的内存实现**：PHP 的 `_configSMA()` 会
-  `$cfg->save_data()` 回写 INI，直译等于"渲染页面会写工作区文件"。
-  本版抽成 `ConfigSmaStore`，默认纯内存 —— 语义等价（缓存永不命中 = 永远重算，
+  **配置改成可替换的内存实现**：PHP 的 `_configSMA()` 会    
+  `$cfg->save_data()` 回写 INI，直译等于"渲染页面会写工作区文件"。    
+  本版抽成 `ConfigSmaStore`，默认纯内存 —— 语义等价（缓存永不命中 = 永远重算，    
   结果相同），文件后端留待单独评审并发与测试隔离。
 
-  测试：`test_stockhistory.py` 从 46 例扩到 **85 例**。
+  测试：`test_stockhistory.py` 从 46 例扩到 **85 例**。    
   全量 `auto` **813** / `web` **251**。
 
-  ⑧ **均线段落 `smaparagraph.php`（2026-10-11，第 4 刀）**：225 行里的
-  四个回调（`_callbackQdiiSma` / `_callbackFundPairSma` / `_callbackAhPairSma` /
-  `_callbackFutureSma`）与 `EchoFutureSmaParagraph` 的期货理论溢价全部落地，
-  落在 `web/services/sma_service.py` + `auto/pairestimate.py` +
+  ⑧ **均线段落 `smaparagraph.php`（2026-10-11，第 4 刀）**：225 行里的    
+  四个回调（`_callbackQdiiSma` / `_callbackFundPairSma` / `_callbackAhPairSma` /    
+  `_callbackFutureSma`）与 `EchoFutureSmaParagraph` 的期货理论溢价全部落地，    
+  落在 `web/services/sma_service.py` + `auto/pairestimate.py` +    
   `auto/futurepremium.py`。详见 `python/auto/README_sma_paragraph_migration.md`。
 
-  分三个模块而不是一个的理由：段落里塞了两类**不属于渲染**的东西 ——
-  配对双向估算（`EstFromPair`/`EstToPair`，`MyPairReference` 那一档还没迁）
-  和期货溢价（带时区副作用与 `futurepremium` 读表）。`pairestimate` 特意做成
+  分三个模块而不是一个的理由：段落里塞了两类**不属于渲染**的东西 ——    
+  配对双向估算（`EstFromPair`/`EstToPair`，`MyPairReference` 那一档还没迁）    
+  和期货溢价（带时区副作用与 `futurepremium` 读表）。`pairestimate` 特意做成    
   **自由函数 + 鸭子类型**，这样 `MyPairReference` 落地时 `sma_service` 不用改。
 
   四个必须照抄的点：
-
-  - **`memo` 用 `is False` 严格判断**：PHP 是 `if ($str === false)`，所以
-    `EchoFundPairSmaParagraphs()` 传进来的**空串不会被默认 memo 顶掉** ——
+  - **`memo` 用 `is False` 严格判断**：PHP 是 `if ($str === false)`，所以      
+    `EchoFundPairSmaParagraphs()` 传进来的**空串不会被默认 memo 顶掉** ——      
     那决定了一组配对标的并排展示时只有第一张表带标题；
-  - **列数组里第 3 与第 5 列是同一个 `TableColumnPremium` 实例**，
+  - **列数组里第 3 与第 5 列是同一个 `TableColumnPremium` 实例**，      
     列头因此长得一样。看着像笔误，去重就与生产端不一致；
-  - **没有 T+1 时 `else` 分支显式补两个 `''`** —— 行是变长的，
+  - **没有 T+1 时 `else` 分支显式补两个 `''`** —— 行是变长的，      
     少追加一格会让整行错位；
-  - **又一次遇到 `'0'` 假值**（`_getSmaCallbackPriceDisplay`），
+  - **又一次遇到 `'0'` 假值**（`_getSmaCallbackPriceDisplay`），      
     一律走 `_php_truthy()`；值是 0 时**那一格照样要画出来**。
-
-  期货溢价三处不照抄：`date_default_timezone_set()` 是**不恢复的**全局副作用
-  （改成显式折算到美东）；天数差是"零点对零点"、跨夏令时是 **68.0417 天**
-  而不是整 68；`round()` 在 PHP 是四舍五入、Python 是银行家舍入，
+  期货溢价三处不照抄：`date_default_timezone_set()` 是**不恢复的**全局副作用    
+  （改成显式折算到美东）；天数差是"零点对零点"、跨夏令时是 **68.0417 天**    
+  而不是整 68；`round()` 在 PHP 是四舍五入、Python 是银行家舍入，    
   所以走 `futurepremium.php_round()`。
 
-  ⚠️ **一处有意偏离 PHP**：PHP 遇到"没有历史数据"时会摆一整张**全是 0** 的
-  均线表（`_calcStartDate()` 拿不到日期，后面一串 `_estSma()` 全算出 0）。
-  演示库 `^NDX` 一行历史都没有、`stockema50/200` 两张表也是空的，
-  所以加了一道守卫：全部档位都是 PHP 假值时**整段跳过**。
-  没有为此"造 200 天假历史"——`sql/_clean_seed_history.py` 确立的约定是
+  ⚠️ **一处有意偏离 PHP**：PHP 遇到"没有历史数据"时会摆一整张**全是 0** 的    
+  均线表（`_calcStartDate()` 拿不到日期，后面一串 `_estSma()` 全算出 0）。    
+  演示库 `^NDX` 一行历史都没有、`stockema50/200` 两张表也是空的，    
+  所以加了一道守卫：全部档位都是 PHP 假值时**整段跳过**。    
+  没有为此"造 200 天假历史"——`sql/_clean_seed_history.py` 确立的约定是    
   合成值一旦显示就会被误当成真实历史。
 
-  对照：新增 `_php_pairest_compare.py`（13 例）与
-  `_php_futurepremium_compare.py`（13 例），都带 `--selftest`。
-  测试：`test_pairestimate.py` 15 例、`test_futurepremium.py` 21 例、
-  `test_sma.py` 31 例、`test_sma_route.py` 5 例。
+  对照：新增 `_php_pairest_compare.py`（13 例）与    
+  `_php_futurepremium_compare.py`（13 例），都带 `--selftest`。    
+  测试：`test_pairestimate.py` 15 例、`test_futurepremium.py` 21 例、    
+  `test_sma.py` 31 例、`test_sma_route.py` 5 例。    
   全量 `auto` **849** / `web` **287**。
 
-  ⑨ **SMA 缓存的文件后端（2026-10-11，单独评审）**：`php/class/ini_file.php`
-  的 `INIFile` + `php/stockhis.php:365 _configSMA()`。第二刀已把配置换成
+  ⑨ **SMA 缓存的文件后端（2026-10-11，单独评审）**：`php/class/ini_file.php`    
+  的 `INIFile` + `php/stockhis.php:365 _configSMA()`。第二刀已把配置换成    
   可替换的接口、**默认纯内存**；本刀回答当初挂着的三个问题：
-
-  1. **路径从哪来** —— `MyStockReference` 看着是依赖，其实只贡献一个
-     `strConfigName`，而它是 `GetSymbol()` 的**纯函数**，Python 侧早已算好
-     同一条规则，不用等那一档迁完。真正缺的是 `root`（PHP 用
-     `$_SERVER['DOCUMENT_ROOT']`，常驻进程里没有）→ 改成显式输入，
+  1. **路径从哪来** —— `MyStockReference` 看着是依赖，其实只贡献一个       
+     `strConfigName`，而它是 `GetSymbol()` 的**纯函数**，Python 侧早已算好       
+     同一条规则，不用等那一档迁完。真正缺的是 `root`（PHP 用       
+     `$_SERVER['DOCUMENT_ROOT']`，常驻进程里没有）→ 改成显式输入，       
      拿不到就退回内存；
-  2. **并发写** —— PHP 自己就是 `fopen($f,'w')` 无锁。坏结果有两种：
-     "读到半个文件"用**原子替换**（同目录临时文件 + `os.replace`）治掉；
-     "丢更新"**不治**，因为内容是 `(symbol, start_date)` 的纯函数，
+  2. **并发写** —— PHP 自己就是 `fopen($f,'w')` 无锁。坏结果有两种：       
+     "读到半个文件"用**原子替换**（同目录临时文件 + `os.replace`）治掉；       
+     "丢更新"**不治**，因为内容是 `(symbol, start_date)` 的纯函数，       
      最坏只是多算一遍，写错数据不可能，不值得背 `fcntl`/`msvcrt` 两套 API；
-  3. **测试隔离** —— 默认内存 + 临时目录 + **绝不拿 CWD 当 root**（有测试把
+  3. **测试隔离** —— 默认内存 + 临时目录 + **绝不拿 CWD 当 root**（有测试把       
      CWD 切到临时目录再渲染，断言事后是空的）。
-
-  新增模块 `python/auto/sql/smaconfig.py`（`stockhistory.py` 被
-  `ModuleIsImportCleanTest` 钉着不许出现 `open(`，落盘只能单列）。
+  新增模块 `python/auto/sql/smaconfig.py`（`stockhistory.py` 被    
+  `ModuleIsImportCleanTest` 钉着不许出现 `open(`，落盘只能单列）。    
   文件格式与 PHP 互通，`[段]\n键=值\n`，**保留未知段**。
 
   两处新增的偏离：PHP 的 `save_data()` 用 `for(reset($g); $key=key($g);
-  next($g))` 遍历，**碰到 falsy 键名就停**（会写出空文件），不复制；
-  `parse_data()` 只取 `explode('=')[1]`（值里带 `=` 会被截断），原样保留。
-  另外真库验证时发现：无历史时 PHP 会写 `Date=` + 一串 0，且下次 `'' == ''`
-  判定**命中** —— 演示库 `^NDX` 一开开关就每请求落一份垃圾，加了"没有起始
+  next($g))` 遍历，**碰到 falsy 键名就停**（会写出空文件），不复制；    
+  `parse_data()` 只取 `explode('=')[1]`（值里带 `=` 会被截断），原样保留。    
+  另外真库验证时发现：无历史时 PHP 会写 `Date=` + 一串 0，且下次 `'' == ''`    
+  判定**命中** —— 演示库 `^NDX` 一开开关就每请求落一份垃圾，加了"没有起始    
   日期就不写"的守卫。
 
-  **默认仍是内存**：要启用得显式设 `PALMMICRO_SMA_CACHE_DIR`。待评审的
-  三条取舍（默认内存可接受吗 / 要不要换成进程内 LRU / 目录要不要接进
+  **默认仍是内存**：要启用得显式设 `PALMMICRO_SMA_CACHE_DIR`。待评审的    
+  三条取舍（默认内存可接受吗 / 要不要换成进程内 LRU / 目录要不要接进    
   `web/config.py`）见 `python/auto/README_sma_config_backend.md` 第七节。
 
-  对照：`_php_smaconfig_compare.py` 15 例 0 意外差异，自检 3/3。
-  测试：`test_smaconfig.py` 26 例、`test_sma_route.py` 新增 7 例。
+  对照：`_php_smaconfig_compare.py` 15 例 0 意外差异，自检 3/3。    
+  测试：`test_smaconfig.py` 26 例、`test_sma_route.py` 新增 7 例。    
   全量 `auto` **877** / `web` **294**。
 
-  ⑩ **指数历史种子（2026-10-11）**：SMA 表代码早就完成，但**页面上一�直看不到**。
-  根因是数据**自锁**：daemon 的 `collect_symbols_from_source()` 从
-  `stockhistory` **反推**要抓哪些符号，所以"没有历史 → 进不了抓取集合 →
-  永远没有历史"。而 `^NDX` 正是 QDII 的**估值标的**
+  ⑩ **指数历史种子（2026-10-11）**：SMA 表代码早就完成，但**页面上一�直看不到**。    
+  根因是数据**自锁**：daemon 的 `collect_symbols_from_source()` 从    
+  `stockhistory` **反推**要抓哪些符号，所以"没有历史 → 进不了抓取集合 →    
+  永远没有历史"。而 `^NDX` 正是 QDII 的**估值标的**    
   （`EchoQdiiSmaParagraph()` 用的就是它）。
 
-  新增 `auto/indexhistory.py`（新浪美股日线 jsonp 接口）+
-  `dbtools/seed_index_history.py`（幂等），给 `^NDX` / `^GSPC` 各补 **800 天**历史
-  （2023-08-03 ~ 2026-10-09），并顺带算 `EMA50` / `EMA200` ——
-  `GetBullBear()` 是**直接查** `stockema*` 表的，不是算出来的，那两张表原来
+  新增 `auto/indexhistory.py`（新浪美股日线 jsonp 接口）+    
+  `dbtools/seed_index_history.py`（幂等），给 `^NDX` / `^GSPC` 各补 **800 天**历史    
+  （2023-08-03 ~ 2026-10-09），并顺带算 `EMA50` / `EMA200` ——    
+  `GetBullBear()` 是**直接查** `stockema*` 表的，不是算出来的，那两张表原来    
   是空的，所以页面上不会出现"牛市/熊市"。
 
-  数据来源可核：新浪 `^NDX 2026-10-09 = 30883.15` 与生产端参考数据表
-  **逐字一致**；`QQQ 2026-10-08 = 747.58` 与生产端 `QQQnetvalueclosetable`
-  也一致。Yahoo 已全面 403（`navsource.py` 记过）；东财 `push2his` 指数接口
+  数据来源可核：新浪 `^NDX 2026-10-09 = 30883.15` 与生产端参考数据表    
+  **逐字一致**；`QQQ 2026-10-08 = 747.58` 与生产端 `QQQnetvalueclosetable`    
+  也一致。Yahoo 已全面 403（`navsource.py` 记过）；东财 `push2his` 指数接口    
   也能用，但新浪这条与生产端同源，优先用。
 
-  **原计划的第一步"改代码加指数白名单"实际不需要做** —— 种子一种下去，
-  daemon 就自动把两个指数收进抓取集合（10 个符号）。这比维护一份白名单更好：
+  **原计划的第一步"改代码加指数白名单"实际不需要做** —— 种子一种下去，    
+  daemon 就自动把两个指数收进抓取集合（10 个符号）。这比维护一份白名单更好：    
   机制本身自持续。
 
-  ⚠️ **途中修掉一个真 bug**：`SmaService._row()` 调用
-  `ref.get_percentage_display()`，而 `refobj.EstReference` **没有那个方法**
-  （它只有 `get_percentage_text`）→ `_invoke` 静默返回空串 →
-  **整列「溢价」都是空的**，页面不报错。PHP 的 `GetPercentageDisplay()`
-  是"文本 + 染色"两步（`php/stockref.php:146`），而染色在本项目由
+  ⚠️ **途中修掉一个真 bug**：`SmaService._row()` 调用    
+  `ref.get_percentage_display()`，而 `refobj.EstReference` **没有那个方法**    
+  （它只有 `get_percentage_text`）→ `_invoke` 静默返回空串 →    
+  **整列「溢价」都是空的**，页面不报错。PHP 的 `GetPercentageDisplay()`    
+  是"文本 + 染色"两步（`php/stockref.php:146`），而染色在本项目由    
   `reference_service.percentage_cell()` 负责，所以 SMA 表只要文本。
 
-  **这个 bug 测试抓不到**：`test_sma.py` 的 `FakeRef` 多实现了一个真实类上
-  没有的方法，造成典型的"替身假通过"。已补 `FakeRefContractTest` ——
-  直接对着 `refobj.EstReference` 检查"服务调用的每个方法它都有"，并显式断言
+  **这个 bug 测试抓不到**：`test_sma.py` 的 `FakeRef` 多实现了一个真实类上    
+  没有的方法，造成典型的"替身假通过"。已补 `FakeRefContractTest` ——    
+  直接对着 `refobj.EstReference` 检查"服务调用的每个方法它都有"，并显式断言    
   `get_percentage_display` **不该**存在。
 
   验收（对照生产端 `sz161130cn.php`）：
-
   ```
   参考数据 ^NDX 行   30883.15 / 0.51% / 17:16     与生产端逐字一致
   均线表  5日        30998.38 / -0.37%            生产端 30998.43 / -0.37%
@@ -755,12 +699,11 @@ Flask 路由
   顶部「牛市」       有
   页面体积           21 KB → 55 KB
   ```
-
   参考数据表从 4 行 → **7 行**（多了有价的 `^NDX`）。
 
-  遗留：`TQQQ` 行仍空（它自己没有 `stockhistory`，同 `^NDX` 的解法）；
-  `USDCNH`/`USDCNY` 行仍空（库里即期符号是 `fx_susdcny`，属"符号口径"
-  问题，要先决定参考表显示哪个）。详见
+  遗留：`TQQQ` 行仍空（它自己没有 `stockhistory`，同 `^NDX` 的解法）；    
+  `USDCNH`/`USDCNY` 行仍空（库里即期符号是 `fx_susdcny`，属"符号口径"    
+  问题，要先决定参考表显示哪个）。详见    
   `python/auto/README_index_history_seed.md`。
 
 远端分支 `origin/devin/1780933111-migrate-php-core-to-python` 已有  

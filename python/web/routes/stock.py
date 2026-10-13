@@ -72,6 +72,12 @@ def _get_history_service():
     return None if factory is None else factory()
 
 
+def _get_fundest_service():
+    """估值表服务；只有第 2 分支（``fundpair``）用得到。"""
+    factory = current_app.extensions.get("fundest_service_factory")
+    return None if factory is None else factory()
+
+
 def _parse_paging() -> tuple:
     """解析 ``start`` / ``num``；与历史数据页完全同口径。"""
 
@@ -162,10 +168,17 @@ def stock_page():
 
 @stock_bp.route("/stock/<symbol>")
 def stock_detail_page(symbol: str):
-    """渲染非基金详情页（``_mystock.php`` 第 4 分支）。
+    """渲染非基金详情页。
 
-    四个分支里前三个（基金 / FundPair / Holdings）各有归宿，这个路由接的是
-    "其它"那一大类：A 股、H 股、ADR、外汇、指数、期货。
+    这条路由接 ``_mystock.php`` 四个分支里的**两个**，判断顺序与 PHP 的
+    ``if / else if`` 一致：
+
+    1. 第 2 分支 ``StockGetFundPairReference()`` —— ``fundpair`` 表里有这条记录
+       （CK2b）。渲染 EST / 跟踪均线，``/stock/<symbol>`` 页面上会**多出**几张表。
+    2. 第 4 分支 ``else`` —— 其它非基金符号（CK3）。
+
+    前三个分支里的第 1 个（基金）由 ``/fund/<symbol>`` 承担，第 3 个
+    （Holdings）还没有对应实现，会落到第 4 分支。
 
     **引用对象建不出来时仍然返回 200**，只是没有表 —— 与 PHP 那边
     ``EchoStockGroup()`` 拿不到 ref 时整页只剩链接的行为一致。不按 404 处理：
@@ -178,15 +191,27 @@ def stock_detail_page(symbol: str):
     就把"这个符号建不出引用对象"的信号吃掉了 —— 页面会带着一个空壳 ref
     继续渲染出均线和历史表，而 PHP 那边是整段不输出。
 
-    所以这里建不出来就直接渲染空页，不进服务层。
+    所以第 4 分支建不出来就直接渲染空页，不进服务层。
     """
+    service = StockDetailService(
+        source=getattr(_get_reference_service(), "source", None)
+    )
+
+    #: 第 2 分支优先，且**不**给它传 ref —— 让它自己按 ``fundpair`` 表判断。
+    #: 传 ref 进去等于替它决定了答案。
+    detail = service.get_fund_pair_detail(
+        symbol,
+        sma_service=_get_sma_service(),
+        history_service=_get_history_service(),
+        fundest_service=_get_fundest_service(),
+    )
+    if detail is not None:
+        return render_template("stock_detail.html", detail=detail, symbol=symbol)
+
     refs = _get_reference_refs([symbol])
     if not refs:
         return render_template("stock_detail.html", detail=None, symbol=symbol)
 
-    service = StockDetailService(
-        source=getattr(_get_reference_service(), "source", None)
-    )
     detail = service.get_detail(
         symbol,
         ref=refs[0],

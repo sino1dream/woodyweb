@@ -143,11 +143,13 @@ def fund_list_table(
     ``if (count($arLev) > 0)``，没有杠杆标的就整段不出现，
     与本项目中其它段落"缺数据就整段不摆"的处理一致。
 
-    ``pair_symbol`` 是「跟踪」列的兜底：PHP 的 ``FundPairReference`` 自己知道
-    跟踪谁（``GetPairRef()``），而本项目的引用对象在**未迁移**
-    ``FundPairReference`` 的情况下拿不到它（见
-    :mod:`web.services.qdii_trading_column` 的说明）。调用方把这些标的找出来时
-    用的正是"谁跟踪了中间层标的"，所以把那个符号传进来即可 —— 比让这一列空着好。
+    ``pair_symbol`` 是「跟踪」列的兜底。CK2b 已经把 ``FundPairReference`` 迁好了，
+    它自己知道跟踪谁（``GetPairRef()``）；但这一路的 ref 未必是
+    ``FundPairReference``，所以把符号作为参数传进来仍然更稳 ——
+    调用方本来就持有那个标的（这是 ``$arLev`` 的来源），不需要绕 ref 再问一次。
+
+    早期版本在这一段写过"引用对象在未迁移 ``FundPairReference`` 的情况下拿不到
+    ``GetPairRef()``"，CK2b 之后那句话不再成立，删掉以免误导。
     """
     refs = [ref for ref in (leverage_refs or ()) if ref is not None]
     if not refs or fund is None:

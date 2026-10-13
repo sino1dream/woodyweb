@@ -7,12 +7,37 @@
 分支    条件                                         承载页面
 =====  ==========================================  ==================
 1      ``$ref->IsFundA()``                          ``/fund/<symbol>``（CK1）
-2      ``StockGetFundPairReference()``              CK2b
+2      ``StockGetFundPairReference()``              ``/stock/<symbol>``（CK2b）
 3      ``StockGetHoldingsReference()``              CK4
 4      **else**（本模块）                            ``/stock/<symbol>``
 =====  ==========================================  ==================
 
-本模块就是第 4 个分支，源码照抄如下：
+本模块现在装**两个**分支：
+
+* :meth:`StockDetailService.get_fund_pair_detail` —— 第 2 分支（CK2b）
+* :meth:`StockDetailService.get_detail` —— 第 4 分支（CK3）
+
+两者共用同一个 ``/stock/<symbol>`` 路由，由路由层按"有没有 ``fundpair``
+记录"分流 —— 与 PHP 的 ``if / else if`` 顺序一致。
+
+第 2 分支的源码照抄如下：
+
+.. code-block:: php
+
+    else if ($fund_pair_ref = StockGetFundPairReference($strSymbol))
+    {
+        EchoFundArrayEstParagraph(array($fund_pair_ref));
+        EchoFundListParagraph(array($fund_pair_ref));
+        EchoFundPairSmaParagraph($fund_pair_ref);
+        EchoFundHistoryParagraph($fund_pair_ref);
+    }
+
+本版做了前两段与第四段，**第三段（``EchoFundListParagraph``）与
+``EchoFundHistoryParagraph`` 留作缺口** —— 见 :meth:`get_fund_pair_detail`
+的说明：它们各自要一张新的表（跟踪表 / 净值估计对照表），属于"段落迁移"
+而不是"引用层迁移"，不必堵在 CK2b 这条线上。
+
+第 4 分支的源码照抄如下：
 
 .. code-block:: php
 
@@ -69,7 +94,7 @@ from web.bootstrap import install_paths
 install_paths()
 
 from calc.futurepremium import get_future_interest_premium, php_round  # noqa: E402
-from ref.refobj import StockGetPairReferences  # noqa: E402
+from ref.refobj import StockGetFundPairReference, StockGetPairReferences  # noqa: E402
 from web.services.detail_sections import (  # noqa: E402
     build_netvalue_close,
     build_shares,
@@ -156,7 +181,97 @@ class StockDetailService:
         #: ``LayoutUseWide()`` —— 宽屏时表格多几列
         self.wide = wide
 
-    # -- 对外 -------------------------------------------------------------
+    # -- 第 2 分支：StockGetFundPairReference（CK2b） ---------------------
+    def get_fund_pair_detail(
+        self,
+        symbol: str,
+        ref: Any = None,
+        sma_service: Any = None,
+        history_service: Any = None,
+        fundest_service: Any = None,
+    ) -> dict[str, Any] | None:
+        """``_mystock.php:131-136`` 的 ``fund_pair_ref`` 分支。
+
+        ``ref`` 是 :class:`~ref.refobj.FundPairReference`；**没有配对记录时返回
+        ``None``**，由调用方决定是退化到第 4 分支还是整页空。
+
+        这一段能画出东西，靠的是 CK2b 迁过来的那四个方法 ——
+        ``get_official_net_value`` / ``get_fair_net_value`` /
+        ``get_realtime_net_value`` / ``get_official_date``。``fundest_service``
+        正是靠 ``_invoke`` 探测前面两个来决定**要不要多画两列**（参考 EST /
+        实时 EST）：只有官方一档时表格是 3 列，有参考/实时时是 5 或 7 列。
+        换句话说，**这一层的迁移在页面上是肉眼可见的**，不是"测试绿了但页面没变"。
+
+        刻意不做的两段：
+
+        * ``EchoFundListParagraph(array($fund_pair_ref))``（``:133``）—— 跟踪表
+          要一行"符号 / 跟踪 / 仓位 / 校准值 / 日期 / 参考值"。现有的
+          ``qdii_fund_list.fund_list_table`` 是**另一形态**（给"谁跟踪了我的
+          中间层标的"那张杠杆表用的，末尾一列是对冲值），接不上；这里要的是
+          ref 自己的持仓校准信息。
+        * ``EchoFundHistoryParagraph($fund_pair_ref)``（``:135``）—— 净值 +
+          估计值的历史对照表，Python 侧还没有这张表。它的数据来源倒是现成的：
+          PHP 走 ``$ref->GetPairRef()``，而 ``FundPairReference.get_pair_ref()``
+          CK2 就迁好了。
+        """
+        if ref is None:
+            ref = self._build_fund_pair_ref(symbol)
+        if ref is None:
+            return None
+
+        return {
+            "symbol": symbol,
+            #: 分支标记。**必须有**：两个分支的 dict 键互不相交，而 Jinja 对
+            #: 缺失键的**链式**访问（``detail.sma.ah_pair``）会抛
+            #: ``UndefinedError`` 而不是返回假值 —— 模板没法靠 if 蒙混。
+            "branch": "fundpair",
+            "ref": ref,
+            #: ``EchoFundArrayEstParagraph(array($fund_pair_ref))``
+            "est": self._fund_est_table(fundest_service, ref),
+            #: ``EchoFundPairSmaParagraph($fund_pair_ref)``
+            "fund_pair_sma": self._fund_pair_sma(sma_service, ref),
+            "stockhistory": build_stock_history(history_service, symbol),
+            "netvalueclose": build_netvalue_close(history_service, symbol),
+            "shares": build_shares(history_service, symbol),
+        }
+
+    def _build_fund_pair_ref(self, symbol: str) -> Any:
+        """``StockGetFundPairReference($strSymbol)``；没配对记录返回 ``None``。
+
+        包 ``try``：连不上库时退化成"这一段不显示"，而不是整页 500。
+        """
+        try:
+            return StockGetFundPairReference(symbol, source=self.source)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _fund_est_table(service: Any, ref: Any) -> Any:
+        """``EchoFundArrayEstParagraph(array($ref))``（``fundestparagraph.php:124``）。"""
+        if service is None:
+            return None
+        try:
+            return service.get_table([ref])
+        except Exception:
+            return None
+
+    @staticmethod
+    def _fund_pair_sma(service: Any, ref: Any) -> Any:
+        """``EchoFundPairSmaParagraph($ref)``；拿不到就 ``None``。
+
+        注意这里**不传标题**：PHP 的 ``EchoFundPairSmaParagraph`` 默认带一个
+        ``GetFundPairSmaLink()`` 链接做标题，本站点还没有那一分类页，
+        所以省略（与 :meth:`_sma_sections` 里给对比表传
+        ``PAIR_TITLES`` 的处理不同 —— 那边的标题是纯文字，不带链接）。
+        """
+        if service is None:
+            return None
+        try:
+            return service.fund_pair_table(ref)
+        except Exception:
+            return None
+
+    # -- 第 4 分支：else（CK3） -------------------------------------------
     def get_detail(
         self,
         symbol: str,
@@ -178,6 +293,8 @@ class StockDetailService:
 
         return {
             "symbol": symbol,
+            #: 分支标记，用途见 :meth:`get_fund_pair_detail`
+            "branch": "generic",
             "ref": ref,
             "ab": self._pair_table(ab_ref, "ab"),
             "ah": self._pair_table(ah_ref, "ah"),

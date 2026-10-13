@@ -676,10 +676,11 @@ class PairReference(MysqlReference):
     ``sma_service`` / ``trading_service`` 就通过 ``_invoke`` 鸭子类型取数，
     **不用改**（见 ``README_pair_reference_migration.md``）。
 
-    **刻意不含** ``FundPairReference`` 的期货自动校准部分（``AverageCalibration`` /
-    ``DailyCalibration`` / ``GetOfficial*`` / ``GetRealtimeNetValue``）—— 那些与已迁的
-    ``fundestcalc`` / ``futurescalib`` 以及独立的 ``autocalibration`` 任务高度重叠，
-    且 CK3 非基金详情页用不到，单独作为 CK2b 推进。
+    **刻意不含** EST 取值与期货自动校准 —— 那些是 :class:`FundPairReference`
+    （``fundpairref.php:148``，CK2b 已迁）加的部分。拆开的理由：``PairReference``
+    是 A/H/ADR 对比表那类**只读**用途的最小实现，而 ``FundPairReference``
+    构造时还想写库（见它的 :meth:`~FundPairReference.__init__`），两者不该
+    混在一个类里 —— 页面路径上构造引用对象不能顺带写库。
     """
 
     #: 配对表名：``Ab`` → ``abpair`` / ``Ah`` → ``ahpair`` / ``Adr`` → ``adrpair`` /
@@ -902,6 +903,364 @@ class AhPairReference(PairReference):
 
 
 # ---------------------------------------------------------------------------
+# FundPairReference 用到的小工具
+# ---------------------------------------------------------------------------
+def _ref_call(ref: Any, name: str, *args: Any) -> Any:
+    """调引用对象上的方法；没有这个方法或抛异常都返回 ``None``。
+
+    ``FundPairReference`` 的配对标的可能是任何一种引用对象
+    （``MysqlReference`` / ``CnyReference`` / 联网抓取的那几种），
+    **不能假设它一定有某个方法** —— PHP 那边靠 ``method_exists`` 兜着，
+    这里 ``getattr`` 兜。
+    """
+    if ref is None:
+        return None
+    method = getattr(ref, name, None)
+    if method is None:
+        return None
+    try:
+        return method(*args)
+    except Exception:
+        return None
+
+
+def _ref_flag(ref: Any, name: str) -> bool:
+    """取引用对象上的布尔判定，取不到就算 ``False``。"""
+    return bool(_ref_call(ref, name))
+
+
+def _pair_val_is_false(value: Any) -> bool:
+    """对应 PHP 的 ``== false`` 松散比较（``fundpairref.php:246`` 那两处）。
+
+    PHP 里 ``if (($fEst = ...->GetNetValue($strDate)) == false)`` 用的是 ``==``，
+    所以 ``0`` / ``"0"`` / ``""`` / ``false`` 都会被当成"没取到"而回落到下一路。
+    Python 里必须**显式**把这些写出来，只判 ``None`` 会让净值为 0 的那一路
+    意外通过（然后算出除零）。
+    """
+    if value is None or value is False:
+        return True
+    if isinstance(value, str):
+        #: PHP 的字符串转布尔**只有** ``""`` 与 ``"0"`` 是假的 —— ``"0.0"`` 反而是真的。
+        #: 所以这里照抄那个集合，不能用 ``float(...) == 0`` 近似：后者会把
+        #: ``"0.0"`` 也当成"没取到"，与 PHP 走不同分支。
+        return value.strip() in ("", "0")
+    try:
+        return float(value) == 0.0
+    except (TypeError, ValueError):
+        return False
+
+
+def _fund_est_store(connection: Any) -> Any:
+    """延迟取 ``FundEstStore``（``auto/sql/fundeststore.py``）。
+
+    **延迟的原因**：``sql`` 包里的 ``fundeststore`` 会反向用到本模块的引用对象，
+    模块级 ``import`` 会形成环，所以和 :meth:`QdiiReference._estimator` 里
+    ``from calc.fundestcalc import ...`` 一样放在函数内。
+    """
+    from sql.fundeststore import FundEstStore
+    return FundEstStore(connection)
+
+
+class FundPairReference(PairReference):
+    """对应 ``php/stock/fundpairref.php:148`` 的 ``FundPairReference``。
+
+    相对 :class:`PairReference` 多三块：
+
+    1. **四个 EST 取值** —— :meth:`get_official_date` / :meth:`get_official_net_value` /
+       :meth:`get_fair_net_value` / :meth:`get_realtime_net_value`
+       （``fundpairref.php:224``-``:275``）。``fundest_service`` 正是靠 ``_invoke``
+       探测 ``get_fair_net_value`` / ``get_realtime_net_value`` 决定要不要多画
+       两列（见 ``fundest_service.build_fund_est_columns``）；**没有这两个方法，
+       EST 表就永远只有"官方"一档**。
+    2. **``netvalue_ref``**（``:150`` / ``:208``）；
+    3. **自动校准**（``:174`` / ``:188``）—— PHP 在**构造函数里**写库，本版收进
+       ``auto_write`` 开关，理由见 :meth:`__init__`。
+
+    .. note::
+
+       PHP 里那个方法叫 ``AverageCalibraion``（**少一个 ``t``**，``:174``）。
+       本版用正确拼写，``camelCase`` 别名两个拼写都给，免得对照时找不到。
+    """
+
+    #: ``$netvalue_ref``（``fundpairref.php:150``）；``None`` 对应 PHP 的 ``false``。
+    netvalue_ref = None
+    #: ``$realtime_callback``（``fundpairref.php:151``）。
+    realtime_callback = None
+
+    def __init__(self, symbol: str, source: Any = None, callback: Any = None,
+                 quote_loader: Callable[[str], Any] = None,
+                 auto_write: bool = False):
+        """``callback`` 对应 PHP 构造的第二个参数 ``$callback``（实时估值回调）。
+
+        **``auto_write`` 默认关是与 PHP 的刻意偏差**：PHP 在构造里无条件调
+        ``AverageCalibraion()``，``GetOfficialNetValue()`` 里也直接调
+        ``StockUpdateEstResult()`` —— 也就是说**每次页面渲染都在写库**。
+        本项目的架构是「实时抓取只跑 daemon、web 只读」（``auto/refquote.py``），
+        引用对象在 web 路径上会被反复构造，让它顺手写库既违背分层、
+        也没办法在单测里关掉。写库交给 ``autocalibrationcli`` / ``fundestcli``
+        统一负责；这里 ``auto_write=False`` 时**只算不写**。
+        """
+        #: 两个写相关开关要在 ``super().__init__()`` **之前**设好：父类构造会走
+        #: ``load_calibration()``，那条路虽然不写库，但 ``_auto_write`` 读不到会
+        #: 抛 ``AttributeError`` 而不是"默认不写"。
+        self._auto_write = auto_write
+        super().__init__(symbol, source=source, quote_loader=quote_loader)
+
+        pair_ref = self.get_pair_ref()
+        if pair_ref is None:
+            return
+        self.realtime_callback = callback
+
+        # ``fundpairref.php:160-163``
+        if _ref_flag(pair_ref, "is_sina_future_us"):
+            if self._check_adjust_time(pair_ref, self):
+                self.average_calibration()
+        # ``fundpairref.php:165-170``
+        if _ref_flag(self, "is_sina_future_us"):
+            # PHP 原注释：``$this->netvalue_ref = $this; Can NOT do this in __construct``
+            # —— 构造期间把自己赋给自己会形成循环引用太早，所以那一分支**不建
+            # netvalue_ref**，只做校准。
+            if self._check_adjust_time(self, pair_ref):
+                self.average_calibration()
+        else:
+            #: ``new NetValueReference($strSymbol)``（``:170``）。Python 侧没有
+            #: 对应的类，用 ``MysqlReference`` 近似 —— 见模块 docstring 的
+            #: known deviation 一节。
+            self.netvalue_ref = MysqlReference(symbol, source=source)
+
+    # -- 自动校准（``fundpairref.php:174`` / ``:188``） ---------------------
+    def _check_adjust_time(self, ref: Any, other: Any) -> bool:
+        """``$ref->CheckAdjustFactorTime($other)``（``fundpairref.php:162`` / ``:168``）。
+
+        ``auto_write`` 关时恒 ``False`` —— 闸门通过了也不写。
+        """
+        if not getattr(self, "_auto_write", False):
+            return False
+        return _ref_flag(ref, "check_adjust_factor_time") and _ref_call(
+            ref, "check_adjust_factor_time", other) is True
+
+    def average_calibration(self) -> Any:
+        """对应 ``AverageCalibraion()``（``fundpairref.php:174``，PHP 拼写少了 ``t``）。
+
+        算出校准因子 → 按**平均**写入 calibration 表 → 写 lastcalibration →
+        :meth:`load_calibration` 重载。
+
+        ``auto_write`` 关时只走到"算出因子"为止并返回它 —— 这样这个方法在页面
+        路径上是纯读的，在 CLI 路径上（``auto_write=True``）才落库。
+
+        **写库部分依赖数据源提供写入口**，本项目的 ``FundDataSource`` 还没有
+        ``WriteDailyAverage`` / ``WriteVal`` 的对应方法（只有读），所以这里保留
+        ``_calibration_writer`` 注入位：注入了才写，没注入就当作 dry-run。
+        """
+        pair_ref = self.get_pair_ref()
+        stock_id = self.get_stock_id()
+        if pair_ref is None or stock_id is None:
+            return None
+        factor = self.calc_factor(pair_ref.get_val(), self.get_val(), self.get_date())
+        if factor is None:
+            return None
+        writer = getattr(self, "_calibration_writer", None)
+        if writer is None or not self._auto_write:
+            return factor
+        try:
+            writer(stock_id, self.get_date(), str(factor), self.get_price())
+        except Exception:
+            return factor
+        self.load_calibration()
+        return factor
+
+    def calc_factor(self, pair_net_value: Any, net_value: Any, date: Any = False) -> Any:
+        """对应 ``CalcFactor()``（``fundpairref.php:213``）。
+
+        与 :meth:`est_from_pair` **严格互逆** —— 这是校准能自洽的前提：
+
+        ============  ========================  ==============================
+        本符号         ``EstFromPair``          ``CalcFactor``
+        ============  ========================  ==============================
+        A 股          ``pair * cny / factor``   ``pair * cny / netvalue``
+        其它          ``pair / cny / factor``   ``pair / (netvalue * cny)``
+        ============  ========================  ==============================
+
+        **两个分支的汇率方向相反**，不要合并成一个式子。这也是它不能复用
+        ``futurescalib.FuturesCalibrator.calc_factor`` 的原因 —— 后者只有 A 股
+        那一式（``期货价 × cny / 指数价``，见 ``fundcalc.qdii_get_calibration``）。
+
+        已知偏差：``$fCny`` 为 0 时 PHP 会得到 ``INF``，本版退回不含汇率的比值
+        （宁可少一个汇率因子，也不把 ``INF`` 写进校准表）。
+        """
+        if pair_net_value in (None, "") or net_value in (None, ""):
+            return None
+        try:
+            factor = float(pair_net_value) / float(net_value)
+        except (TypeError, ValueError, ZeroDivisionError):
+            return None
+        cny_ref = self.get_cny_ref()
+        if cny_ref is None:
+            return factor
+        cny = _ref_call(cny_ref, "get_val", date)
+        try:
+            cny = float(cny)
+        except (TypeError, ValueError):
+            return factor
+        if cny == 0:
+            return factor
+        # PHP: ``if ($this->IsSymbolA()) $fNetValue /= $fCny; else $fNetValue *= $fCny;``
+        return factor * cny if self.is_symbol_a() else factor / cny
+
+    def get_net_value_ref(self) -> Any:
+        """对应 ``GetNetValueRef()``（``fundpairref.php:208``）。
+
+        PHP 的写法是 ``$this->netvalue_ref ? $this->netvalue_ref : $this`` ——
+        **没有净值引用时返回自己**（``netvalue_ref`` 为 ``false``）。
+        """
+        return self.netvalue_ref if self.netvalue_ref is not None else self
+
+    # -- 官方日期（``fundpairref.php:224``） --------------------------------
+    def get_official_date(self) -> Any:
+        """取配对标的的行情日期。
+
+        中间这一层是 PHP 的 ``if ($this->cny_ref->GetClose($strOfficialDate) === false)``
+        分支：汇率引用在**那一天**没有收盘价时（当天汇率还没公布），换用
+        ``fundest`` 表里本标的的最新日期 —— PHP 原注释
+        ``// Load last value from database``。
+        """
+        pair_ref = self.get_pair_ref()
+        if pair_ref is None:
+            return None
+        date = _ref_call(pair_ref, "get_date")
+        cny_ref = self.get_cny_ref()
+        if cny_ref is None:
+            return date
+        close = _ref_call(cny_ref, "get_close", date)
+        if not _pair_val_is_false(close):
+            return date
+        return self._official_date_from_est(date)
+
+    def _official_date_from_est(self, fallback: Any) -> Any:
+        """``GetFundEstSql()->GetDateNow($this->GetStockId())``（``:232``）。
+
+        需要数据库连接；拿不到就退回传入的日期 —— 这比返回 ``None`` 好：
+        官方 EST 那一列还能画出来，只是日期可能不是最新。
+        """
+        stock_id = self.get_stock_id()
+        if stock_id is None:
+            return fallback
+        connection = getattr(self.source, "connection", None)
+        if connection is None:
+            return fallback
+        try:
+            date = _fund_est_store(connection).get_latest_date(stock_id)
+        except Exception:
+            return fallback
+        return date if date else fallback
+
+    # -- 三个 EST（``fundpairref.php:238`` / ``:256`` / ``:267``） ----------
+    def get_official_net_value(self) -> Any:
+        """对应 ``GetOfficialNetValue()``（``fundpairref.php:238``）。
+
+        三路取中间层的值，**自上而下**回落：
+
+        1. 境外期货（黄金除外）→ ``str_vwap``（``floatval($this->pair_ref->strVWAP)``）；
+        2. 该日期的**净值**（``GetNetValue``）；
+        3. 配对标的的**现价**（``GetVal``）。
+
+        回落用 PHP 的 ``== false`` 口径（见 :func:`_pair_val_is_false`）——
+        净值正好为 0 时也要继续往下试。
+
+        最后的 ``StockUpdateEstResult`` 是**写库**行为，只在 ``auto_write``
+        打开时发生；闸门是 PHP 的 ``GetHourMinute() < 2055``（``:252``）。
+        """
+        pair_ref = self.get_pair_ref()
+        if pair_ref is None:
+            return None
+        date = self.get_official_date()
+        cny_ref = self.get_cny_ref()
+        cny = _ref_call(cny_ref, "get_val", date) if cny_ref is not None else False
+
+        est = None
+        if _ref_flag(pair_ref, "is_sina_future_except_gold_cn"):
+            est = getattr(pair_ref, "str_vwap", None)
+        if _pair_val_is_false(est):
+            est = _ref_call(pair_ref, "get_net_value", date)
+        if _pair_val_is_false(est):
+            est = _ref_call(pair_ref, "get_val")
+        if _pair_val_is_false(est):
+            return None
+
+        value = self.est_from_pair(est, cny)
+        if self._auto_write:
+            self._record_official(pair_ref, value, date)
+        return value
+
+    def _record_official(self, pair_ref: Any, value: Any, date: Any) -> bool:
+        """``StockUpdateEstResult()``（``fundpairref.php:252``）。
+
+        闸门是**配对标的的时刻**（``$this->pair_ref->GetHourMinute()``），
+        不是当前时刻 —— 所以这里传 ``gate_hhmm=None`` 跳过 ``write_if_ready``
+        自己的时刻判断，只留它的"净值未到货"那条。
+        """
+        stock_id = self.get_stock_id()
+        connection = getattr(self.source, "connection", None)
+        if stock_id is None or connection is None:
+            return False
+        hour_minute = _ref_call(pair_ref, "get_hour_minute")
+        if hour_minute is None:
+            return False
+        try:
+            store = _fund_est_store(connection)
+            if int(hour_minute) >= store.DEFAULT_GATE_HHMM:
+                return False
+            return bool(store.write_if_ready(stock_id, date, value, gate_hhmm=None))
+        except Exception:
+            return False
+
+    def get_fair_net_value(self) -> Any:
+        """对应 ``GetFairNetValue()``（``fundpairref.php:256``）。
+
+        两条 return，注意 PHP 的**控制流是穿过来的**而不是两个 ``if``：
+
+        * 有汇率引用、且官方日期不等于汇率日期 → 返回带汇率的估值；
+        * 否则（没有汇率引用，**或**日期相同）落到第二个判断：期货非黄金 /
+          官方日期不等于配对标的日期 → 返回不带汇率的估值；
+        * 都不满足 → ``False``（本版 ``None``）。
+
+        第二条 Return 不传 cny 是因为 :meth:`est_from_pair` 内部会自己用
+        :meth:`get_default_cny` 兜底（``fundpairref.php:87``）。
+        """
+        pair_ref = self.get_pair_ref()
+        if pair_ref is None:
+            return None
+        official_date = self.get_official_date()
+        cny_ref = self.get_cny_ref()
+        if cny_ref is not None:
+            cny_date = _ref_call(cny_ref, "get_date")
+            if official_date != cny_date:
+                return self.est_from_pair(pair_ref.get_val(), _ref_call(cny_ref, "get_val"))
+        if _ref_flag(pair_ref, "is_sina_future_except_gold_cn") or (
+                official_date != _ref_call(pair_ref, "get_date")):
+            return self.est_from_pair(pair_ref.get_val())
+        return None
+
+    def get_realtime_net_value(self) -> Any:
+        """对应 ``GetRealtimeNetValue()``（``fundpairref.php:267``）。
+
+        **没有回调就没有实时估值**（PHP 返回 ``false``）—— 这一档靠
+        ``$realtime_callback`` 存在与否决定，所以:meth:`fundest_service` 探测
+        ``get_realtime_net_value`` 时，没建回调的对象应该让它**连列都不出现**；
+        本方法返回 ``None`` 即可，列的出现与否由调用方按返回值判断。
+        """
+        if self.realtime_callback is None:
+            return None
+        cny_ref = self.get_cny_ref()
+        cny = _ref_call(cny_ref, "get_val") if cny_ref is not None else False
+        try:
+            value = self.realtime_callback()
+        except Exception:
+            return None
+        return self.est_from_pair(value, cny)
+
+
+# ---------------------------------------------------------------------------
 # 配对引用工厂（对应 php/stock.php:328-379）
 # ---------------------------------------------------------------------------
 def _get_ab_pair_reference(symbol: str, source: Any = None) -> Any:
@@ -967,6 +1326,23 @@ def StockGetPairReferences(symbol: str, source: Any = None) -> tuple:
                     if ah_ref is not None:
                         ab_ref = _get_ab_pair_reference(ah_ref.get_symbol(), source)
     return (ab_ref, ah_ref, adr_ref)
+
+
+def StockGetFundPairReference(symbol: str, source: Any = None, callback: Any = None,
+                              auto_write: bool = False) -> Any:
+    """对应 ``StockGetFundPairReference()``（``woody/res/php/_stock.php:142``）。
+
+    门禁是 ``SqlGetFundPair($strSymbol)`` —— 也就是 ``fundpair`` 表里有没有这一行。
+    这个查找 CK2 已经实现好了（:func:`_lookup_pair_symbol`，``pair_table`` 默认
+    就是 ``fundpair``），所以这里**没有规则**，只是复用 + 包一层。
+
+    没有配对记录返回 ``None``（对应 PHP 的 ``false``）—— 调用方用它决定
+    ``_mystock.php:131`` 那个分支走不走。
+    """
+    if not _lookup_pair_symbol(source, symbol, "fundpair"):
+        return None
+    return FundPairReference(symbol, source=source, callback=callback,
+                             auto_write=auto_write)
 
 
 class FundReference(MysqlReference):
@@ -1662,6 +2038,17 @@ PairReference.EstFromPair = PairReference.est_from_pair
 PairReference.EstToPair = PairReference.est_to_pair
 PairReference.GetPriceRatio = PairReference.get_price_ratio
 PairReference.GetLastCalibrationVal = PairReference.get_last_calibration_val
+
+FundPairReference.GetNetValueRef = FundPairReference.get_net_value_ref
+FundPairReference.CalcFactor = FundPairReference.calc_factor
+FundPairReference.GetOfficialDate = FundPairReference.get_official_date
+FundPairReference.GetOfficialNetValue = FundPairReference.get_official_net_value
+FundPairReference.GetFairNetValue = FundPairReference.get_fair_net_value
+FundPairReference.GetRealtimeNetValue = FundPairReference.get_realtime_net_value
+FundPairReference.AverageCalibration = FundPairReference.average_calibration
+#: PHP 原名的拼法是 ``AverageCalibraion``（**少一个 ``t``**，``fundpairref.php:174``），
+#: 一并挂上，免得照着 PHP 源码搜过来时找不到。
+FundPairReference.AverageCalibraion = FundPairReference.average_calibration
 
 FundReference.GetOfficialDate = FundReference.get_official_date
 FundReference.SetForex = FundReference.set_forex
