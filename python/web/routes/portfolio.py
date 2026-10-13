@@ -1,10 +1,9 @@
 """投资组合页（``woody/res/myportfoliocn.php``）的路由。
 
 对应 PHP ``woody/res/php/_myportfolio.php`` 的 ``EchoAll()``：先渲染参考数据
-段落，再渲染**投资组合**段落（``EchoPortfolioParagraph``），最后是合并段落。
-本页只迁中间那一段 —— 参考数据段落已有 ``/qdii`` 与详情页复用，
-合并段落（``_transEchoMergeParagraph``）是同一分组下多笔交易的合并视图，
-优先级更低。
+段落，再渲染**投资组合**段落（``EchoPortfolioParagraph``），最后是合并段落
+（``_transEchoMergeParagraph``）。本页迁后两段 —— 参考数据段落已有 ``/qdii``
+与详情页复用。
 
 ## 为什么是"演示数据"而不是真实持仓
 
@@ -12,7 +11,7 @@ PHP 那边的数据来自三张表：``stockgroup``（按 member 的分组）、
 ``stockgroupitem``（分组内的标的与预统计量）、``stocktransaction``
 （每一笔买卖）。**演示库里这三张表都不存在**，而账号登录体系
 （``$acct->Auth()``）用户要求暂缓。所以这里用一份**写死的样例数据集**，
-把 ``portfolioparagraph.php`` 的每个分支都走到：
+把两个段落的每个分支都走到：
 
 * 六个 LOF 套利符号中的三个（演示库里只有这三个）；
 * ``KWEB`` 的跨标的套利测试列；
@@ -20,7 +19,11 @@ PHP 那边的数据来自三张表：``stockgroup``（按 member 的分组）、
 * ``hf_ES`` 的合约乘数；
 * 一个没有测试列的普通标的（六格行）；
 * 一个清仓标的（两格行）；
-* ``fx_susdcnh`` 的美元折算行（必须排在 QDII 之后）。
+* ``fx_susdcnh`` 的美元折算行（必须排在 QDII 之后）；
+* **第二个分组**与第一组有符号重叠（``KWEB`` / ``SPY``）—— 合并段落
+  （``_transEchoMergeParagraph``）就是为"同一个符号出现在多个分组里"
+  准备的，没有重叠它只会得到空字典，PHP 的 ``count($arMerge) > 0``
+  守卫会整张不渲染。
 
 价格是**样例值**，不对应任何一天的行情。页面顶部有明确标注。
 """
@@ -37,6 +40,8 @@ from core.stocktrans import MyStockTransaction  # noqa: E402
 from web.services.portfolio_service import (  # noqa: E402
     PortfolioCnyTotal,
     build_portfolio_table,
+    build_merge_table,
+    merge_transactions_by_symbol,
     sort_trans_by_symbol,
 )
 
@@ -69,8 +74,18 @@ DEMO_HOLDINGS = [
     ("KWEB", 200, "30.00", "33.80", 1.00, "KraneShares中概互联网ETF"),
     ("hf_ES", 25, "5000.0", "5200.0", 1.00, "标普500指数期货"),
     ("SH513100", 1000, "1.800", "2.100", 1.00, "国泰纳斯达克100ETF"),
+    ("SPY", 40, "445.00", "470.00", 1.00, "SPDR标普500ETF"),
     ("QQQ", 0, "0.0", "400.00", 1.00, "Invesco QQQ Trust"),
     ("fx_susdcnh", 100000, "7.100", "7.120", 1.00, "美元离岸人民币"),
+]
+
+#: 第二个样例分组。与 :data:`DEMO_HOLDINGS` 有**符号重叠**（``KWEB`` /
+#: ``SPY``）—— 合并段落（``_transEchoMergeParagraph``）就是为"同一个符号
+#: 出现在多个分组里"准备的；没有重叠时合并字典为空，PHP 的
+#: ``count($arMerge) > 0`` 守卫会整张不渲染，演示页就少一段。
+DEMO_HOLDINGS_GROUP2 = [
+    ("KWEB", 100, "31.00", "33.80", 1.00, "KraneShares中概互联网ETF"),
+    ("SPY", 60, "455.00", "470.00", 1.00, "SPDR标普500ETF"),
 ]
 
 #: ``GetStockHedge()`` 的演示替身。LOF 套利的对冲比率接近 1
@@ -124,14 +139,17 @@ class _DemoRef:
 
 
 def _demo_transactions():
-    """把 :data:`DEMO_HOLDINGS` 变成 ``MyStockTransaction`` 列表。"""
+    """把 :data:`DEMO_HOLDINGS` 与 :data:`DEMO_HOLDINGS_GROUP2` 变成
+    ``MyStockTransaction`` 列表。两个分组用不同的 ``group_id``。"""
     trans_list = []
-    for symbol, shares, cost, price, position, name in DEMO_HOLDINGS:
-        ref = _DemoRef(symbol, price, position, name)
-        trans = MyStockTransaction(ref, "demo")
-        # 一笔买入 + 一笔手续费，让成本里含 fees（见 stocktrans.add_sql_transaction）
-        trans.add_transaction(shares, float(cost) * shares + 5.0)
-        trans_list.append(trans)
+    for group_id, holdings in (("demo", DEMO_HOLDINGS),
+                               ("demo2", DEMO_HOLDINGS_GROUP2)):
+        for symbol, shares, cost, price, position, name in holdings:
+            ref = _DemoRef(symbol, price, position, name)
+            trans = MyStockTransaction(ref, group_id)
+            # 一笔买入 + 一笔手续费，让成本里含 fees（见 stocktrans.add_sql_transaction）
+            trans.add_transaction(shares, float(cost) * shares + 5.0)
+            trans_list.append(trans)
     return trans_list
 
 
@@ -142,19 +160,28 @@ def _demo_names():
 
 @portfolio_bp.route("/portfolio")
 def portfolio_page():
-    """投资组合段落（``php/ui/portfolioparagraph.php``）。"""
+    """投资组合段落（``php/ui/portfolioparagraph.php``）+ 合并段落
+    （``_myportfolio.php`` 的 ``_transEchoMergeParagraph``）。"""
+    trans_list = sort_trans_by_symbol(_demo_transactions())
     cny = PortfolioCnyTotal()
     table = build_portfolio_table(
-        sort_trans_by_symbol(_demo_transactions()),
+        trans_list,
         cny=cny,
         name_of=lambda symbol: _demo_names().get(symbol, ""),
         hedge_of=lambda symbol, stock_id: DEMO_HEDGE,
         items_of=lambda group_id: DEMO_GROUP_ITEMS,
         symbol_of=lambda stock_id: stock_id,
     )
+    # 合并段落消费同一批交易（PHP 的 _echoPortfolio 也是按这个顺序调）。
+    # 它不碰 static $fCny，所以放在组合表之后建也无所谓。
+    merge_table = build_merge_table(
+        merge_transactions_by_symbol(trans_list),
+        name_of=lambda symbol: _demo_names().get(symbol, ""),
+    )
     return render_template(
         "portfolio.html",
         table=table,
+        merge_table=merge_table,
         cny_total=cny.value,
-        holding_count=len(DEMO_HOLDINGS),
+        holding_count=len(DEMO_HOLDINGS) + len(DEMO_HOLDINGS_GROUP2),
     )

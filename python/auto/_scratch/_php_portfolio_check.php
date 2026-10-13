@@ -30,6 +30,8 @@
 //   ⑤ _transSortBySymbol + 分块拼接  行序（_myportfolio.php:14 + :151）
 //   ⑥ StockTransaction / MyStockTransaction / AddSqlTransaction /
 //      GetSqlTransactionDate   持仓模型算术（stocktrans.php）
+//   ⑦ _transEchoMergeParagraph + _echoMergeParagraph  合并段落
+//      （_myportfolio.php:85-119：合并字典 + 三列/两列行）
 //
 // ## 已知偏差（Python 侧刻意不同，compare 脚本里有 KNOWN_DIVERGENCES）
 //
@@ -37,6 +39,11 @@
 //     对照（生产上美元汇率永不为 0，PHP 那边只会警告 + 产出垃圾）。
 //   * GetSqlTransactionDate 找不到空格时 PHP 回 false，端口按 AGENTS.md
 //     的字符串类映射规则回 None（compare 侧把 false 归一成 None 后比对）。
+//   * TableColumnGetQuantity() 打桩成字面量 '数量'：PHP 的 GetDisplay()
+//     会包 <b>，端口标题是纯文本（README_ui_column_migration.md 已记：
+//     加粗归模板/CSS）。
+//   * 合并段落首格链接的 URL 形状不在本 harness 对照（桩返回同形状
+//     <a>），由 test_stocklink 与 _ref_my_stock_link 的单测覆盖。
 //
 // **注意**：本文件不能出现 PHP 结束标签（注释里也不行）。
 // ---------------------------------------------------------------------------
@@ -150,6 +157,59 @@ function GetStockHedge($strSymbol, $strStockId)
     return isset($ar[$strStockId]) ? floatval($ar[$strStockId]) : 1.0;
 }
 
+// ---- 合并段落（_myportfolio.php:51-119）的桩 ---------------------------------
+// _transEchoMergeParagraph() 末尾会调 _echoMergeParagraph()。真身改名为
+// _echoMergeParagraphReal 后照常运行（渲染桩在下面），这个桩只负责把
+// $arMerge 截下来喂给 JSON —— 合并字典本身也是对照对象。
+function _echoMergeParagraph($arMerge)
+{
+    $GLOBALS['pq_merge_dict'] = array();
+    foreach ($arMerge as $strSymbol => $trans)
+    {
+        $GLOBALS['pq_merge_dict'][] = array(
+            'key' => $strSymbol,
+            'shares' => $trans->GetTotalShares(),
+            'cost' => $trans->GetTotalCost(),
+            'records' => $trans->GetTotalRecords(),
+        );
+    }
+    return _echoMergeParagraphReal($arMerge);
+}
+
+// _echoMergeParagraph() 的渲染三件套全打桩：总宽 290 远小于版面宽度，
+// PHP 的"桌子太宽就整表不渲染"守卫永不触发，所以 EchoTableParagraphBegin()
+// 直接回 true，只负责截获表头信息。
+function EchoTableParagraphBegin($ar, $strId, $str = '')
+{
+    $GLOBALS['pq_merge_table'] = array('id' => $strId, 'title' => $str,
+                                       'columns' => count($ar));
+    return true;
+}
+
+function EchoTableParagraphEnd()
+{
+    return true;
+}
+
+// 行内容：截获 $ar —— 三格（KWEB/XOP）或两格（其它符号），照抄不补
+function RefEchoTableColumn($ref, $ar, $bWide = false)
+{
+    $GLOBALS['pq_merge_rows'][] = $ar;
+}
+
+// 表头那三个列类只要存在即可（桩不渲染列头单元格）
+class TableColumnSymbol {}
+class TableColumnQuantity {}
+class TableColumnTest {}
+
+// TableColumnGetQuantity() 打桩成字面量：PHP 的 GetDisplay() 会包 <b>，
+// 而 Python 侧标题是纯文本（README_ui_column_migration.md 已记的偏差：
+// 加粗归模板/CSS），所以对照的是"合并"+列名 的拼接而不是 HTML 装饰。
+function TableColumnGetQuantity()
+{
+    return '数量';
+}
+
 // ---- 排序用的假 trans / ref ---------------------------------------------------
 // _transSortBySymbol() 只要 GetRef()->GetSymbol()；调用方分块还要
 // IsSymbolA() / IsSymbolH()。价格单独一个字段，给持仓模型用。
@@ -187,6 +247,15 @@ class FakeRef
     {
         return $this->strPrice;
     }
+
+    public function GetMyStockLink()
+    {
+        // 真 ref 的方法是 GetMyStockLink(GetSymbol(), GetDisplay())；这里
+        // 返回同形状的 <a>，URL 本身由 test_stocklink 与
+        // _ref_my_stock_link 的单测覆盖，不在本 harness 重复。
+        return '<a href="mystockcn.php?symbol=' . $this->strSymbol . '">'
+            . $this->strSymbol . '</a>';
+    }
 }
 
 class FakeTrans
@@ -222,16 +291,27 @@ $stocktrans = file_get_contents($phpDir . DIRECTORY_SEPARATOR . 'stocktrans.php'
 $testValBody = FExtractFunction($portpara, '_getPortfolioTestVal');
 $arbStrBody = FExtractFunction($portpara, '_getArbitrageTestStr');
 $arbQtyBody = FExtractFunction($stockcomm, 'GetArbitrageQuantity');
+$refMyStockLinkBody = FExtractFunction($stockcomm, 'RefGetMyStockLink');
 $sortBody = FExtractFunction($myportfolio, '_transSortBySymbol');
+$mergeTransBody = FExtractFunction($myportfolio, '_transEchoMergeParagraph');
+$mergeEchoBody = FExtractFunction($myportfolio, '_echoMergeParagraph');
 $stockTransClass = FExtractClass($stocktrans, 'StockTransaction');
 $myStockTransClass = FExtractClass($stocktrans, 'MyStockTransaction');
 $sqlDateFn = FExtractFunction($stocktrans, 'GetSqlTransactionDate');
 $addSqlFn = FExtractFunction($stocktrans, 'AddSqlTransaction');
 
+// _echoMergeParagraph 的真身改名：桩 _echoMergeParagraph()（上面）截获
+// $arMerge 后转调它，两边的逻辑就都跑到了。
+$mergeEchoReal = str_replace('function _echoMergeParagraph(',
+                             'function _echoMergeParagraphReal(', $mergeEchoBody);
+
 foreach (array('_getPortfolioTestVal' => $testValBody,
                '_getArbitrageTestStr' => $arbStrBody,
                'GetArbitrageQuantity' => $arbQtyBody,
+               'RefGetMyStockLink' => $refMyStockLinkBody,
                '_transSortBySymbol' => $sortBody,
+               '_transEchoMergeParagraph' => $mergeTransBody,
+               '_echoMergeParagraph' => $mergeEchoBody,
                'StockTransaction' => $stockTransClass,
                'MyStockTransaction' => $myStockTransClass,
                'GetSqlTransactionDate' => $sqlDateFn,
@@ -247,7 +327,8 @@ foreach (array('_getPortfolioTestVal' => $testValBody,
 // 拼一个临时文件：同样的命名空间 + 桩已在主文件里，这里只放原文
 $tmp = tempnam(sys_get_temp_dir(), 'pf') . '.php';
 $header = "<?php\nnamespace PortfolioCheck;\n";
-$blocks = array($testValBody, $arbStrBody, $arbQtyBody, $sortBody,
+$blocks = array($testValBody, $arbStrBody, $arbQtyBody, $refMyStockLinkBody,
+                $sortBody, $mergeTransBody, $mergeEchoReal,
                 $stockTransClass, $myStockTransClass, $sqlDateFn, $addSqlFn);
 file_put_contents($tmp, $header . implode("\n", $blocks) . "\n");
 require $tmp;
@@ -497,6 +578,60 @@ foreach ($sqlDateCases as $filled)
     $sqlDate[] = array('filled' => $filled, 'value' => GetSqlTransactionDate(array('filled' => $filled)));
 }
 
+// ⑨ 合并段落（_myportfolio.php:85-119）：合并字典 + 渲染出来的行
+//    每项是 (符号或 null, 份额, 成本)；null = ref 缺失（GetSymbol() 回 false）
+$mergeCases = array(
+    // 同符号两笔
+    array(array('KWEB', 100, 10.0), array('KWEB', 50, 5.0)),
+    // 同符号三笔
+    array(array('KWEB', 100, 10.0), array('KWEB', 50, 5.0), array('KWEB', 25, 2.5)),
+    // 两个符号各两笔
+    array(array('KWEB', 100, 10.0), array('KWEB', 50, 5.0),
+          array('XOP', 30, 3.0), array('XOP', 70, 7.0)),
+    // 末组两笔：收尾那句用泄漏出循环的 $strSymbol
+    array(array('KWEB', 100, 10.0), array('KWEB', 50, 5.0),
+          array('XOP', 30, 3.0), array('XOP', 70, 7.0), array('SPY', 5, 0.5)),
+    // 只有单笔符号 → 空字典，整张表不渲染
+    array(array('SPY', 5, 0.5)),
+    array(array('KWEB', 100, 10.0), array('SPY', 5, 0.5)),
+    // 合并后净额为 0：表头渲染、行被过滤
+    array(array('KWEB', 100, 10.0), array('KWEB', -100, -10.0)),
+    // 非连续同符号：第二个 KWEB 把 SPY 吞进来（照抄的 bug）
+    array(array('KWEB', 100, 10.0), array('SPY', 30, 3.0), array('KWEB', 50, 5.0)),
+    // ref 缺失：GetSymbol() 回 false，两个无引用交易并成一组（键铸成 0）
+    array(array(null, 100, 10.0), array(null, 50, 5.0)),
+    // 大数量：strval() 不带千分位
+    array(array('SPY', 600000, 3.0), array('SPY', 700000, 7.0)),
+    // 末组单笔不进字典
+    array(array('A', 1, 0.5), array('A', 2, 0.25), array('B', 3, 0.75)),
+    // 首组单笔不进字典，末组两笔走收尾
+    array(array('A', 1, 0.5), array('B', 3, 0.75), array('B', 4, 1.25)),
+    // 空输入
+    array(),
+);
+$merge = array();
+foreach ($mergeCases as $case)
+{
+    $arTrans = array();
+    foreach ($case as $spec)
+    {
+        $ref = $spec[0] === null ? false : new FakeRef($spec[0]);
+        $t = new MyStockTransaction($ref, false);
+        $t->AddTransaction($spec[1], $spec[2]);
+        $arTrans[] = $t;
+    }
+    $GLOBALS['pq_merge_dict'] = null;
+    $GLOBALS['pq_merge_rows'] = array();
+    $GLOBALS['pq_merge_table'] = null;
+    _transEchoMergeParagraph($arTrans);
+    $merge[] = array(
+        'case' => $case,
+        'dict' => $GLOBALS['pq_merge_dict'] === null ? array() : $GLOBALS['pq_merge_dict'],
+        'table' => $GLOBALS['pq_merge_table'],
+        'rows' => $GLOBALS['pq_merge_rows'],
+    );
+}
+
 // ---- 输出 ---------------------------------------------------------------------
 // 诊断一律走 stderr，stdout 只承载 JSON。给了路径参数就写文件，方便
 // compare 脚本以 ref.json 复用同一份参考值。
@@ -509,13 +644,15 @@ $json = json_encode(array(
     'trans' => $trans,
     'sql_trans' => $sqlTrans,
     'sql_date' => $sqlDate,
+    'merge' => $merge,
 ), JSON_UNESCAPED_UNICODE);
 
 if (isset($argv[1]) && $argv[1] !== '-')
 {
     file_put_contents($argv[1], $json);
     fwrite(STDERR, "php cases: " . count($testVal) + count($arbStr) + count($arbQty)
-        + count($fxRow) + count($sort) + count($trans) + count($sqlTrans) + count($sqlDate)
+        + count($fxRow) + count($sort) + count($trans) + count($sqlTrans)
+        + count($sqlDate) + count($merge)
         . " -> " . $argv[1] . "\n");
 }
 else

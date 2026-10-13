@@ -42,9 +42,11 @@ from web.services.portfolio_service import (  # noqa: E402
     PortfolioCnyTotal,
     build_portfolio_row,
     build_portfolio_table,
+    build_merge_table,
     get_arbitrage_quantity,
     get_arbitrage_test_str,
     get_portfolio_test_val,
+    merge_transactions_by_symbol,
     portfolio_columns,
     portfolio_title,
     sort_trans_by_symbol,
@@ -566,6 +568,193 @@ class FormatIntDisplayTest(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# 合并段落（_myportfolio.php:85-119）
+# ---------------------------------------------------------------------------
+
+
+class MergeTransactionsTest(unittest.TestCase):
+    """``_transEchoMergeParagraph()``：同符号跨分组合并。
+
+    照抄两处 PHP 的不严谨：**连续假定**（非连续同符号会把上一个标的一起
+    吞掉）与收尾那句泄漏出循环的 ``$strSymbol``。
+    """
+
+    def _merged(self, *specs):
+        return merge_transactions_by_symbol(
+            [_trans(symbol, shares, cost) for symbol, shares, cost in specs])
+
+    def test_same_symbol_twice_merges(self):
+        merge = self._merged(("KWEB", 100, 10.0), ("KWEB", 50, 5.0))
+        self.assertEqual(list(merge), ["KWEB"])
+        merged = merge["KWEB"]
+        self.assertEqual(merged.get_total_shares(), 150)
+        self.assertEqual(merged.get_total_cost(), 15.0)
+        # Add() 每并一笔交易对象只让记录数 +1（不是加对方的记录数）
+        self.assertEqual(merged.get_total_records(), 2)
+
+    def test_same_symbol_three_times(self):
+        merge = self._merged(("KWEB", 100, 10.0), ("KWEB", 50, 5.0),
+                             ("KWEB", 25, 2.5))
+        self.assertEqual(merge["KWEB"].get_total_shares(), 175)
+        self.assertEqual(merge["KWEB"].get_total_records(), 3)
+
+    def test_two_symbols_insertion_order(self):
+        merge = self._merged(("KWEB", 100, 10.0), ("KWEB", 50, 5.0),
+                             ("XOP", 30, 3.0), ("XOP", 70, 7.0))
+        self.assertEqual(list(merge), ["KWEB", "XOP"])
+
+    def test_single_occurrence_symbol_absent(self):
+        """只出现一次的符号不进合并表 —— 每个符号只买过一份的人看不到这表。"""
+        merge = self._merged(("KWEB", 100, 10.0), ("KWEB", 50, 5.0), ("SPY", 5, 0.5))
+        self.assertEqual(list(merge), ["KWEB"])
+        self.assertEqual(self._merged(("SPY", 5, 0.5), ("TLT", 3, 0.5)), {})
+
+    def test_last_group_flush_uses_leaked_symbol(self):
+        """末组收尾：PHP 用泄漏出循环的 ``$strSymbol``（最后一个符号）。
+
+        连续前提下它恰好就是待结算组的符号 —— 碰巧对，但必须照抄。
+        """
+        merge = self._merged(("KWEB", 100, 10.0), ("KWEB", 50, 5.0),
+                             ("XOP", 30, 3.0), ("XOP", 70, 7.0),
+                             ("SPY", 5, 0.5))
+        self.assertEqual(list(merge), ["KWEB", "XOP"])
+
+    def test_non_consecutive_symbol_swallows_previous_group(self):
+        """非连续同符号：第二个 KWEB 把 SPY 的合计量一并吞掉（照抄的 bug）。
+
+        生产上不会发生（调用方传进来的已排序），但端口必须逐字复刻 ——
+        PHP 逐例对照里也有一条钉住它。
+        """
+        merge = self._merged(("KWEB", 100, 10.0), ("SPY", 30, 3.0),
+                             ("KWEB", 50, 5.0))
+        self.assertEqual(list(merge), ["KWEB"])
+        self.assertEqual(merge["KWEB"].get_total_shares(), 80)   # 30 + 50
+        self.assertEqual(merge["KWEB"].get_total_records(), 2)
+        self.assertNotIn("SPY", merge)
+
+    def test_ref_less_trans_group_under_false(self):
+        """ref 缺失时 ``GetSymbol()`` 回 ``False``，两个无引用交易并成一组。
+
+        PHP 会把 false 铸成数组键 ``0``；端口保留 ``False`` 原值 ——
+        该键只用于 ``switch`` 匹配，永不等于 KWEB/XOP，渲染无差别。
+        """
+        trans_list = []
+        for shares, cost in ((100, 10.0), (50, 5.0)):
+            trans = MyStockTransaction(None, "g1")
+            trans.add_transaction(shares, cost)
+            trans_list.append(trans)
+        merge = merge_transactions_by_symbol(trans_list)
+        self.assertEqual(list(merge), [False])
+        self.assertEqual(merge[False].get_total_shares(), 150)
+        self.assertEqual(merge[False].get_total_records(), 2)
+
+    def test_empty_and_none(self):
+        self.assertEqual(merge_transactions_by_symbol([]), {})
+        self.assertEqual(merge_transactions_by_symbol(None), {})
+
+
+class BuildMergeTableTest(unittest.TestCase):
+    """``_echoMergeParagraph()``：三列合并表（代码 / 数量 / 测试）。"""
+
+    def _merge(self, *specs):
+        return merge_transactions_by_symbol(
+            [_trans(symbol, shares, cost) for symbol, shares, cost in specs])
+
+    def test_table_shape(self):
+        table = build_merge_table(self._merge(("KWEB", 100, 10.0), ("KWEB", 50, 5.0)))
+        self.assertEqual(table["id"], "merge")
+        self.assertEqual(table["title"], "合并数量")
+        self.assertEqual(len(table["columns"]), 3)
+        self.assertEqual(len(table["rows"]), 1)
+
+    def test_empty_merge_returns_none(self):
+        """合并字典为空 → 整张表不渲染（PHP 的 ``count($arMerge) > 0`` 守卫）。"""
+        self.assertIsNone(build_merge_table({}))
+        self.assertIsNone(build_merge_table(self._merge(("SPY", 5, 0.5))))
+
+    def test_kweb_row_has_three_cells(self):
+        row = build_merge_table(
+            self._merge(("KWEB", 100, 10.0), ("KWEB", 50, 5.0)))["rows"][0]
+        self.assertEqual(row.cells, ["KWEB", "150", "650"])   # 150-200+700
+
+    def test_xop_row_has_three_cells(self):
+        row = build_merge_table(
+            self._merge(("XOP", 30, 3.0), ("XOP", 70, 7.0)))["rows"][0]
+        self.assertEqual(row.cells, ["XOP", "100", "100"])    # 100-00-00
+
+    def test_other_symbol_has_two_cells(self):
+        """KWEB/XOP 之外的符号只有两格 —— 照抄不补。"""
+        row = build_merge_table(
+            self._merge(("SPY", 30, 3.0), ("SPY", 70, 7.0)))["rows"][0]
+        self.assertEqual(row.cells, ["SPY", "100"])
+
+    def test_quantity_has_no_thousands_separator(self):
+        """``strval()`` 不是 ``number_format()`` —— 不带千分位逗号。"""
+        row = build_merge_table(
+            self._merge(("SPY", 600000, 3.0), ("SPY", 700000, 7.0)))["rows"][0]
+        self.assertEqual(row.cells[1], "1300000")
+
+    def test_net_zero_rows_filtered_but_header_rendered(self):
+        """合并后净额为 0：PHP 仍然渲染表头（``count`` 在过滤之前算）。"""
+        table = build_merge_table(self._merge(("KWEB", 100, 10.0), ("KWEB", -100, -10.0)))
+        self.assertIsNotNone(table)
+        self.assertEqual(table["rows"], [])
+
+    def test_first_cell_links_to_mystock_page(self):
+        """首格是 mystock 链接，不是个股表首格那个交易明细链接。"""
+        row = build_merge_table(
+            self._merge(("KWEB", 100, 10.0), ("KWEB", 50, 5.0)))["rows"][0]
+        self.assertEqual(row.href, "/woody/res/mystockcn.php?symbol=KWEB")
+        self.assertEqual(row.cells[0], "KWEB")
+
+    def test_name_fills_title(self):
+        row = build_merge_table(
+            self._merge(("KWEB", 100, 10.0), ("KWEB", 50, 5.0)),
+            name_of=lambda symbol: "中概互联")["rows"][0]
+        self.assertEqual(row.title, "中概互联")
+
+    def test_ref_less_row_has_empty_link(self):
+        """ref 缺失：``RefGetMyStockLink(false)`` 回空串，行里就是个空格子。"""
+        trans_list = []
+        for shares, cost in ((100, 10.0), (50, 5.0)):
+            trans = MyStockTransaction(None, "g1")
+            trans.add_transaction(shares, cost)
+            trans_list.append(trans)
+        table = build_merge_table(merge_transactions_by_symbol(trans_list))
+        self.assertEqual(len(table["rows"]), 1)
+        self.assertEqual(table["rows"][0].cells, ["", "150"])
+
+
+# ---------------------------------------------------------------------------
+# 第二个调用点（_stockaccount.php:207）：单分组原始数组
+# ---------------------------------------------------------------------------
+
+
+class RawGroupArrayTest(unittest.TestCase):
+    """``EchoPortfolioParagraph($group->GetStockTransactionArray())``。
+
+    ``_stockaccount.php`` 的 ``EchoStockTransaction()`` 传的是**单个分组
+    自己的交易数组**（``stockgroupitem`` 的 DB 顺序），不过 A/H/US 排序 ——
+    排序是 ``_myportfolio.php`` 那个调用方额外做的事。服务层因此保持
+    agnostic：给什么顺序就渲染什么顺序。两个调用点的差别只在入参，
+    不在服务（这也是它能被复用的原因）。
+    """
+
+    def test_renders_in_given_order(self):
+        table = build_portfolio_table([
+            _trans("TLT", 100, 8000.0, price="80.0"),
+            _trans("KWEB", 300, 24000.0, price="80.0"),
+        ])
+        self.assertEqual([row.cells[0] for row in table["rows"]], ["TLT", "KWEB"])
+
+    def test_merge_consumes_same_array(self):
+        """合并段落与个股段落消费同一批交易（PHP 的 ``_echoPortfolio``）。"""
+        trans_list = [_trans("KWEB", 100, 10.0), _trans("KWEB", 50, 5.0)]
+        table = build_merge_table(merge_transactions_by_symbol(trans_list))
+        self.assertEqual(table["rows"][0].cells, ["KWEB", "150", "650"])
+
+
+# ---------------------------------------------------------------------------
 # 路由（需要 flask，所以单独放在本文件末尾）
 # ---------------------------------------------------------------------------
 
@@ -631,6 +820,25 @@ class PortfolioRouteTest(unittest.TestCase):
     def test_demo_banner_present(self):
         """必须让看页面的人知道这是演示数据。"""
         self.assertIn("演示数据", self.html)
+
+    def test_merge_table_rendered(self):
+        """合并段落：KWEB / SPY 各出现在两个分组里，于是并成一行。
+
+        表头照渲染（PHP 的 ``count($arMerge) > 0`` 守卫），KWEB 的
+        末列是 ``300-200+700=800``，SPY 合计 100 且只有两格。
+        """
+        self.assertIn("合并数量", self.html)
+        match = re.search(
+            r'<table class="data-table merge-table".*?</table>', self.html, re.S)
+        self.assertIsNotNone(match, "页面上没有合并表")
+        table = match.group(0)
+        self.assertIn("代码", table)
+        self.assertIn("800", table)
+        # KWEB 三格行、SPY 两格行 —— 同一张表里两种行宽
+        widths = set()
+        for row in re.findall(r"<tr[^>]*>(.*?)</tr>", table, re.S)[1:]:
+            widths.add(len(re.findall(r"<td[^>]*>", row)))
+        self.assertEqual(widths, {2, 3})
 
     def test_nav_entry(self):
         self.assertIn('href="/portfolio"', self.html)

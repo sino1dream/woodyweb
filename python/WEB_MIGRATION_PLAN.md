@@ -204,6 +204,15 @@ Flask 路由
    `_getArbitrageTestStr()` 的 `while ($record = fetch())` 在**自然耗尽时
    把 null 写回 `$record`**，初版误实现成"取最后一行"（pitfalls 第 47 条）。
    详见 `python/auto/README_portfolio_migration.md`。
+   **第 11 轮（合并段落 + 第二调用点）**：同页第三张表
+   `_transEchoMergeParagraph` / `_echoMergeParagraph`（`_myportfolio.php:51-119`）
+   一并迁入 `portfolio_service.py`（`merge_transactions_by_symbol` /
+   `build_merge_table`），演示页加第二个分组让 KWEB/SPY 有符号重叠。
+   PHP 逐例对照扩到 **125 例 0 差异**（+39），注入自检三类旧 bug
+   （吞并、KWEB 口径、耗尽路径）全部精确复现。第二调用点
+   （`_stockaccount.php:207`，单分组原始数组）服务层已验证
+   （`RawGroupArrayTest`），页面外壳仍随账号体系暂缓。
+   记 pitfalls 第 49 条（`foreach` 键泄漏"碰巧正确" + PHP 数组键铸 `false` 为 `0`）。
 5. `php/layout.php`、`php/menu.php`、`php/stocklink.php`：站点布局和导航。
 
 第 1、2、3 步已经落地：

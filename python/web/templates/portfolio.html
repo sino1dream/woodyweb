@@ -36,5 +36,22 @@
     对应 PHP 的函数级 <code>static $fCny</code>。
   </p>
 
+  {% if merge_table %}
+  {# 合并段落（woody/res/php/_myportfolio.php 的 _transEchoMergeParagraph）：
+        同一个符号出现在多个分组里时，把各分组的合计量并成一行。
+        只出现一次的符号不出现；净额为 0 的合并行被跳过（PHP 的
+        if ($iTotal != 0)），但字典非空时表头照渲染。 #}
+  <h2>{{ merge_table.title }}</h2>
+  {{ data_table(merge_table, "merge-table") }}
+
+  <p class="table-note">
+    合并段落：同一个符号在多个分组里的持仓合计。<code>KWEB</code> 出现两次
+    （两个分组各一份），于是并成一行；末列算式是 <code>总量-200+700</code>，
+    <code>XOP</code> 是 <code>总量-0-0</code>，其它符号没有这一格。
+    数量列用 <code>strval()</code> 而不是 <code>number_format()</code>，
+    所以不带千分位逗号。
+  </p>
+  {% endif %}
+
   <p><a href="{{ url_for('main.index') }}">返回首页</a></p>
 {% endblock %}

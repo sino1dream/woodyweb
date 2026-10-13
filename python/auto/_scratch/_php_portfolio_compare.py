@@ -4,9 +4,10 @@
 
 * ``php/ui/portfolioparagraph.php`` —— ``_getPortfolioTestVal`` /
   ``_getArbitrageTestStr`` / ``fx_susdcnh`` 行的两个展示串；
-* ``php/ui/stockcomm.php`` —— ``GetArbitrageQuantity``；
+* ``php/ui/stockcomm.php`` —— ``GetArbitrageQuantity`` / ``RefGetMyStockLink``；
 * ``woody/res/php/_myportfolio.php`` —— 行序（``_echoPortfolio`` 的分块 +
-  ``_transSortBySymbol`` 的分组 ksort）；
+  ``_transSortBySymbol`` 的分组 ksort）与**合并段落**
+  （``_transEchoMergeParagraph`` / ``_echoMergeParagraph``）；
 * ``php/stocktrans.php`` —— ``StockTransaction`` / ``MyStockTransaction`` /
   ``AddSqlTransaction`` / ``GetSqlTransactionDate``。
 
@@ -28,6 +29,15 @@ PHP 侧用**抽函数体 + 命名空间打桩**的方式产出参考值（不连
 ``while ($record = mysqli_fetch_assoc(...))`` 在**自然耗尽时把 null 写回
 $record**，``if ($record)`` 为假 → 返回空串。初版 Python 移植误写成
 "取最后一行"，本对照的第 5/6/7/10 例当场抓出（见 pitfalls 第 47 条）。
+
+## 注入自检的注意：补丁要打在**本模块**上
+
+验证 harness 有牙时（把可疑行为改回旧 bug 再跑），monkeypatch 的目标是
+**本模块里的函数名**（``m.merge_transactions_by_symbol = buggy``），不是
+``web.services.portfolio_service`` 模块上的 —— 本脚本是
+``from ... import 函数名`` 的直接绑定，补服务模块对 ``build_python_cases()``
+不生效。只有服务内部**调用时**才按模块全局查找的名字（如
+``MERGE_TEST_ADJUST``）补在服务模块上有效。
 """
 
 from __future__ import annotations
@@ -52,9 +62,11 @@ from core.stocktrans import (  # noqa: E402
 from web.services.portfolio_service import (  # noqa: E402
     PortfolioCnyTotal,
     build_portfolio_row,
+    build_merge_table,
     get_arbitrage_quantity,
     get_arbitrage_test_str,
     get_portfolio_test_val,
+    merge_transactions_by_symbol,
     sort_trans_by_symbol,
 )
 
@@ -178,6 +190,25 @@ SQL_DATE_CASES = [
     " ",
 ]
 
+# ⑨ 合并段落：每项是 [(符号或 None, 份额, 成本), ...]；None = ref 缺失
+#    （PHP 的 GetSymbol() 回 false，数组键铸成 0 —— 两侧都归一成 None）
+MERGE_CASES = [
+    [("KWEB", 100, 10.0), ("KWEB", 50, 5.0)],
+    [("KWEB", 100, 10.0), ("KWEB", 50, 5.0), ("KWEB", 25, 2.5)],
+    [("KWEB", 100, 10.0), ("KWEB", 50, 5.0), ("XOP", 30, 3.0), ("XOP", 70, 7.0)],
+    [("KWEB", 100, 10.0), ("KWEB", 50, 5.0), ("XOP", 30, 3.0), ("XOP", 70, 7.0),
+     ("SPY", 5, 0.5)],
+    [("SPY", 5, 0.5)],
+    [("KWEB", 100, 10.0), ("SPY", 5, 0.5)],
+    [("KWEB", 100, 10.0), ("KWEB", -100, -10.0)],
+    [("KWEB", 100, 10.0), ("SPY", 30, 3.0), ("KWEB", 50, 5.0)],
+    [(None, 100, 10.0), (None, 50, 5.0)],
+    [("SPY", 600000, 3.0), ("SPY", 700000, 7.0)],
+    [("A", 1, 0.5), ("A", 2, 0.25), ("B", 3, 0.75)],
+    [("A", 1, 0.5), ("B", 3, 0.75), ("B", 4, 1.25)],
+    [],
+]
+
 # 刻意偏差：(key, 原因)。PHP false 已由 flatten_php 归一成 None
 # （AGENTS.md：返回 false 的字符串类方法映射为 None），端口同 Rule，故当前为空。
 KNOWN_DIVERGENCES = {}
@@ -212,6 +243,12 @@ class _Ref:
 
     def get_position(self):
         return 1.0
+
+    def get_my_stock_link(self):
+        # 与 PHP harness 的 FakeRef.GetMyStockLink() 同形状：URL 本身不在
+        # 对照范围（由 test_stocklink 覆盖），这里只提供可识别的载荷。
+        return '<a href="mystockcn.php?symbol=%s">%s</a>' % (
+            self._symbol, self._symbol)
 
     def get_price_display(self, disp=None, prev=None, precision=None):
         # 均价显示不在对照范围内（那是引用对象的职责），给个占位串
@@ -303,7 +340,41 @@ def build_python_cases():
     for filled in SQL_DATE_CASES:
         cases["sql_date|%s" % filled] = get_sql_transaction_date({"filled": filled})
 
+    for i, specs in enumerate(MERGE_CASES):
+        trans_list = []
+        for symbol, shares, cost in specs:
+            ref = None if symbol is None else _Ref(symbol, "1.0")
+            trans = MyStockTransaction(ref, "g1")
+            trans.add_transaction(shares, cost)
+            trans_list.append(trans)
+        merge = merge_transactions_by_symbol(trans_list)
+        table = build_merge_table(merge)
+        cases["merge_dict|%d" % i] = [
+            [None if not key else key,
+             trans.get_total_shares(), trans.get_total_cost(),
+             trans.get_total_records()]
+            for key, trans in merge.items()]
+        cases["merge_table|%d" % i] = (
+            None if table is None else
+            {"id": table["id"], "title": table["title"],
+             "columns": len(table["columns"])})
+        cases["merge_rows|%d" % i] = [
+            [_php_first_cell(row)] + row.cells[1:]
+            for row in (table["rows"] if table is not None else [])]
+
     return cases
+
+
+def _php_first_cell(row):
+    """把 Python 行的首格还原成 PHP 格子的形状。
+
+    PHP 的格子里是整段 ``<a>`` HTML（``RefGetMyStockLink`` 的返回值），
+    服务层拆成了 :attr:`~sql.historytable.TableRow.href` 与单元格文本，
+    对照时再拼回去。ref 缺失时两边都是空串。
+    """
+    if row.href:
+        return '<a href="%s">%s</a>' % (row.href, row.cells[0])
+    return row.cells[0]
 
 
 # ---------------------------------------------------------------------------
@@ -374,6 +445,15 @@ def flatten_php(reference):
         value = case["value"]
         # PHP false（找不到空格）归一成 None，与 Python 侧 '' → None 对齐
         flat["sql_date|%s" % case["filled"]] = None if value is False else value
+
+    for i, case in enumerate(reference["merge"]):
+        # 合并字典：PHP 把 false 键铸成 0，两侧统一归一成 None
+        flat["merge_dict|%d" % i] = [
+            [None if not entry["key"] else entry["key"],
+             entry["shares"], entry["cost"], entry["records"]]
+            for entry in case["dict"]]
+        flat["merge_table|%d" % i] = case["table"]
+        flat["merge_rows|%d" % i] = [list(row) for row in case["rows"]]
 
     return flat
 

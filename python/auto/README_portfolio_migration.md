@@ -1,9 +1,12 @@
 # `portfolioparagraph` 迁移记录
 
-对应 `php/ui/portfolioparagraph.php`（160 行），调用方两处：
+对应 `php/ui/portfolioparagraph.php`（160 行）**外加** `woody/res/php/_myportfolio.php`
+里的合并段落（`_transEchoMergeParagraph` / `_echoMergeParagraph`，`:51-119`）——
+两段消费的是同一批交易，合并在同一轮迁完。调用方：
 
 ```php
-woody/res/php/_myportfolio.php:153   EchoPortfolioParagraph($arTrans);        // 整组合一页一张表
+woody/res/php/_myportfolio.php:153   EchoPortfolioParagraph($arTrans);   // 整组合一页一张表
+woody/res/php/_myportfolio.php:154   _transEchoMergeParagraph($arTrans); // 同一页还有一张合并表
 woody/res/php/_stockaccount.php:207  EchoPortfolioParagraph($group->GetStockTransactionArray());
 ```
 
@@ -14,12 +17,12 @@ woody/res/php/_stockaccount.php:207  EchoPortfolioParagraph($group->GetStockTran
 
 | 项 | 结果 |
 |---|---|
-| 新增代码 | `auto/core/stocktrans.py`、`web/services/portfolio_service.py`、`web/routes/portfolio.py`、`web/templates/portfolio.html` |
+| 新增代码 | `auto/core/stocktrans.py`、`web/services/portfolio_service.py`（含合并段落）、`web/routes/portfolio.py`、`web/templates/portfolio.html` |
 | 改动代码 | `auto/ref/stocklink.py`（两个链接函数）、`auto/sql/historytable.py`（`format_int_display`）、路由注册 + 导航 |
-| 真实 PHP 逐例对照 | **86 例 0 差异**（`_php_portfolio_check.php` + `_php_portfolio_compare.py`） |
-| 对照脚本自检 | 注入旧 bug → 精确复现 **4 处** mismatch（`arb_str\|4/5/6/9`） |
-| 测试 | auto **943** OK（+26 `test_stocktrans`）、web **493** OK（+62 `test_portfolio`）、compileall 双绿 |
-| 页面 | `/portfolio` 演示页（内存交易集），导航与首页有入口 |
+| 真实 PHP 逐例对照 | **125 例 0 差异**（`_php_portfolio_check.php` + `_php_portfolio_compare.py`，含合并段落 39 例） |
+| 对照脚本自检 | 注入旧 bug → 精确复现 **4 + 2 + 5 处** mismatch（`arb_str\|4/5/6/9`、吞并 `merge_dict\|7`、KWEB 口径 `merge_rows\|0/1/2/3/7`） |
+| 测试 | auto **943** OK（+26 `test_stocktrans`）、web **514** OK（+83 `test_portfolio`）、compileall 双绿 |
+| 页面 | `/portfolio` 演示页（内存交易集、两个分组），导航与首页有入口 |
 | 抓到的真 bug | 1 个 —— `_getArbitrageTestStr()` 的耗尽路径（见第三节，pitfalls 第 47 条） |
 
 ## 二、这一轮到底迁了什么
@@ -68,9 +71,29 @@ PHP 的 `MyStockTransaction` 构造函数会当场查 `StockGroupItemSql` 拿
 
 演示库里 `stockgroup` / `stockgroupitem` / `stocktransaction` 三张表都
 不存在，账号登录（`$acct->Auth()`）用户要求暂缓。页面用**写死的样例
-交易集**把每个分支走到：六个 LOF 套利符号中的三个、KWEB 的跨标的测试列、
+交易集**（两个分组，第二组与第一组有 `KWEB` / `SPY` 符号重叠）把每个
+分支走到：六个 LOF 套利符号中的三个、KWEB 的跨标的测试列、
 `SH600104` / `TLT` 的偏离量、`hf_ES` 的合约乘数、六格行、清仓两格行、
-`fx_susdcnh` 的美元折算行。页面顶部明确标注"演示数据"。
+`fx_susdcnh` 的美元折算行，以及合并表（KWEB 三格行 + SPY 两格行）。
+页面顶部明确标注"演示数据"。
+
+### 6. 合并段落：`merge_transactions_by_symbol()` / `build_merge_table()`
+
+`_myportfolio.php:85-119`。**同一个符号出现在多个分组里时**，把各分组的
+合计量并成一笔（`new MyStockTransaction($trans->GetRef())` 后逐个
+`Add()`），按符号组结束的顺序写进 `$arMerge`；渲染三列
+（代码 / 数量 / 测试，总宽 290），只对 `KWEB`（`-200+700`）和 `XOP`
+（`-00-00`）补第三格。三处**照抄**的不严谨：
+
+| PHP 行为 | 本版处理 |
+|---|---|
+| 算法假定同符号交易在数组里**连续**（生产上由调用方排序保证）。万一同符号被拆到两端（`s, u, s`），第二个 `s` 会把 `u` 的合计量一并吞掉 | 逐字复刻，单测 + 对照用例各钉一条 |
+| 收尾 `if ($cur_trans) $arMerge[$strSymbol] = $cur_trans;` 用的是**泄漏出循环的** `$strSymbol`（最后一个符号）—— 连续前提下碰巧正确 | 照抄；`last_symbol` 变量名 + 注释说明这是泄漏 |
+| `Add()` 每并一笔交易对象只让 `total_records` **+1**（不是加对方的记录数） | 合并行"记录数" = 被合并的交易对象个数，docstring 写明 |
+| ref 缺失时 `GetSymbol()` 回 `False`，PHP 数组键把 `False` **铸成 `0`** | 端口保留 `False` 原值作键（只用于 `switch` 匹配，渲染无差别）；对照时两侧归一成 `None` |
+
+首格链接是 **mystock 页面**（`RefGetMyStockLink` → `$ref->GetMyStockLink()`），
+不是个股表首格那个交易明细链接 —— 两个段落各走各的。
 
 ## 三、PHP 逐例对照（本轮的主要收获）
 
@@ -87,10 +110,21 @@ PHP 的 `MyStockTransaction` 构造函数会当场查 `StockGroupItemSql` 拿
 全局，所以桩能盖住，而 `number_format` / `intval` 这些没被遮盖的内建
 仍然走真的。桩只替代取数，被测逻辑全是 PHP 原文逐字执行。
 
-覆盖 8 组 86 例：`_getPortfolioTestVal`（22）、`_getArbitrageTestStr`（11）、
+覆盖 9 组 125 例：`_getPortfolioTestVal`（22）、`_getArbitrageTestStr`（11）、
 `GetArbitrageQuantity`（13）、`fx_susdcnh` 行的两个展示串（11）、
 行序组合（7）、持仓模型算术（8）、`AddSqlTransaction`（7）、
-`GetSqlTransactionDate`（6）。
+`GetSqlTransactionDate`（6）、**合并段落（13 例 × 3 个对照键 = 39）**。
+
+合并段落这组的打桩方式与其它组不同：`_transEchoMergeParagraph()` 末尾会调
+`_echoMergeParagraph()`（真身上改名成 `_echoMergeParagraphReal`），桩负责把
+`$arMerge` 截下来喂 JSON 后再转调真身 —— 合并字典与渲染出的行**两边都跑到**。
+渲染三件套（`EchoTableParagraphBegin` / `RefEchoTableColumn` /
+`EchoTableParagraphEnd`）打桩截获；`TableColumnGetQuantity()` 打桩成字面量
+`'数量'`（PHP 的 `GetDisplay()` 会包 `<b>`，端口标题是纯文本，
+README_ui_column_migration 已记的偏差）；`RefGetMyStockLink` 抽的是
+**真身**（`if ($ref) return $ref->GetMyStockLink(); return '';`），
+`FakeRef::GetMyStockLink()` 返回同形状的 `<a>` —— URL 形状本身由
+`test_stocklink` 与 `_ref_my_stock_link` 的单测覆盖，不在 harness 重复。
 
 ### 抓到的真 bug：`while ($record = ...)` 的双向泄漏
 
@@ -115,6 +149,22 @@ PHP 的 `strstr($filled, ' ', true)` 找不到空格时返回 `false`。初版�
 `None`；同时区分"第一个空格就在开头"（PHP 返回**真空串**）—— 那是
 "日期为空"，与"没有日期"是两回事。
 
+### 合并段落：又一处循环变量泄漏 + 一个 PHP 数组键陷阱
+
+`_transEchoMergeParagraph()` 的收尾句 `$arMerge[$strSymbol] = $cur_trans;`
+用的是**泄漏出 `foreach` 的** `$strSymbol`（最后一个符号）—— 与
+`_getArbitrageTestStr()` 的 `$record` 同款写法，这是本特性区的第二处。
+这次端口一次写对，但对照仍然钉住三件事：
+
+1. **吞并**（`merge_dict|7` / `merge_rows|7`）：非连续同符号时，第二个
+   `KWEB` 把中间 `SPY` 的合计量一并吞掉 —— 注入"顺手修好"的版本，
+   2 处 mismatch 精确复现；
+2. **KWEB 口径**（`merge_rows|0/1/2/3/7`）：合并表是 `-200+700`，
+   与个股表的 `-200`（且走跨标的套利测试）**不是一套** —— 注入错口径，
+   5 处 mismatch；
+3. **PHP 数组键把 `False` 铸成 `0`**（ref 缺失的退化输入）—— 端口保留
+   `False`，对照两侧归一成 `None` 后一致。
+
 ### 一处文档漂移（行为没错）
 
 `sort_trans_by_symbol()` 的 docstring 原先把来源归成 `_transSortBySymbol()`，
@@ -135,10 +185,18 @@ PHP 的 `strstr($filled, ' ', true)` 找不到空格时返回 `false`。初版�
 
 ## 五、已知缺口
 
-1. **`_transEchoMergeParagraph()`（合并段落）未迁** —— 同一分组下多笔交易
-   按符号合并的视图（`_myportfolio.php:50`）。优先级低，且同样要等
-   `stockgroup` 表。
-2. **`_stockaccount.php` 的第二个调用点未接线** —— 单个分组一张表，
-   等账号/分组页面一起做。
-3. **`MyStockTransaction.group_item_id` 恒为 false** —— PHP 构造函数当场
+1. **`_stockaccount.php:207` 的第二个调用点未接线** —— `EchoStockTransaction()`
+   里 `EchoPortfolioParagraph($group->GetStockTransactionArray())`：单分组
+   **原始顺序**的数组（不过 A/H/US 排序，排序是 `_myportfolio.php` 那个调用方
+   额外做的事）。服务层已支持（`RawGroupArrayTest` 钉住"给什么顺序渲染什么
+   顺序"；多张表共享同一个 `PortfolioCnyTotal` 由 `CnyTotalTest` 钉住），
+   但页面外壳属于账号体系：`StockAccount`（登录 / `GetGroupSql`）、
+   `StockEditTransactionForm`、`EchoTransactionParagraph`（交易明细段落，
+   仍未迁）、`EchoMoneyParagraphs`（分组资金汇总）、`MyStockGroup` 模型
+   都要等 `stockgroup` 三张表与账号体系。真实调用方
+   （`_mystockgroup.php:143`、`_stockgroup.php:71`）都是**一页一组**，
+   所以 `static $fCny` 的跨表累积在那一页只会涉及一张表。
+2. **`MyStockTransaction.group_item_id` 恒为 false** —— PHP 构造函数当场
    查库，本版等数据库层接入后由调用方传入。
+3. **参考数据段落**（`_transEchoReferenceParagraph`，`_myportfolio.php:31`）
+   未在 `/portfolio` 演示 —— 它已有 `/qdii` 与基金详情页复用，属另一条线。

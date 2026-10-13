@@ -10,7 +10,7 @@
 因为账号登录体系用户要求**暂缓**，本模块只做"拿到交易记录之后怎么渲染"，
 取数那一侧（按 member 查分组）留空，由调用方喂 ``MyStockTransaction`` 进来。
 
-## ⚠️ 本段落最需要注意的三件事
+## ⚠️ 本段落最需要注意的四件事
 
 ### 1. ``static $fCny`` 是**跨调用持久**的隐藏全局
 
@@ -73,12 +73,23 @@ PHP 的 ``while ($record = ...)`` **每一轮都给 ``$record`` 赋值**，包�
 钉住），``_php_portfolio_compare.py`` 逐例对照当场抓出：没有正数量
 条目时 PHP 回空串，误写的版本会拿最后一行的 stock_id 去查 hedge。
 见 pitfalls 第 47 条。
+
+### 4. 同一页还有第三张表：合并段落
+
+``_myportfolio.php`` 的 ``_echoPortfolio()`` 在参考数据段落、投资组合
+段落之后还会调 ``_transEchoMergeParagraph()``（同文件 ``:85``）：
+**同一个符号出现在多个分组里时**，把各分组的合计量并成一行单独渲染。
+它不在 ``portfolioparagraph.php`` 里，但消费的是同一批交易，所以一并
+迁在本模块末尾（:func:`merge_transactions_by_symbol` /
+:func:`build_merge_table`）。它有两处必须照抄的不严谨（连续假定、
+泄漏的 ``$strSymbol``），见函数 docstring。
 """
 
 from __future__ import annotations
 
 from typing import Any, Callable, Iterable, Sequence
 
+from core.stocktrans import MyStockTransaction  # noqa: E402
 from sql.historytable import TableRow, format_int_display, format_number_display
 from ui.uicolumn import (
     column_change,
@@ -645,3 +656,229 @@ def sort_trans_by_symbol(trans_list: Iterable) -> list:
 def _sort_key(symbol: Any) -> tuple:
     """按码位逐字符比较，等价于 PHP ``ksort()`` 的默认字节序。"""
     return tuple(ord(ch) for ch in str(symbol))
+
+
+# ---------------------------------------------------------------------------
+# 合并段落（_myportfolio.php:51-119 的 _echoMergeParagraph / _transEchoMergeParagraph）
+# ---------------------------------------------------------------------------
+
+#: ``EchoTableParagraphBegin($ar, 'merge', …)`` 的 ``$strId``。
+#: PHP 渲染成 ``id="mergetable"``（``table.php:115`` 拼了 ``table`` 后缀）。
+MERGE_TABLE_ID = "merge"
+
+#: 段落标题前缀（``'合并'.TableColumnGetQuantity()``）。
+MERGE_TITLE_PREFIX = "合并"
+
+#: 合并表测试列的调整量（``_echoMergeParagraph()`` 里 ``switch`` 的两个分支）。
+#: PHP 原文是字面算式 —— ``KWEB`` 走 ``$iTotal - 200 + 700``、``XOP`` 走
+#: ``$iTotal - 00 - 00``，净效果就是这两个常数。
+#:
+#: **不要**与 :data:`PORTFOLIO_TEST_QUANTITY` 混为一谈：个股表里 KWEB 是
+#: ``-200`` 且走跨标的套利测试列，合并表里是 ``-200+700``，两处口径不同。
+MERGE_TEST_ADJUST = {
+    "KWEB": 500,     # -200 + 700
+    "XOP": 0,        # -00 - 00（两个字面量零）
+}
+
+
+def merge_paragraph_columns() -> list:
+    """三列定义，顺序与 PHP 的 ``EchoTableParagraphBegin(array(...))`` 一致。
+
+    ==================  ======  =========  ================================
+    PHP                  宽 度    颜色       说明
+    ==================  ======  =========  ================================
+    ``TableColumnSymbol``      80      maroon    代码
+    ``TableColumnQuantity``    100     indigo    数量
+    ``TableColumnTest``        110     —         测试
+    ==================  ======  =========  ================================
+
+    总宽 290，远小于版面宽度（``LayoutGetDisplayWidth()`` 的兜底值），
+    所以 ``EchoTableParagraphBegin()`` 里那个"桌子太宽就整表不渲染"的
+    守卫永远不会被触发 —— 与个股表一样不做宽度检查。
+    """
+    return [column_symbol(), column_quantity(), column_test()]
+
+
+def merge_paragraph_title() -> str:
+    """对应 ``'合并'.TableColumnGetQuantity()`` —— 即 ``合并数量``。"""
+    return MERGE_TITLE_PREFIX + column_quantity().text
+
+
+def merge_transactions_by_symbol(trans_list: Iterable) -> dict:
+    """对应 ``_transEchoMergeParagraph()``（``woody/res/php/_myportfolio.php:85``）。
+
+    **同一个符号出现在多个分组里时**，把各分组的合计量并成一笔
+    （``new MyStockTransaction($trans->GetRef())`` 后逐个 ``Add()``），
+    按符号组**结束的顺序**写进 ``$arMerge``。只出现一次的符号压根不进
+    合并表 —— 于是"每个分组只买过一个符号"的人看不到这张表。
+
+    PHP 原文（照抄，含两处不严谨）::
+
+        foreach ($arTrans as $trans) {
+            $strSymbol = $trans->GetSymbol();
+            if (in_array($strSymbol, $arSymbol)) {          // 符号见过 → 累积
+                if ($cur_trans == false) {
+                    $cur_trans = new MyStockTransaction($trans->GetRef());
+                    $cur_trans->Add($prev_trans);           // 先把第一笔并进来
+                }
+                $cur_trans->Add($trans);
+            } else {                                        // 新符号
+                $arSymbol[] = $strSymbol;
+                if ($cur_trans) {                           // 上一组结算
+                    $arMerge[$prev_trans->GetSymbol()] = $cur_trans;
+                    $cur_trans = false;
+                }
+                $prev_trans = $trans;
+            }
+        }
+        if ($cur_trans)	$arMerge[$strSymbol] = $cur_trans;  // ← $strSymbol 泄漏自循环
+
+    **不严谨一（必须照抄）**：算法假定同符号的交易在数组里**连续**。
+    生产上成立 —— 调用方 ``_echoPortfolio()`` 传进来的是排过序的数组
+    （见 :func:`sort_trans_by_symbol`）。但万一同符号被拆到两端
+    （``s, u, s``），扫到第二个 ``s`` 时 ``$prev_trans`` 指的是 ``u``，
+    于是 **``u`` 的合计量被并进 ``s`` 的合并行里**。本实现逐字复刻，
+    对照用例里有一条专门钉住它。
+
+    **不严谨二**：收尾那句用的是泄漏出循环的 ``$strSymbol``（最后一个
+    符号）。在"连续"前提下它恰好就是待结算那组的符号，结果正确 —— 但这是
+    **碰巧对**，不是设计。同款泄漏在 ``_getArbitrageTestStr()`` 那边已经
+    咬过一次（pitfalls 第 47 条），这里再记一笔。
+
+    ``Add()`` 每并一笔交易对象只让 ``total_records`` 加 1（不是加对方的
+    记录数），所以合并行的"记录数" = 被合并的交易对象个数。
+
+    PHP 的 ``in_array()`` 是松散比较，``GetSymbol()`` 在 ref 缺失时返回
+    ``False``；Python 的 ``in`` 对字符串/``False`` 的组合与 PHP 一致
+    （生产上符号恒为非空串，``''`` 与 ``False`` 的差异不会出现）。
+    PHP 数组键还会把 ``False`` 铸成 ``0``，本实现保留 ``False`` 原值 ——
+    该键只用于 ``switch`` 匹配，永不等于 ``KWEB``/``XOP``，渲染无差别。
+    """
+    merge: dict = {}
+    seen = []           # PHP 的 $arSymbol（列表，in_array 松散比较）
+    prev_trans = None   # PHP 的 $prev_trans：当前组的第一笔
+    cur_trans = None    # PHP 的 $cur_trans；None ≡ false
+    last_symbol = None  # PHP 泄漏出循环的 $strSymbol
+
+    for trans in trans_list or ():
+        symbol = _invoke(trans, "get_symbol", "GetSymbol")
+        last_symbol = symbol
+        if symbol in seen:
+            if cur_trans is None:
+                cur_trans = MyStockTransaction(_invoke(trans, "get_ref", "GetRef"))
+                cur_trans.Add(prev_trans)
+            cur_trans.Add(trans)
+        else:
+            seen.append(symbol)
+            if cur_trans is not None:
+                merge[_invoke(prev_trans, "get_symbol", "GetSymbol")] = cur_trans
+                cur_trans = None
+            prev_trans = trans
+
+    if cur_trans is not None:
+        merge[last_symbol] = cur_trans
+    return merge
+
+
+def _ref_my_stock_link(ref: Any) -> tuple:
+    """对应 ``RefGetMyStockLink()``（``php/ui/stockcomm.php:12``）。
+
+    PHP::
+
+        function RefGetMyStockLink($ref)
+        {
+            if ($ref)   return $ref->GetMyStockLink();   // = GetMyStockLink(GetSymbol(), GetDisplay())
+            return '';
+        }
+
+    服务层不产 HTML，所以拆成 ``(URL, 文本)`` 两段（见表
+    :attr:`~sql.historytable.TableRow.href` 的说明）；ref 为空时两段都空
+    （PHP 回空串，行里就是一个空格子）。ref 没带
+    ``get_my_stock_link`` 方法时，用符号兜底拼一个 —— PHP 的 ref 一定
+    继承 ``StockSymbol``，那个方法就在上面。
+    """
+    if ref is None:
+        return ("", "")
+    html = _invoke(ref, "get_my_stock_link", "GetMyStockLink")
+    if not html:
+        from core.stocksymbol import StockSymbol
+        from ref.stocklink import get_my_stock_link
+
+        symbol = _invoke(ref, "get_symbol", "GetSymbol")
+        display = _invoke(ref, "get_display", "GetDisplay")
+        if not display and symbol:
+            display = StockSymbol(symbol).get_display()
+        html = get_my_stock_link(symbol, display)
+    return (_href_of(html), _text_of(html))
+
+
+def build_merge_row(symbol: Any, trans: Any,
+                    name_of: Callable[[Any], Any] = None,
+                    link_builder: Callable[..., Any] = None) -> TableRow:
+    """对应 ``_echoMergeParagraph()`` 里的一行（``_myportfolio.php:58-78``）。
+
+    三列：代码（``RefGetMyStockLink($ref)`` 的链接）/ 数量
+    （``strval($iTotal)``，**不带千分位**）/ 测试（只对 ``KWEB``、``XOP``
+    补第三格，其它符号**只有两格** —— 照抄不补，理由同个股表）。
+
+    注意首格链接是 **mystock 页面**（``$ref->GetMyStockLink()``），
+    不是个股表首格那个交易明细链接（``StockGetTransactionLink``）——
+    两个段落各走各的，别"统一"错了。
+
+    ``link_builder(ref, symbol)`` 可注入链接构造器；不传则走
+    :func:`_ref_my_stock_link`（PHP 原样的站内 URL）。
+    """
+    row = TableRow()
+    ref = _invoke(trans, "get_ref", "GetRef")
+    shares = _invoke(trans, "get_total_shares", "GetTotalShares")
+
+    if link_builder is not None:
+        linked = link_builder(ref, symbol)
+        if isinstance(linked, tuple):
+            row.href, first_text = linked
+        else:
+            row.href, first_text = linked, symbol
+    else:
+        row.href, first_text = _ref_my_stock_link(ref)
+    row.add(first_text)
+
+    row.add(str(shares))
+
+    if symbol in MERGE_TEST_ADJUST:
+        row.add(str(shares + MERGE_TEST_ADJUST[symbol]))
+
+    if name_of is not None:
+        row.title = name_of(symbol) or ""
+    return row
+
+
+def build_merge_table(merge: dict,
+                      name_of: Callable[[Any], Any] = None,
+                      link_builder: Callable[..., Any] = None) -> Any:
+    """对应 ``_echoMergeParagraph($arMerge)``：整张合并表。
+
+    PHP 的调用条件在 ``_transEchoMergeParagraph()`` 末尾：
+    ``if (count($arMerge) > 0)`` —— 合并字典为空时**整张表不渲染**
+    （连表头都没有），这里返回 ``None``。
+
+    注意字典非空、但所有行都被 ``if ($iTotal != 0)`` 过滤掉时
+    （比如一个符号买满又卖光，两笔合并后净额为 0），PHP 仍然会渲染表头 ——
+    所以过滤放在建行阶段，不提前返回。
+    """
+    if not merge:
+        return None
+
+    rows = []
+    for symbol, trans in merge.items():
+        shares = _invoke(trans, "get_total_shares", "GetTotalShares")
+        if shares == 0:
+            continue
+        rows.append(build_merge_row(symbol, trans, name_of=name_of,
+                                    link_builder=link_builder))
+
+    return {
+        "id": MERGE_TABLE_ID,
+        "title": merge_paragraph_title(),
+        "columns": columns_to_dicts(merge_paragraph_columns()),
+        "rows": rows,
+    }
