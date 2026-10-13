@@ -295,8 +295,14 @@ def _price_ratio_of(ref: Any) -> Any:
 def _invoke(ref: Any, snake: str, camel: str, *args: Any) -> Any:
     """按 snake_case 优先、camelCase 兜底调用 ref 上的方法。
 
-    **取不到就返回 ``None``**，不抛异常 —— 这是本模块能容忍
-    ``MyPairReference`` 尚未迁移的关键：方法一出现，格子自动填上。
+    **取不到就返回 ``None``**，不抛异常 —— 这是本模块"方法一出现、格子自动
+    填上"的关键。
+
+    ``MyPairReference`` 已在 CK2 迁入 ``auto/ref/refobj.py`` 的
+    ``PairReference``（见 ``README_pair_reference_migration.md``），本模块因此
+    **零改动**就取到了 ``est_from_pair`` / ``get_cny_ref`` / ``get_price_ratio``。
+    这份容忍仍然要留着：``FundPairReference`` 的期货自动校准（CK2b）与
+    ``HoldingsReference`` 还没迁，那两条分支仍要靠它安静降级。
     """
     if ref is None:
         return None

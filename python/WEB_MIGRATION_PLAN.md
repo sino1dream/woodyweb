@@ -255,9 +255,26 @@ Flask 路由
    `test_sma_route.FundPairSmaRouteTest` 的隔离缺口（CK1 新段落暴露其未注入
    `history_service`，已补 `_EmptyHistory` 注入）。详见
    `python/auto/README_stock_detail_migration.md`。
-   **仍存在的关键石 / 后续 checkpoint**：CK2 迁配对引用层（解锁 AH/ADR/Holdings 全栈）；
+   **第 14 轮（_mystock.php 详情栈 · CK2 关键石）**：迁移 `fundpairref.php` 配对引用层。
+   `MyPairReference` → `refobj.PairReference`，外加 `Ab` / `Ah` / `Adr` 三子类（只是
+   `pair_table` 不同）、四张配对表（`abpair`/`adrpair`/`ahpair`/`fundpair`）的正查与反查
+   （对应 PHP `StockPairSql::GetPairSymbol` / `GetSymbol`）、`StockGetPairReferences`
+   链式双向工厂，以及构造里的 `cny_ref` 推导分支表与 `LoadCalibration()`。
+   `EstFromPair` / `EstToPair` 委托给已迁的 `calc.pairestimate` 自由函数（公式只留一份实现）。
+   消费方 `pair_service` / `trading_service` / `sma_service` 走 `_invoke` 鸭子类型，
+   **零改动自动通电**。测试：auto **1010** OK（988 + 22 `test_pairref.py`）、web 619 OK、
+   compileall 双绿；**PHP 逐例对照 15 例 0 差异**
+   （`_scratch/_php_pairref_check.php` + `_php_pairref_compare.py`，同时比对汇率符号与
+   建出来的类 —— PHP 两条赋值路径 `new` 的是 `CnyReference` 与 `MyStockReference`
+   两个不同的类）。对照抓到一个真 bug：B 股判定写成字符串前缀 `900`，而 PHP 是数值区间
+   `[900000, 1000000)`；根因是**没先 grep 代码库里已有的 `is_shanghai_b()`**
+   就新增了一个 `is_shang_hai_b()`。已撤掉重复实现，记 pitfalls #54。详见
+   `python/auto/README_pair_reference_migration.md`。
+   **仍存在的关键石 / 后续 checkpoint**：CK2b `FundPairReference` 的期货自动校准
+   （与已迁的 `fundestcalc` / `futurescalib` 及独立 `autocalibration` 任务高度重叠，单列）；
    CK3 新建 `/stock/<symbol>` 承载非基金详情（A/H/ADR/外汇/Holdings，路由策略已与用户
-   确认）；CK4 Holdings 分支；CK5 交易块 + 链接（账号可演示）；CK6 order book 写 snapshot。
+   确认）；CK4 Holdings 分支（含 `HoldingsReference`）；CK5 交易块 + 链接（账号可演示）；
+   CK6 order book 写 snapshot。
    **仍未迁**：`_mystock.php` 个股详情大页的 AH/AB/ADR 对比、A 股带配对溢价的 trading、
    配对 SMA、`EchoAhPairSmaParagraph` 接线、Holdings 分支；三个整页外壳（登录、
    `GetGroupSql()`、`StockEditTransactionForm` / `StockMergeTransactionForm`）随账号体系暂缓。

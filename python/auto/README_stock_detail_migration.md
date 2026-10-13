@@ -43,20 +43,30 @@
 `pair_service` / `sma_service.fund_pair_tables` / `qdii_trading_column` 全都依赖一组
 **配对引用对象**——`MyPairReference` / `FundPairReference` / `HoldingsReference` 及其工厂
 `StockGetFundPairReference` / `StockGetHoldingsReference` / `StockGetPairReferences`，
-源码在 **`php/stock/fundpairref.php`（约 278 行）**，`php/stock` 层，**尚未迁入
-`auto/ref/refobj.py`**（`refobj.py:523` 与 `pair_service.py` 文档都明确标注"未迁移"）。
+源码在 **`php/stock/fundpairref.php`（约 278 行）**，`php/stock` 层。
 
 没有这层，AH/AB/ADR 对比、配对 SMA、A 股带配对溢价的 trading、Holdings 分支**全部拿不到
 数据**。`pair_service.py` 已通过 `_invoke(ref, snake, camel)` 的 snake/camel 兜底容忍该层缺失
 （方法出现前格子留空），所以迁完配对引用层后这些服务能自动"通电"。
 
+> **CK2 已完成**：`MyPairReference` 及其 `Ab` / `Ah` / `Adr` 三子类、四表正/反查、
+> `StockGetPairReferences` 工厂已迁入 `auto/ref/refobj.py`。
+> 详见 **`README_pair_reference_migration.md`**，本文件只记 CK 层面的排期与验证。
+>
+> 仍未迁：`FundPairReference` 的期货自动校准（列 **CK2b**）、`HoldingsReference`。
+
 ## 3. 分阶段 checkpoint
 
 - **CK1（已完成）**：把已迁的 `stockhistory` + `netvalueclose` 接进 `/fund/<symbol>`
   详情页（仅接线 + 模板，不碰配对引用层）。零风险、立刻可见。
-- **CK2（关键石）**：迁移 `fundpairref.php` 配对引用层到 `refobj.py`
-  （`MyPairReference` / `FundPairReference` / `HoldingsReference` + 三个 `StockGet*Reference`）。
-  解锁 AH/ADR/Holdings 全栈。
+- **CK2（关键石，已完成）**：迁移 `fundpairref.php` 配对引用层到 `refobj.py`
+  —— `MyPairReference` + `Ab`/`Ah`/`Adr` 三子类 + 四表正/反查 +
+  `StockGetPairReferences`。**不含** `FundPairReference` 的期货自动校准
+  （列 CK2b，见下）与 `HoldingsReference`（并入 CK4）。
+  详见 `README_pair_reference_migration.md`。
+- **CK2b**：`FundPairReference` 的期货自动校准（`AverageCalibration` /
+  `DailyCalibration` / `GetOfficial*` / `GetRealtimeNetValue`）。与已迁的
+  `fundestcalc` / `futurescalib` 及独立 `autocalibration` 任务高度重叠，单列。
 - **CK3（接 A/H/ADR 详情）**：新建 `/stock/<symbol>` 详情页（路由策略已与用户确认：非基金
   详情独立成 `/stock/<symbol>`，`/fund` 仍只管基金），渲染 reference + 通用 trading(配对溢价) +
   AH/AB/ADR 对比 + 通用 SMA + ah/fundpair SMA + stockhistory + netvalueclose（依赖 CK2）。
@@ -74,5 +84,11 @@
 - CK1：web **619** OK（+2 `test_fund_detail_history.py`）、auto 988 OK、compileall 双绿；
   真实库端到端冒烟：`/fund/SZ161130` 两段都渲染，`/fund/SZ162411` 仅 stockhistory 渲染
   （无净值数据则 netvalueclose 按 PHP `CountNetValue()==0` 守卫隐藏）。
+- CK2：auto **1010** OK（988 + 22 `test_pairref.py`）、web **619** OK（未动）、
+  compileall 双绿；**PHP 逐例对照 15 例 0 差异**
+  （`_scratch/_php_pairref_check.php` + `_php_pairref_compare.py`），
+  同时比对汇率符号与建出来的类。
+  对照过程中抓到并修掉一个真 bug：B 股判定写成了字符串前缀 `900`，
+  而 PHP 是数值区间 `[900000, 1000000)` —— 详见 pitfalls #54。
 - 顺带修复 `test_sma_route.FundPairSmaRouteTest` 的隔离缺口：该测试未注入 `history_service`
   （走真实库），CK1 新段落暴露后补了 `_EmptyHistory` 注入，使测试只验 SMA 列顺序。

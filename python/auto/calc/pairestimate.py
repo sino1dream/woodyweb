@@ -2,21 +2,26 @@
 
 对应 ``php/stock/fundpairref.php:84``。
 
-## 为什么只迁这两个方法
+## 为什么这两个公式放在这里，而不是挂在 ref 上
 
-``MyPairReference``（``php/stock/fundpairref.php:3``）本体还没迁，它除了这两个
-方法还管着 ``pair_ref`` / ``cny_ref`` 的构造与校准装载（``LoadCalibration()``）。
-但 ``smaparagraph`` 的四个回调里有**两个**只需要这两个公式：
+先迁公式、后迁引用对象，是当时的**顺序选择**：``smaparagraph`` 的四个回调里有
+**两个**只需要这两个公式，不碰 ``pair_ref`` / ``cny_ref`` 的构造：
 
 .. code-block:: php
 
     function _callbackFundPairSma($ref, $strEst = false) { return $strEst ? $ref->EstFromPair($strEst) : $ref; }
     function _callbackAhPairSma($ref, $strEst = false)   { return $strEst ? $ref->EstToPair($strEst)   : $ref->GetPairRef(); }
 
-所以这里把它们抽成**自由函数 + 鸭子类型**：认 ref 身上有没有
+所以当初把它们抽成**自由函数 + 鸭子类型**：认 ref 身上有没有
 ``pair_ref`` / ``cny_ref`` / ``factor`` / ``position``，有就算，没有就按 PHP
-的默认值退化。等 ``MyPairReference`` 整体迁过来，把这两个函数挂成方法即可，
-调用方（``web/services/sma_service.py``）不用改。
+的默认值退化。
+
+**CK2 后 ``MyPairReference`` 已迁入 ``ref/refobj.py`` 的 ``PairReference``**
+（见 ``README_pair_reference_migration.md``），但这个结构**保留不变**：
+``PairReference.est_from_pair`` / ``est_to_pair`` 只是"把 ``self`` 当 ref 传进来"
+的薄壳，真正的公式仍然只在这里有一份。理由是不想让公式有第二个副本 ——
+配对引用层之外（``sma_service`` 的回调、``qdii_trading_column``）还有别的
+ref 形态要复用同一套换算，挂成方法反而会让它们绕道。
 
 ## 公式本体逐句对照
 

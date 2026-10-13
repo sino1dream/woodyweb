@@ -52,6 +52,11 @@ from calc.fundcalc import (
     qdii_hk_est_symbol,
     qdii_jp_est_symbol,
 )
+from calc.pairestimate import (
+    est_from_pair as _est_from_pair,
+    est_to_pair as _est_to_pair,
+    get_default_cny as _pairestimate_default_cny,
+)
 from ref.stockref import StockReference, is_zero_string
 
 #: ``php/debug.php:13``
@@ -66,22 +71,25 @@ QDII_REGIONS = {
     "eu": ("EUCNY", "fx_seurcny"),
 }
 
-#: 查 ``fundpair``：``id`` = 本体、``stock_id`` = 被跟踪标的。
+#: 查配对表：``id``（= ``stock`` 列）= 本体、``stock_id`` = 被跟踪标的。
 #:
 #: 对应 PHP ``StockPairSql::GetPairSymbol()``（``php/sql/sqlstockpair.php:38``）::
 #:
 #:     if ($strStockId = $sql->GetId($strSymbol))
 #:         if ($strPairId = $this->ReadPair($strStockId))
 #:             return $sql->GetStockSymbol($strPairId);
+#:
+#: ``table`` 是 ``abpair`` / ``adrpair`` / ``ahpair`` / ``fundpair`` 之一，
+#: 对应 PHP ``sqlstocksymbol.php:123-126`` 那四个 ``StockPairSql`` 实例。
 _PAIR_SYMBOL_SQL = (
-    "SELECT p.symbol FROM fundpair f "
+    "SELECT p.symbol FROM {table} f "
     "JOIN stock p ON p.id = f.stock_id "
     "WHERE f.id = (SELECT id FROM stock WHERE symbol = %s) LIMIT 1"
 )
 
 
-def _lookup_pair_symbol(source: Any, symbol: str) -> Any:
-    """按符号查它在 ``fundpair`` 里跟踪的标的；没有返回 ``None``。
+def _lookup_pair_symbol(source: Any, symbol: str, table: str = "fundpair") -> Any:
+    """按符号查它在 ``table`` 里跟踪的标的（A→配对方向）；没有返回 ``None``。
 
     ``^NDX`` → ``hf_NQ``（纳斯达克 100 指数跟踪 NQ 期货）就是这么来的，
     也就是生产端 ``sz161130cn.php`` 参考数据表第 3 行那个 ``hf_NQ``。
@@ -91,7 +99,7 @@ def _lookup_pair_symbol(source: Any, symbol: str) -> Any:
         return None
     cursor = connection.cursor()
     try:
-        cursor.execute(_PAIR_SYMBOL_SQL, (symbol,))
+        cursor.execute(_PAIR_SYMBOL_SQL.format(table=table), (symbol,))
         row = cursor.fetchone()
     except Exception:
         return None
@@ -100,6 +108,39 @@ def _lookup_pair_symbol(source: Any, symbol: str) -> Any:
     if not row:
         return None
     # 游标行有 tuple / dict 两种形状，都认（与 reference_service 的口径一致）
+    if isinstance(row, dict):
+        return row.get("symbol") or None
+    return row[0] or None
+
+
+def _lookup_pair_symbol_reverse(source: Any, symbol: str, table: str = "fundpair") -> Any:
+    """配对方向的反查（配对→A 方向）；对应 ``StockPairSql::GetSymbol()``。
+
+    ``php/sql/sqlstockpair.php:25`` 用这个把"从 B/H/ADR 这一侧进来"的符号换成 A 侧
+    符号，再构造配对引用（见 ``StockGetPairReferences``）。SQL 把 WHERE 条件从
+    ``f.id = 本体`` 换成 ``f.stock_id = 配对侧``，取回的 ``f.id``（本体侧）再
+    join 回 ``stock`` 得到 A 侧符号。
+    """
+    connection = getattr(source, "connection", None)
+    if connection is None:
+        return None
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "SELECT s.symbol FROM {table} f "
+            "JOIN stock s ON s.id = f.id "
+            "WHERE f.stock_id = (SELECT id FROM stock WHERE symbol = %s) LIMIT 1".format(
+                table=table
+            ),
+            (symbol,),
+        )
+        row = cursor.fetchone()
+    except Exception:
+        return None
+    finally:
+        cursor.close()
+    if not row:
+        return None
     if isinstance(row, dict):
         return row.get("symbol") or None
     return row[0] or None
@@ -288,6 +329,21 @@ class MysqlReference(StockReference):
         except Exception:
             # 首格必须有内容：为空会让整行少一格、后面所有列错位
             return self.get_symbol()
+
+    def get_my_stock_link(self) -> str:
+        """对应 PHP ``GetMyStockLink()``：**账号体系下**的"我的股票"链接。
+
+        PHP 原文（``php/stock/stocksymbol.php:1173`` 附近的 ``GetMyStockLink``）：:
+
+            if ($str = GetGroupStockLink($this->GetSymbol())) return $str;
+            return $this->GetStockLink();
+
+        本项目账号体系（登录 / ``GetGroupSql()``）暂缓，没有"分组链接"，
+        所以直接回落到站内详情页链接（与 ``get_stock_link`` 同形态）。
+        配对比较表（``pair_service``）用它在首格放链接；
+        ``/stock/<symbol>`` 详情页（CK3）落地后这些链接就能跳转。
+        """
+        return self.get_stock_link()
 
     # -- 取数兜底 ---------------------------------------------------------
     def _call(self, name: str, *args: Any) -> Any:
@@ -538,6 +594,10 @@ class EstReference(MysqlReference):
     #: 会先调 ``load_data()``，那时实例属性还没赋值。
     pair_ref = None
 
+    #: 配对表名：默认 ``fundpair``（QDII 基金/指数期货那一类）。
+    #: 子类 ``PairReference`` 的 Ab/Ah/Adr 会改写这一项。
+    pair_table = "fundpair"
+
     def load_data(self) -> None:
         self.set_has_data(False)
         if self.source is None:
@@ -589,13 +649,324 @@ class EstReference(MysqlReference):
         return self.pair_ref
 
     def _pair_symbol(self) -> Any:
-        """查 ``fundpair`` 取被跟踪标的的符号；没有返回 ``None``。"""
+        """查 ``pair_table`` 取被跟踪标的的符号；没有返回 ``None``。"""
         if self.source is None:
             return None
         symbol = self.get_symbol()
         if not symbol:
             return None
-        return _lookup_pair_symbol(self.source, str(symbol))
+        return _lookup_pair_symbol(self.source, str(symbol), self.pair_table)
+
+
+class PairReference(MysqlReference):
+    """对应 ``php/stock/fundpairref.php:3`` 的 ``MyPairReference``（不含 ``FundPairReference`` 那段）。
+
+    它做三件事（与 PHP 构造 + ``LoadCalibration`` 一致）：
+
+    1. 构造时按 ``pair_table`` 查出配对标的（``get_pair_ref``，惰性查找继承自
+       :class:`EstReference`）；
+    2. 按"本符号"和"配对符号"的类型关系推导用哪个汇率引用（``cny_ref``，
+       :meth:`_build_cny_ref`）；
+    3. 装载校准值（``LoadCalibration``），给 ``EstFromPair`` / ``EstToPair`` 提供
+       ``fFactor`` 与 ``fLastCalibrationVal``。
+
+    ``Ab`` / ``Ah`` / ``Adr`` / ``Fund`` 四种配对都继承它，只是 ``pair_table`` 不同
+    （见各子类的类属性）。``EstFromPair`` / ``EstToPair`` / ``GetPriceRatio`` /
+    ``GetCnyRef`` / ``GetDefaultCny`` 这几个方法一旦存在，``pair_service`` /
+    ``sma_service`` / ``trading_service`` 就通过 ``_invoke`` 鸭子类型取数，
+    **不用改**（见 ``README_pair_reference_migration.md``）。
+
+    **刻意不含** ``FundPairReference`` 的期货自动校准部分（``AverageCalibration`` /
+    ``DailyCalibration`` / ``GetOfficial*`` / ``GetRealtimeNetValue``）—— 那些与已迁的
+    ``fundestcalc`` / ``futurescalib`` 以及独立的 ``autocalibration`` 任务高度重叠，
+    且 CK3 非基金详情页用不到，单独作为 CK2b 推进。
+    """
+
+    #: 配对表名：``Ab`` → ``abpair`` / ``Ah`` → ``ahpair`` / ``Adr`` → ``adrpair`` /
+    #: ``Fund`` → ``fundpair``。对应 ``php/sql/sqlstocksymbol.php:123-126``。
+    pair_table = "fundpair"
+
+    #: ``$pair_ref``（``fundpairref.php:5``）。类级默认值，理由同 ``EstReference.pair_ref``：
+    #: ``MysqlReference.__init__`` 会先调 ``load_data()``，那时实例属性还没赋值。
+    pair_ref = None
+
+    #: ``$cny_ref``（``fundpairref.php:6``）。类级默认值，理由同 ``pair_ref``。
+    cny_ref = None
+    #: ``$fLastCalibrationVal``（``fundpairref.php:8``）；没有为 ``None``，
+    #: 由 ``pairestimate`` 回落到本次估值。
+    last_calibration_val = None
+
+    # -- 配对引用（与 :class:`EstReference` 同语义，这里**必须**就地实现） -----
+    # PHP ``MyPairReference`` 自身就有 ``GetPairRef()``（``fundpairref.php:65``），
+    # 而 :meth:`_build_cny_ref` 一开始就调 ``self.get_pair_ref()``。``PairReference``
+    # 与 ``EstReference`` 是平行的两条 ``MysqlReference`` 子类，不互相继承，
+    # 所以这里把同样的惰性查表逻辑再实现一遍 —— 表名用本类的 ``pair_table``
+    # （``abpair`` / ``ahpair`` / ``adrpair`` / ``fundpair``）。
+    def get_pair_ref(self) -> Any:
+        """对应 ``MyPairReference::GetPairRef()``：**本符号跟踪的标的**。"""
+        if self.pair_ref is not None:
+            return self.pair_ref
+        symbol = self._pair_symbol()
+        if not symbol:
+            return None
+        self.pair_ref = _build_pair_reference(symbol, self.source)
+        return self.pair_ref
+
+    def _pair_symbol(self) -> Any:
+        """查 ``pair_table`` 取被跟踪标的的符号；没有返回 ``None``。"""
+        if self.source is None:
+            return None
+        symbol = self.get_symbol()
+        if not symbol:
+            return None
+        return _lookup_pair_symbol(self.source, str(symbol), self.pair_table)
+
+    def __init__(self, symbol: str, source: Any = None, quote_loader: Callable[[str], Any] = None):
+        #: 先走 ``MysqlReference`` 的标准构造（装行情、取 stock_id、仓位），
+        #: 再建汇率引用 + 装载校准值 —— 顺序与 PHP 一致：先有配对标的，再据此推导汇率。
+        super().__init__(symbol, source=source, quote_loader=quote_loader)
+        self._build_cny_ref()
+        self.load_calibration()
+
+    # -- 汇率引用（``fundpairref.php:16-43`` 的推导） ----------------------
+    def _build_cny_ref(self) -> None:
+        """对应 ``MyPairReference`` 构造里那一段 ``cny_ref`` 推导。
+
+        ``GetPairRef()`` 拿不到时（``$pair_ref = false``）``cny_ref`` 也保持
+        ``false``，与 PHP 一致。
+        """
+        pair_ref = self.get_pair_ref()
+        if pair_ref is None:
+            self.cny_ref = None
+            return
+        pair_symbol = pair_ref.get_symbol()
+        #: ``$strCNY``（中间价符号）；只有走中间价分支才被赋值，
+        #: 走离岸外汇（fx_）分支时直接建 ``cny_ref``、不碰这个变量。
+        cny_symbol = False
+
+        if pair_ref.is_sina_future_cn():
+            # ``$strCNY`` 保持 false、``cny_ref`` 保持 false
+            pass
+        elif pair_ref.is_symbol_a():
+            if self.is_symbol_a():
+                # 用数值区间版本（``is_shanghai_b`` / ``is_shenzhen_b``）：PHP 的
+                # ``_isDigitShangHaiB`` 判的是 ``900000 <= 数字 < 1000000``，
+                # 不是字符串前缀 ``900`` —— 后者会把 901000~999999 漏掉。
+                if pair_ref.is_shanghai_b():
+                    cny_symbol = "USCNY"
+                elif pair_ref.is_shenzhen_b():
+                    cny_symbol = "HKCNY"
+            # PHP 此处 ``else if ($this->IsSymbolH()) $strCNY = 'HKCNY';`` 被注释掉，
+            # 属于死分支（进入本分支要求 pair 是 A，H 不可能是 A），照 PHP 保留注释。
+            elif self.is_symbol_us() or self.is_sina_future_us():
+                self.cny_ref = MysqlReference("fx_susdcnh", source=self.source)
+        elif pair_ref.is_symbol_h():
+            if self.is_symbol_a():
+                cny_symbol = "HKCNY"
+            elif self.is_symbol_us():
+                self.cny_ref = MysqlReference("fx_susdhkd", source=self.source)
+        elif pair_symbol == "znb_SENSEX":
+            self.cny_ref = MysqlReference("fx_susdinr", source=self.source)
+        else:
+            if self.is_symbol_a():
+                cny_symbol = "USCNY"
+
+        if cny_symbol:
+            # ``CnyReference`` 走中间价净值表 + 固定 09:15 时点（见其类定义），
+            # 正是 PHP ``new CnyReference($strCNY)`` 的形态。
+            self.cny_ref = CnyReference(cny_symbol, source=self.source)
+
+    def get_cny_ref(self) -> Any:
+        return self.cny_ref
+
+    def get_default_cny(self, date: Any = False) -> float:
+        """对应 ``GetDefaultCny($strDate)``（``fundpairref.php:75``）。
+
+        复用 ``pairestimate.get_default_cny``：有汇率引用取它的值，否则 1.0。
+        """
+        return _pairestimate_default_cny(self, date)
+
+    # -- 双向估算（``fundpairref.php:84`` / ``:94``） -----------------------
+    def est_from_pair(self, pair_val: Any = False, cny: Any = False) -> Any:
+        """``EstFromPair($fPairVal, $fCny)``：由**配对标的的价格**反推本标的估值。
+
+        委托给 ``pairestimate.est_from_pair``（唯一实现），本方法只负责"把 ``self``
+        作为 ref 传进去"。
+        """
+        return _est_from_pair(self, pair_val, cny)
+
+    def est_to_pair(self, my_val: Any = False, cny: Any = False) -> Any:
+        """``EstToPair($fMyVal, $fCny)``：由**本标的的价格**推配对标的的价格。"""
+        return _est_to_pair(self, my_val, cny)
+
+    # -- 比价（``fundpairref.php:104``） -----------------------------------
+    def get_price_ratio(self, date: Any = False) -> float:
+        """``GetPriceRatio($strDate)``：本价 / 由配对价反推的估值。
+
+        ``empty()`` 判断用"空或取不到"口径；分母为 0（或估算失败）时回落 1.0，
+        PHP 那边会得 ``INF`` 并画出来，本版宁可少一列也比摆个 ``INF`` 好。
+        """
+        pair_ref = self.get_pair_ref()
+        if pair_ref is None:
+            return 1.0
+        if date:
+            my_price = self.get_close(date)
+            pair_price = pair_ref.get_close(date)
+        else:
+            my_price = self.get_price()
+            pair_price = pair_ref.get_price()
+        if my_price in (None, "") or pair_price in (None, ""):
+            return 1.0
+        try:
+            my_val = float(my_price)
+            pair_val = float(pair_price)
+        except (TypeError, ValueError):
+            return 1.0
+        est = self.est_from_pair(pair_val, self.get_default_cny(date))
+        if not est:
+            return 1.0
+        try:
+            return my_val / float(est)
+        except ZeroDivisionError:
+            return 1.0
+
+    def get_last_calibration_val(self) -> Any:
+        return self.last_calibration_val
+
+    # -- 校准装载（``fundpairref.php:48``） ---------------------------------
+    def load_calibration(self) -> None:
+        """对应 ``LoadCalibration()``。
+
+        PHP 的 ``IsYahooNetValue()`` 分支对 A/H/ADR 恒为 ``false``，直接用自身
+        ``stock_id``。有校准记录时取 ``close`` 当 ``fFactor``，并读
+        ``lastcalibration`` 表（没有则回落校准日期那天的净值）当
+        ``fLastCalibrationVal``；没有校准记录时 ``fFactor = 1.0 / 仓位``。
+        """
+        stock_id = self.get_stock_id()
+        if stock_id is None:
+            self.factor = self._fallback_factor()
+            self.last_calibration_val = None
+            return
+        record = self._call("get_calibration_now", stock_id)
+        close = getattr(record, "close", None)
+        if close in (None, ""):
+            self.factor = self._fallback_factor()
+            self.last_calibration_val = None
+            return
+        try:
+            self.factor = float(close)
+        except (TypeError, ValueError):
+            self.factor = self._fallback_factor()
+            self.last_calibration_val = None
+            return
+        # ``fLastCalibrationVal``：优先 lastcalibration 表，没有则取校准日期那天净值
+        # （对应 ``SqlGetNetValueByDate``）。
+        last = self._call("get_last_calibration", stock_id)
+        try:
+            self.last_calibration_val = float(last) if last not in (None, "") else None
+        except (TypeError, ValueError):
+            self.last_calibration_val = None
+        if self.last_calibration_val is None:
+            record_date = getattr(record, "date", None)
+            if record_date not in (None, ""):
+                net = self._call("get_netvalue_close", stock_id, record_date)
+                try:
+                    self.last_calibration_val = float(net) if net not in (None, "") else None
+                except (TypeError, ValueError):
+                    self.last_calibration_val = None
+
+    def _fallback_factor(self) -> float:
+        """``1.0 / GetPosition()``；仓位为 0 时退化为 1.0（PHP 会得到 INF，本版不画）。"""
+        position = self.get_position()
+        if position:
+            return 1.0 / float(position)
+        return 1.0
+
+
+class AbPairReference(PairReference):
+    """对应 ``php/stock/fundpairref.php:124`` 的 ``AbPairReference``。"""
+
+    pair_table = "abpair"
+
+
+class AdrPairReference(PairReference):
+    """对应 ``php/stock/fundpairref.php:132`` 的 ``AdrPairReference``。"""
+
+    pair_table = "adrpair"
+
+
+class AhPairReference(PairReference):
+    """对应 ``php/stock/fundpairref.php:140`` 的 ``AhPairReference``。"""
+
+    pair_table = "ahpair"
+
+
+# ---------------------------------------------------------------------------
+# 配对引用工厂（对应 php/stock.php:328-379）
+# ---------------------------------------------------------------------------
+def _get_ab_pair_reference(symbol: str, source: Any = None) -> Any:
+    """对应 ``_getAbPairReference()``：A/B 配对引用，双向查找（A→B 或 B→A 都成）。"""
+    if _lookup_pair_symbol(source, symbol, "abpair"):
+        return AbPairReference(symbol, source=source)
+    reversed_symbol = _lookup_pair_symbol_reverse(source, symbol, "abpair")
+    if reversed_symbol:
+        return AbPairReference(reversed_symbol, source=source)
+    return None
+
+
+def _get_ah_pair_reference(symbol: str, source: Any = None) -> Any:
+    """对应 ``_getAhPairReference()``：A/H 配对引用，双向查找。"""
+    if _lookup_pair_symbol(source, symbol, "ahpair"):
+        return AhPairReference(symbol, source=source)
+    reversed_symbol = _lookup_pair_symbol_reverse(source, symbol, "ahpair")
+    if reversed_symbol:
+        return AhPairReference(reversed_symbol, source=source)
+    return None
+
+
+def _get_adr_pair_reference(symbol: str, source: Any = None) -> Any:
+    """对应 ``_getAdrPairReference()``：ADR/H 配对引用，双向查找。"""
+    if _lookup_pair_symbol(source, symbol, "adrpair"):
+        return AdrPairReference(symbol, source=source)
+    reversed_symbol = _lookup_pair_symbol_reverse(source, symbol, "adrpair")
+    if reversed_symbol:
+        return AdrPairReference(reversed_symbol, source=source)
+    return None
+
+
+def StockGetPairReferences(symbol: str, source: Any = None) -> tuple:
+    """对应 ``StockGetPairReferences($strSymbol)``（``php/stock.php:352``）。
+
+    从入口符号出发，按"谁先命中"链式推导 ab / ah / adr 三个配对引用，
+    每对可能为 ``None``（对应 PHP 的 ``false``）。返回 ``(ab_ref, ah_ref, adr_ref)``。
+    """
+    ab_ref = ah_ref = adr_ref = None
+    ab_ref = _get_ab_pair_reference(symbol, source)
+    if ab_ref is not None:
+        ah_ref = _get_ah_pair_reference(ab_ref.get_symbol(), source)
+        if ah_ref is not None:
+            h_ref = ah_ref.get_pair_ref()
+            h_symbol = h_ref.get_symbol() if h_ref is not None else None
+            if h_symbol:
+                adr_ref = _get_adr_pair_reference(h_symbol, source)
+    else:
+        ah_ref = _get_ah_pair_reference(symbol, source)
+        if ah_ref is not None:
+            h_ref = ah_ref.get_pair_ref()
+            h_symbol = h_ref.get_symbol() if h_ref is not None else None
+            if h_symbol:
+                adr_ref = _get_adr_pair_reference(h_symbol, source)
+            ab_ref = _get_ab_pair_reference(ah_ref.get_symbol(), source)
+        else:
+            adr_ref = _get_adr_pair_reference(symbol, source)
+            if adr_ref is not None:
+                h_ref = adr_ref.get_pair_ref()
+                h_symbol = h_ref.get_symbol() if h_ref is not None else None
+                if h_symbol:
+                    ah_ref = _get_ah_pair_reference(h_symbol, source)
+                    if ah_ref is not None:
+                        ab_ref = _get_ab_pair_reference(ah_ref.get_symbol(), source)
+    return (ab_ref, ah_ref, adr_ref)
 
 
 class FundReference(MysqlReference):
@@ -1283,6 +1654,14 @@ MysqlReference.GetPosition = MysqlReference.get_position
 #: 新浪外链不是一回事 —— 曾经错把它别名成 ``get_external_link``，
 #: 导致估值表首格跳去新浪，详见 :meth:`MysqlReference.get_stock_link`。
 MysqlReference.GetStockLink = MysqlReference.get_stock_link
+MysqlReference.GetMyStockLink = MysqlReference.get_my_stock_link
+
+PairReference.GetCnyRef = PairReference.get_cny_ref
+PairReference.GetDefaultCny = PairReference.get_default_cny
+PairReference.EstFromPair = PairReference.est_from_pair
+PairReference.EstToPair = PairReference.est_to_pair
+PairReference.GetPriceRatio = PairReference.get_price_ratio
+PairReference.GetLastCalibrationVal = PairReference.get_last_calibration_val
 
 FundReference.GetOfficialDate = FundReference.get_official_date
 FundReference.SetForex = FundReference.set_forex

@@ -41,8 +41,10 @@ from web.services.pair_service import (  # noqa: E402
 class FakeRef:
     """够用的假 ref：只实现本段落会调到的方法。
 
-    刻意**不**实现 ``get_pair_ref`` 以外的东西时用来测降级路径
-    （``MyPairReference`` 尚未迁移的情况）。
+    刻意**不**实现 ``get_pair_ref`` 以外的东西时用来测降级路径。
+    这条路径在 CK2 之后仍然有意义：``MyPairReference`` 虽已迁，但
+    ``FundPairReference`` 的期货自动校准（CK2b）与 ``HoldingsReference``
+    还没迁，那些分支仍要靠 ``_invoke`` 返回 ``None`` 安静降级。
     """
 
     def __init__(
@@ -308,7 +310,12 @@ class SortTest(unittest.TestCase):
 
 
 class DegradationTest(unittest.TestCase):
-    """``MyPairReference`` 尚未迁移时的降级路径。"""
+    """ref 上缺方法时的降级路径。
+
+    CK2 之后 ``MyPairReference`` 已迁，但 ``FundPairReference`` 的期货自动校准
+    （CK2b）与 ``HoldingsReference`` 仍未迁 —— 那些 ref 传进来时照样会缺方法，
+    这组用例钉住的就是"缺方法不能抛异常、只能留空格子"这个契约。
+    """
 
     def test_missing_methods_do_not_raise(self):
         class Bare:
