@@ -261,9 +261,21 @@ Flask 路由
    测试；替身首格也改成真形态的 `<a>` 串 —— 原先给纯文本时"漏传"与"传了"
    渲染结果一样，测不出来。详见 `README_stock_detail_migration.md` §8、pitfalls #59。
 
-   **仍存在的关键石 / 后续 checkpoint**：校准口径统一（演示库中间层 cal 是"基金净值/ETF价"，与生产端
-   "指数/ETF价"相反，导致`/stock/QQQ`算出 345 万）；CK4 Holdings 分支（含
-   `HoldingsReference`，441 行/24 方法）；CK5 交易块 + 链接（账号可演示）；
+   **校准口径已统一（2026-10-13）**：`/stock/QQQ` 官方 EST 从 3452559.84 降到
+   742.75（SPY 896641.41 → 770.42），与生产端同期 QQQ 743.07 / SPY 777.77 一致。
+   根因**不在代码而在数据**：演示库 QQQ 的 cal 被播种成 `0.008945`（`汇率/净值`），
+   生产端是 `41.111`（`^NDX/净值`），差 4595 倍。两条口径都用生产端页面实测反推
+   并复验过：美股配对**不含汇率**（`cny_ref` 为 false → `GetDefaultCny()` = 1.0，
+   `fundpairref.php:39-42`），A 股 QDII 走 `QdiiGetCalibration = est × 汇率 / 净值`
+   （`qdiiref.php:3`，est 是 `^NDX`/`^GSPC` 不是 ETF）。动数据前 `mysqldump`
+   到 `dbtools/_snapshots/calib_before_20261013.sql`；重算脚本
+   `_scratch/_calibration_recount.py` 默认 dry-run。补了两组生产端锚点测试
+   （`test_pairref.UsPairCaliberTest` 4 例、`test_fundcalc.ProductionCaliberTest`
+   3 例），变异确认有牙。详见 `README_pair_reference_migration.md` §9、pitfalls #60。
+
+   **仍存在的关键石 / 后续 checkpoint**：CK4 Holdings 分支（含
+   `HoldingsReference`，441 行/24 方法 —— 注意演示库 21 个符号里**一个 QdiiMix
+   都没有**，迁完在演示环境看不到变化）；CK5 交易块 + 链接（账号可演示）；
    CK6 order book 写 snapshot。 **仍未迁**：`_mystock.php` 个股详情大页的 AH/AB/ADR 对比、A 股带配对溢价的 trading、
    配对 SMA、`EchoAhPairSmaParagraph`接线、Holdings 分支；三个整页外壳（登录、`GetGroupSql()`、`StockEditTransactionForm`/`StockMergeTransactionForm\`）随账号体系暂缓。
 5. `php/layout.php`、`php/menu.php`、`php/stocklink.php`：站点布局和导航。

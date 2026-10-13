@@ -26,6 +26,7 @@ from ref.refobj import (
     AbPairReference,
     AdrPairReference,
     AhPairReference,
+    FundPairReference,
     StockGetPairReferences,
     PairReference,
     _get_ab_pair_reference,
@@ -100,11 +101,14 @@ class FakeSource:
     ``position``：``{stock_id: float}``。
     """
 
+    #: 末尾四个是给 :class:`UsPairCaliberTest` 用的 —— 那一组断言要建
+    #: "美股 ETF 配美股指数"的引用，符号必须在 STOCK 里有 id。
     STOCK = {
         "SZ161725": 1, "SH900919": 2, "00700": 3, "HWM": 4, "ADR1": 5,
         "fx_susdcnh": 8, "fx_susdhkd": 9, "fx_susdinr": 10, "USCNY": 11,
         "HKCNY": 12, "SH600519": 13, "SZ200002": 14, "ZZ999": 15,
         "znb_SENSEX": 16,
+        "QQQ": 20, "^NDX": 21, "SPY": 22, "^GSPC": 23,
     }
 
     def __init__(self, tables=None, calibration=None, last_calibration=None,
@@ -394,6 +398,73 @@ class StockGetPairReferencesTest(unittest.TestCase):
         self.assertIsNone(ab)
         self.assertIsNone(ah)
         self.assertIsNone(adr)
+
+
+# ---------------------------------------------------------------------------
+# 校准口径（生产端实测锚点）
+# ---------------------------------------------------------------------------
+class UsPairCaliberTest(unittest.TestCase):
+    """美股配对的校准口径：**不含汇率**（``fundpairref.php:39-42``）。
+
+    演示库曾经把 QQQ 的校准值播种成 ``0.008945``（``汇率 / 净值``），
+    而生产端是 ``41.111``（``^NDX / 净值``）—— 差 4595 倍，于是
+    ``/stock/QQQ`` 的官方 EST 算出 **3452559.84**。
+
+    根因在构造函数：``FundPairReference`` 走到 ``else`` 分支（配对标的不是
+    A 股 / 港股 / 境内期货 / Sensex）时，只有 ``$this->IsSymbolA()`` 为真
+    才设 ``$strCNY``。QQQ/SPY 与它们的配对标的 ^NDX/^GSPC 都不是 A 股，
+    所以 **``cny_ref`` 为 ``false``** —— ``GetDefaultCny()`` 返回 **1.0**，
+    ``CalcFactor`` 与 ``EstFromPair`` 两边都没有汇率因子：
+
+        CalcFactor   = 配对价 / 本净值
+        EstFromPair  = (配对价 / 1.0) / factor
+
+    生产端 ``mystockcn.php`` 实测（2026-10-12）::
+
+        QQQ  ^NDX  30664.7 / QQQ净值 745.9075 = 41.109   页面 41.111
+        SPY  ^GSPC 7807.24 / SPY净值 778.0232 = 10.035   页面 10.035
+        SH   ^GSPC 7807.24 / SH净值  31.8031  = 245.62   页面 245.487
+
+    **为什么值得单独钉**：公式本身没写错（``CalcFactor`` 两个分支的汇率方向
+    相反那条早有覆盖），错的是**数据口径**。这种错在页面上表现为"数字大得
+    离谱"，但任何"输入是什么就输出什么"的单测都照常通过 —— 只有拿生产端
+    真实数字当期望值才能挡住。
+    """
+
+    def _us_ref(self, symbol, pair_symbol):
+        """建一个"美股 ETF 配美股指数"的引用，cny_ref 应为 None。"""
+        source = FakeSource(tables={"fundpair": {symbol: pair_symbol}})
+        return FundPairReference(symbol, source=source)
+
+    def test_us_pair_has_no_cny_ref(self):
+        """前提：本符号与配对标的都不是 A 股 → 没有汇率引用。"""
+        ref = self._us_ref("QQQ", "^NDX")
+        self.assertIsNone(ref.get_cny_ref())
+        self.assertAlmostEqual(ref.get_default_cny(), 1.0)
+
+    def test_calc_factor_matches_production_qqq(self):
+        """``CalcFactor`` 走无汇率那一式，结果要落在生产端的 41.111 上。"""
+        ref = self._us_ref("QQQ", "^NDX")
+        factor = ref.calc_factor(30664.7, 745.9075)
+        self.assertIsNotNone(factor)
+        self.assertAlmostEqual(factor, 41.109, delta=0.01)
+
+    def test_est_from_pair_gives_back_the_net_value(self):
+        """用生产端那个 factor 反算，应该回到 QQQ 自己的净值。"""
+        ref = self._us_ref("QQQ", "^NDX")
+        ref.factor = 41.111
+        ref.last_calibration_val = None
+        ref.ratio = 1.0
+        est = ref.est_from_pair(30664.7)
+        self.assertIsNotNone(est)
+        self.assertAlmostEqual(est, 745.9075, delta=1.0)
+
+    def test_spy_caliber_is_the_same_shape(self):
+        """SPY 是同一形态：``^GSPC / SPY净值``，与页面 10.035 一致。"""
+        ref = self._us_ref("SPY", "^GSPC")
+        self.assertIsNone(ref.get_cny_ref())
+        factor = ref.calc_factor(7807.24, 778.0232)
+        self.assertAlmostEqual(factor, 10.035, delta=0.01)
 
 
 if __name__ == "__main__":

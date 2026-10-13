@@ -115,5 +115,52 @@ class PalmmicroFundCalculatorTest(unittest.TestCase):
         self.assertEqual(api.reverse_est({"CNY": 7.1}), 0.0)
 
 
+class ProductionCaliberTest(unittest.TestCase):
+    """A 股 QDII 基金的校准口径：**est × 汇率 / 净值**（``qdiiref.php:3``）。
+
+    ``QdiiGetCalibration($strEst, $strCNY, $strNetValue)`` 就一行：
+    ``$strEst * $strCNY / $strNetValue``。与 :class:`test_pairref.UsPairCaliberTest`
+    那一条（美股配对**不含汇率**）是**两套口径**，别混。
+
+    期望值取自生产端 ``sz161125cn.php``（2026-10-12 的校准记录）::
+
+        校准值 16517.232   净值 3.1817
+        est 标的 ^GSPC = 7807.24（``QdiiGetEstArray()``，标普系 → ^GSPC）
+        USCNY = 6.7298
+
+    ``7807.24 * 6.7298 / 3.1817 = 16517.2``，与页面一致到 0.01%。
+    """
+
+    #: 生产端 sz161125cn.php 上的四个数。
+    EST = 7807.24
+    CNY = 6.7298
+    NET_VALUE = 3.1817
+    PRODUCTION_CALIBRATION = 16517.232
+
+    def test_qdii_calibration_matches_production_sz161125(self):
+        calibration = qdii_get_calibration(self.EST, self.CNY, self.NET_VALUE)
+        self.assertAlmostEqual(
+            calibration, self.PRODUCTION_CALIBRATION,
+            delta=self.PRODUCTION_CALIBRATION * 0.001,  # 0.1%
+        )
+
+    def test_qdii_value_gives_back_the_net_value(self):
+        """用同一个 factor 反算回净值 —— 口径自洽的前提。
+
+        这条同时也是"演示库 QQQ 那次 345 万"的镜像检查：那边是
+        ``EstFromPair = 配对价 / factor``，这里是 ``est × cny / factor``，
+        方向反了就会差一个 ``cny²`` 且不报错。
+        """
+        factor = qdii_get_calibration(self.EST, self.CNY, self.NET_VALUE)
+        self.assertAlmostEqual(
+            qdii_get_value(self.EST, self.CNY, factor), self.NET_VALUE, places=4
+        )
+
+    def test_est_symbol_is_the_index_not_the_etf(self):
+        """标普系基金的 est 是 ``^GSPC`` 不是 ``SPY`` —— 差了约 10 倍。"""
+        self.assertEqual(qdii_est_symbol("SZ161125"), "^GSPC")
+        self.assertEqual(qdii_est_symbol("SZ161130"), "^NDX")
+
+
 if __name__ == "__main__":
     unittest.main()
