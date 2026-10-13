@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% from "_data_table.html" import data_table %}
+{% block title %}投资组合 - 基金估值{% endblock %}
+{% block content %}
+  {# 投资组合段落（php/ui/portfolioparagraph.php 的 EchoPortfolioParagraph）。
+
+       PHP 那边的数据是用户自己的交易记录（stocktransaction 表），需要登录。
+       账号体系暂缓 + 演示库里没有那三张表，所以这里用写死的样例数据，
+       页面顶部有标注。列定义与行装配都在
+       web/services/portfolio_service.py，模板只负责渲染。
+
+       行宽有 2 / 6 / 7 三种（PHP 靠少几格表达"没有持仓"），
+       模板不补空格 —— data_table 宏按 row.cells 的实际长度渲染。 #}
+  <h1>投资组合</h1>
+  <p class="group-description">
+    按用户输入的交易详情汇总单个持仓的盈亏，对应 PHP 的
+    <code>EchoPortfolioParagraph()</code>（<code>php/ui/portfolioparagraph.php</code>）。
+  </p>
+
+  <p class="hint">
+    <strong>演示数据</strong>：真实页面需要登录后读取
+    <code>stockgroup</code> / <code>stockgroupitem</code> / <code>stocktransaction</code>
+    三张表，演示库里没有这些表，账号体系也暂缓，所以这里用一份写死的样例持仓
+    （{{ holding_count }} 条），把该段落的每个分支都走到。价格是样例值，
+    不对应任何一天的行情。
+  </p>
+
+  <h2>{{ table.title }}</h2>
+  {{ data_table(table, "portfolio-table") }}
+
+  <p class="table-note">
+    末列「测试」只对作者盯着的少数符号出现，其余行没有这一格 ——
+    对应 PHP <code>switch</code> 没有 <code>default</code> 分支。
+    <code>fx_susdcnh</code> 那一格把前面所有 QDII 持仓折成人民币后
+    （当前累计 {{ '%.2f'|format(cny_total) }}）再折算成美元显示，
+    对应 PHP 的函数级 <code>static $fCny</code>。
+  </p>
+
+  <p><a href="{{ url_for('main.index') }}">返回首页</a></p>
+{% endblock %}

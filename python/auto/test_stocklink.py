@@ -27,10 +27,13 @@ install_paths()
 
 from ref.stocklink import (  # noqa: E402
     ALL_STOCK_DISPLAY,
+    OVERNIGHT_CNH_DISPLAY,
     get_group_stock_link,
     get_my_stock_link,
+    get_overnight_cnh_link,
     get_php_link,
     get_stock_link,
+    get_transaction_link,
 )
 
 
@@ -130,6 +133,55 @@ class GetStockLinkTest(unittest.TestCase):
         """首格为空会让整行少一格、后面所有列错位 —— 两条路都必须有内容。"""
         for symbol in ("SH513100", "SH600000", "^NDX", "QQQ", "hf_NQ", "USCNY"):
             self.assertTrue(get_stock_link(symbol), symbol)
+
+
+class StockGetTransactionLinkTest(unittest.TestCase):
+    """``StockGetTransactionLink()``：投资组合段落的首格。
+
+    对应 ``php/stocklink.php:336``，查询串形如
+    ``groupid=42&symbol=SH513100``。
+    """
+
+    def test_group_and_symbol_in_query(self):
+        link = get_transaction_link('42', 'SH513100')
+        self.assertIn('groupid=42&symbol=SH513100', link)
+        self.assertIn('mystocktransactioncn.php', link)
+
+    def test_symbol_optional(self):
+        """``if ($strSymbol)`` 为假时查询串只有 groupid。"""
+        link = get_transaction_link('42')
+        self.assertIn('groupid=42', link)
+        self.assertNotIn('symbol=', link)
+
+    def test_display_defaults_to_symbol_display(self):
+        """默认显示名取 ``StockSymbol::GetDisplay()``，即去前缀后的名字。
+
+        ``hf_ES`` 是新浪美国期货，显示成 ``ES`` 而不是 ``hf_ES``。
+        """
+        self.assertIn('>ES</a>', get_transaction_link('42', 'hf_ES'))
+        self.assertIn('>SH513100</a>', get_transaction_link('42', 'SH513100'))
+
+    def test_display_can_be_overridden(self):
+        link = get_transaction_link('42', 'SH513100', '华宝油气')
+        self.assertIn('>华宝油气</a>', link)
+
+
+class GetOvernightCnhLinkTest(unittest.TestCase):
+    """``GetOvernightCnhLink()``：``fx_susdcnh`` 那一行的跳转。
+
+    对应 ``php/stocklink.php:112``，查询串的**键就是页面名**
+    （``overnightcnh=-123456``），不是 ``amount=``。
+    """
+
+    def test_default_display_and_amount(self):
+        link = get_overnight_cnh_link()
+        self.assertIn('overnightcnh=95000', link)
+        self.assertIn('>%s</a>' % OVERNIGHT_CNH_DISPLAY, link)
+
+    def test_amount_is_passed_through(self):
+        link = get_overnight_cnh_link('$1234K', '-123456')
+        self.assertIn('overnightcnh=-123456', link)
+        self.assertIn('>$1234K</a>', link)
 
 
 class StockLinkDiffersFromExternalLinkTest(unittest.TestCase):

@@ -159,6 +159,45 @@ def format_ratio_display(value: Any, precision: int = 4) -> str:
         return str(value)
 
 
+def format_int_display(value: Any) -> str:
+    """对应 PHP ``number_format($fVal)``（**只传一个参数**的那一种）。
+
+    PHP 的 ``number_format()`` 只传一个参数时：小数位 0、**带千分位逗号**。
+    这与本文件里其它 ``format_*`` 都不一样（它们都显式传了
+    ``'.'`` / ``''`` 把分隔符关掉），所以单独立一个函数，避免混用。
+
+    用在两处（都是 ``php/ui/portfolioparagraph.php``）：
+
+    * ``GetArbitrageQuantity()`` —— ``number_format($fQuantity / GetStockHedge(...))``；
+    * ``_getArbitrageTestStr()`` —— ``number_format($iArbitrageQuantity + ...)``。
+
+    负数的逗号在**负号之后**（PHP 行为）：``number_format(-1234567)`` 得
+    ``"-1,234,567"``，不是 ``"-,123,456"``。
+    """
+    if value is None or value == "":
+        return ""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    # PHP 的 number_format(x) 先 round-half-up 到整数再插逗号。
+    # Python 的 round() 是银行家舍入（2.5 → 2），PHP 是 2.5 → 3，
+    # 所以这里按"四舍五入远离零"显式做一次。
+    if number >= 0:
+        rounded = int(number + 0.5)
+    else:
+        rounded = int(number - 0.5)
+    negative = rounded < 0
+    digits = str(-rounded if negative else rounded)
+    parts = []
+    while len(digits) > 3:
+        parts.insert(0, digits[-3:])
+        digits = digits[:-3]
+    parts.insert(0, digits)
+    text = ",".join(parts)
+    return ("-" + text) if negative else text
+
+
 def format_turnover_display(volume: Any, shares: Any, precision: int = 2) -> str:
     """换手率显示，对应 PHP ``GetTurnoverDisplay()``（``php/ui/stockcomm.php:70``）。
 

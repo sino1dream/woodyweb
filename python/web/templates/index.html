@@ -25,5 +25,7 @@
   <h2>其它</h2>
   <ul class="group-nav">
     <li><a href="{{ url_for('stock.stock_page') }}">全部股票代码</a>（对应 PHP 的 <code>stockparagraph.php</code>）</li>
+    {# 投资组合（woody/res/myportfoliocn.php）—— 演示数据，见 routes/portfolio.py 的说明 #}
+    <li><a href="{{ url_for('portfolio.portfolio_page') }}">投资组合</a>（对应 PHP 的 <code>portfolioparagraph.php</code>，演示数据）</li>
   </ul>
 {% endblock %}

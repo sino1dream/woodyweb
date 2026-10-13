@@ -65,6 +65,29 @@ ALL_STOCK_DISPLAY = "全部股票代码"
 #: ``GetMyStockLink()`` 用的页面名（``php/stocklink.php:128``）。
 MYSTOCK_PAGE = "mystock"
 
+#: ``StockGetTransactionLink()`` 用的页面名（``php/stocklink.php:346``）。
+MYSTOCKTRANSACTION_PAGE = "mystocktransaction"
+
+#: ``GetOvernightCnhLink()`` 用的页面名（``php/stocklink.php:115``）。
+OVERNIGHT_CNH_PAGE = "overnightcnh"
+
+#: PHP ``define('OVERNIGHT_CNH_DISPLAY', '义工群对冲计算器')``
+#: （``php/stocklink.php:18``）。
+OVERNIGHT_CNH_DISPLAY = "义工群对冲计算器"
+
+
+def _php_truthy(value: Any) -> bool:
+    """PHP 布尔上下文：``''`` / ``'0'`` / ``False`` / ``None`` 都是假值。
+
+    Python 里 ``'0'`` 是**真值**，所以 ``if ($strSymbol)`` 不能直译成
+    ``if symbol:`` —— 一个 ``'0'`` 符号名（虽然罕见）会让查询串少一段。
+    """
+    if value is None or value is False:
+        return False
+    if isinstance(value, str):
+        return value not in ("", "0")
+    return bool(value)
+
 
 def get_php_link(
     path_page: Any,
@@ -149,6 +172,58 @@ def get_stock_link(symbol: Any, display: Any = None, chinese: bool = True) -> st
     return get_my_stock_link(symbol, display, chinese)
 
 
+def get_transaction_link(group_id: Any, symbol: Any = None, display: Any = None,
+                         chinese: bool = True) -> str:
+    """对应 ``StockGetTransactionLink()``（``php/stocklink.php:336``）。
+
+    PHP 原文::
+
+        $strQuery = 'groupid='.$strGroupId;
+        if ($strSymbol)	$strQuery .= '&symbol='.$strSymbol;
+        if ($strDisplay == false)
+        {
+            $sym = new StockSymbol($strSymbol);
+            $strDisplay = $sym->GetDisplay();
+        }
+        return GetStockPageLink('mystocktransaction', $strDisplay, $strQuery);
+
+    ``投资组合`` 段落（``portfolioparagraph.php``）首格用的就是它：
+    点一下跳到该分组下这只股票的交易明细页。
+
+    **显示文本默认取 ``StockSymbol::GetDisplay()``**（去前缀后的展示名），
+    不是原符号 —— 比如 ``hf_ES`` 显示成 ``ES``。所以这里延迟导入
+    :class:`core.stocksymbol.StockSymbol`，避免与 ``core`` 形成环。
+    """
+    query = "groupid=" + ("" if group_id is None else str(group_id))
+    if _php_truthy(symbol):
+        query += "&symbol=" + str(symbol)
+
+    if display is None or display is False or display == '':
+        # PHP 是 `$strDisplay == false`，空串也会重建显示名
+        from core.stocksymbol import StockSymbol
+
+        display = StockSymbol(symbol).get_display() if _php_truthy(symbol) else symbol
+    return get_php_link(PATH_STOCK + MYSTOCKTRANSACTION_PAGE, query, display, chinese)
+
+
+def get_overnight_cnh_link(display: Any = OVERNIGHT_CNH_DISPLAY,
+                           amount: Any = '95000',
+                           chinese: bool = True) -> str:
+    """对应 ``GetOvernightCnhLink()``（``php/stocklink.php:112``）。
+
+    PHP 原文::
+
+        $strPage = 'overnightcnh';
+        return GetStockPageLink($strPage, $strDisplay, $strPage.'='.$strAmount);
+
+    注意查询串的**键就是页面名本身**（``overnightcnh=-123456``），
+    不是 ``amount=`` 这种常规键。``portfolioparagraph.php`` 的
+    ``fx_susdcnh`` 那一行把"折成美元的总人民币金额"当参数传进去。
+    """
+    page = OVERNIGHT_CNH_PAGE
+    return get_php_link(PATH_STOCK + page, "%s=%s" % (page, amount), display, chinese)
+
+
 # ---------------------------------------------------------------------------
 # PHP 原名别名（见 AGENTS.md：保留 camelCase 别名）
 # ---------------------------------------------------------------------------
@@ -156,3 +231,5 @@ GetPhpLink = get_php_link
 GetGroupStockLink = get_group_stock_link
 GetMyStockLink = get_my_stock_link
 GetStockLink = get_stock_link
+GetOvernightCnhLink = get_overnight_cnh_link
+StockGetTransactionLink = get_transaction_link

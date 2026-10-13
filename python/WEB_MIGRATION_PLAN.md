@@ -193,10 +193,17 @@ Flask 路由
    摆到一起、用 `_scratch/_prod_qdiipage_compare.py` 逐格比 href 才发现的。
    新建 `auto/ref/stocklink.py` 修掉，并留了一条"两个链接必须不相等"的
    回归测试。详见 `python/auto/README_qdii_page_migration.md`。
-   **仍未迁**：`portfolioparagraph`、`stockgroup` / `fundpurchase` /
-   `transaction` / `comment`。
+   **仍未迁**：`stockgroup` / `fundpurchase` / `transaction` / `comment`
+   （都要等账号登录体系）。
    **已迁但受数据所限**：ETF（如 `SH513100`）走即期外汇分支，演示库
    `fx_susdcny` 无行情快照，换算格仍为空 —— 列头已正确。
+   **第 10 轮（投资组合）**：`php/ui/portfolioparagraph.php` →
+   `web/services/portfolio_service.py` + `auto/core/stocktrans.py`，
+   `/portfolio` 演示页（内存交易集，`stockgroup` 三张表与账号体系暂缓）。
+   PHP 逐例对照 **86 例 0 差异**，并抓到一个真 bug：
+   `_getArbitrageTestStr()` 的 `while ($record = fetch())` 在**自然耗尽时
+   把 null 写回 `$record`**，初版误实现成"取最后一行"（pitfalls 第 47 条）。
+   详见 `python/auto/README_portfolio_migration.md`。
 5. `php/layout.php`、`php/menu.php`、`php/stocklink.php`：站点布局和导航。
 
 第 1、2、3 步已经落地：
