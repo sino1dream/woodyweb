@@ -108,12 +108,33 @@
     <p class="table-note">参考数据来自外部行情源，抓不到时对应行留空。</p>
   {% endif %}
 
+  {% if netvalueclose %}
+    {# 净值价格比较（php/ui/netvaluecloseparagraph.php）：与 /history/netvalueclose/<sym>
+        同源。PHP 守卫 CountNetValue()==0 时整段不出现，本版由 rows 为空触发隐藏。 #}
+    <h2>{{ netvalueclose.title }}</h2>
+    {{ history_table(netvalueclose, "history-table netvalueclose-table") }}
+    <p class="table-note">
+      同一天的场内价格与单位净值并排比较，看两者是否有稳定偏差。
+      <a href="{{ url_for('history.history_page', kind='netvalueclose', symbol=fund.symbol) }}">查看全部净值价格比较</a>
+    </p>
+  {% endif %}
+
   {% if shares %}
     {# 与 /history/shareshistory/<sym> 是同一张表、同一个服务，不另写一套 #}
     <h2>基金场内份额</h2>
     {{ history_table(shares, "history-table share-table") }}
     <p class="table-note">
       <a href="{{ url_for('history.history_page', kind='shareshistory', symbol=fund.symbol) }}">查看全部份额记录</a>
+    </p>
+  {% endif %}
+
+  {% if stockhistory %}
+    {# 历史价格（php/ui/stockhistoryparagraph.php）：与 /history/stockhistory/<sym>
+        同源。基金符号会按估值标的自动带出比价列。 #}
+    <h2>{{ stockhistory.title }}</h2>
+    {{ history_table(stockhistory, "history-table stockhistory-table") }}
+    <p class="table-note">
+      <a href="{{ url_for('history.history_page', kind='stockhistory', symbol=fund.symbol) }}">查看全部历史价格</a>
     </p>
   {% endif %}
 

@@ -242,9 +242,25 @@ Flask 路由
    （已并入 `/group`、`/transactions`、`/account`）。测试：web **617** OK
    （+14）、auto 988 OK、compileall 双绿。详见
    `python/auto/README_group_transactions_migration.md`。
-   **仍未迁**：`_mystock.php` 个股详情大页（整条详情渲染栈）；三个整页的外壳
-   （登录、`GetGroupSql()`、`StockEditTransactionForm` /
-   `StockMergeTransactionForm`）仍随账号体系暂缓。
+   **第 14 轮（_mystock.php 详情栈 · CK1 快赢）**：启动 `_mystock.php` 个股详情大页
+   这条大线。先做了侦察，结论比预期关键 —— 详情栈的**服务层大部分已迁**，真正卡住
+   整条非基金详情线的是底层**配对引用层**（`php/stock/fundpairref.php`，约 278 行，
+   含 `MyPairReference` / `FundPairReference` / `HoldingsReference` 及
+   `StockGetFundPairReference` / `StockGetHoldingsReference` / `StockGetPairReferences`
+   ），**尚未迁入 `auto/ref/refobj.py`**（refobj.py:523、pair_service.py 文档都标注
+   "未迁移"）。CK1 只做不依赖该层的快赢：把已迁的 `stockhistory` + `netvalueclose`
+   两段（`history_service` 已支持，原仅供 `/history/*` 页）接进 `/fund/<symbol>`
+   详情页（仅接线 + 模板，顺序对齐 PHP：netvalueclose → shares → stockhistory）。
+   测试：web **619** OK（+2）、auto 988 OK、compileall 双绿；并修复一处
+   `test_sma_route.FundPairSmaRouteTest` 的隔离缺口（CK1 新段落暴露其未注入
+   `history_service`，已补 `_EmptyHistory` 注入）。详见
+   `python/auto/README_stock_detail_migration.md`。
+   **仍存在的关键石 / 后续 checkpoint**：CK2 迁配对引用层（解锁 AH/ADR/Holdings 全栈）；
+   CK3 新建 `/stock/<symbol>` 承载非基金详情（A/H/ADR/外汇/Holdings，路由策略已与用户
+   确认）；CK4 Holdings 分支；CK5 交易块 + 链接（账号可演示）；CK6 order book 写 snapshot。
+   **仍未迁**：`_mystock.php` 个股详情大页的 AH/AB/ADR 对比、A 股带配对溢价的 trading、
+   配对 SMA、`EchoAhPairSmaParagraph` 接线、Holdings 分支；三个整页外壳（登录、
+   `GetGroupSql()`、`StockEditTransactionForm` / `StockMergeTransactionForm`）随账号体系暂缓。
 5. `php/layout.php`、`php/menu.php`、`php/stocklink.php`：站点布局和导航。
 
 第 1、2、3 步已经落地：

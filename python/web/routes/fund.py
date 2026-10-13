@@ -67,6 +67,8 @@ def _render_fund(symbol: str, group: str):
         fundest=_build_fundest(symbol),
         reference=_build_reference(symbol),
         shares=_build_shares(symbol),
+        stockhistory=_build_stock_history(symbol),
+        netvalueclose=_build_netvalue_close(symbol),
         sma=_build_sma(symbol),
         calibration=_build_calibration(symbol),
         fundlist=_build_fund_list(symbol),
@@ -485,6 +487,45 @@ def _build_shares(symbol: str) -> dict[str, Any] | None:
         return None
     try:
         table = service.get_table("shareshistory", symbol, 0, 10)
+    except Exception:
+        return None
+    return table if table.get("rows") else None
+
+
+def _build_stock_history(symbol: str) -> dict[str, Any] | None:
+    """基金详情页的「历史价格」表（``php/ui/stockhistoryparagraph.php``）。
+
+    与 ``/history/stockhistory/<sym>`` 是同一张表、同一个服务
+    （``history_service`` 的 ``stockhistory`` kind），不另写一套算法。
+    基金符号会按估值标的自动带出比价列（``_build_stockhistory`` 内部
+    ``_compare_symbol``）。
+
+    **没有行情历史就整段跳过**：``EchoStockHistoryParagraph`` 在 ``$result``
+    为空时循环不执行、表自然不出现，本版用 ``rows`` 为空来触发同样的隐藏。
+    """
+    service = _get_history_service()
+    if service is None:
+        return None
+    try:
+        table = service.get_table("stockhistory", symbol, 0, 10)
+    except Exception:
+        return None
+    return table if table.get("rows") else None
+
+
+def _build_netvalue_close(symbol: str) -> dict[str, Any] | None:
+    """基金详情页的「净值价格比较」表（``php/ui/netvaluecloseparagraph.php``）。
+
+    同样复用 ``history_service`` 的 ``netvalueclose`` kind（与
+    ``/history/netvalueclose/<sym>`` 同源）。PHP 的守卫是
+    ``if ($ref->CountNetValue() == 0) return;`` —— 本版照办：基金没有净值数据时
+    整段不显示，而不是摆一张空表。
+    """
+    service = _get_history_service()
+    if service is None:
+        return None
+    try:
+        table = service.get_table("netvalueclose", symbol, 0, 10)
     except Exception:
         return None
     return table if table.get("rows") else None

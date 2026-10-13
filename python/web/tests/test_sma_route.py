@@ -242,6 +242,18 @@ class _Service:
         self.source = source
 
 
+class _EmptyHistory:
+    """历史服务替身：所有 kind 都返回空行，让历史类段落整段隐藏。
+
+    CK1 之后基金详情页多了 stockhistory / netvalueclose 两段（走真实历史服务，
+    依赖演示库数据），本测试只验 SMA 列顺序，不该被库里的历史数据干扰，
+    所以把历史服务掐掉，保持页面只含本测试控制的表。
+    """
+
+    def get_table(self, kind, symbol, start=0, num=10):
+        return {"title": kind, "columns": [], "rows": []}
+
+
 class FundPairSmaRouteTest(unittest.TestCase):
     """``EchoFundPairSmaParagraphs()`` 的接线：每个杠杆标的各一张表。
 
@@ -268,6 +280,7 @@ class FundPairSmaRouteTest(unittest.TestCase):
             sma_refs_builder=lambda symbols: [_FundRef()],
             fundlist_refs_builder=lambda est_symbol: self.leverage_refs,
             reference_service_factory=lambda: _Service(None),
+            history_service_factory=lambda: _EmptyHistory(),
         )
         self.client = self.app.test_client()
 
