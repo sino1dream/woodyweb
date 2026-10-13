@@ -177,6 +177,22 @@ Flask 路由
    空白的问题。改共享构造，所以按规矩先留页面基线再改：受影响面只有那一列，
    其余九张表一行未动。PHP 逐例对照 5 例 0 差异（验的是四个委托方法的转发与
    参数个数）、自检 4/4。详见 `python/auto/README_stock_ref_autobuild.md`。
+   **第 9 轮（分类页）**：`woody/res/qdiicn.php` → `/qdii`，本项目第一个
+   **按分类汇总**的基金页。装配套 `func:`web.services.qdii_page_service`
+   （PHP `_mystockgroup.php:_echoStockGroupArray` 的 foreach：非宽屏时全部
+   符号进参考数据表、A 股基金且有官方净值的另进 EST 表），两张表分别复用
+   已有的 `reference_service` / `fundest_service`。
+   ① **符号数以生产端为准**：本地 PHP 仓库的 `QdiiGetSymbolArray()` 是 33 个，
+   生产端（2026-10-12 抓取）已是 **41 个**；逐个抓了 qqqfund / spyfund /
+   mscius50 / commodity / oilfund 五个子页面，确认多出的 8 只系"额外并入
+   qdii"而非从原分组搬走，且整块追加在 SPY 组之后 —— 据此改
+   `core/stocksymbol.py` 并逐位对齐（顺带影响 qdiilof 22→26、qdiietf 21→25）。
+   ② **抓出一个真 bug**：`MysqlReference.GetStockLink` 被错别名成
+   `get_external_link`，估值表首格于是渲染成新浪外链，而生产端是站内详情页
+   `res/<sym>cn.php`。详情页只有一张表所以一直没暴露，是分类页把两张表
+   摆到一起、用 `_scratch/_prod_qdiipage_compare.py` 逐格比 href 才发现的。
+   新建 `auto/ref/stocklink.py` 修掉，并留了一条"两个链接必须不相等"的
+   回归测试。详见 `python/auto/README_qdii_page_migration.md`。
    **仍未迁**：`portfolioparagraph`、`stockgroup` / `fundpurchase` /
    `transaction` / `comment`。
    **已迁但受数据所限**：ETF（如 `SH513100`）走即期外汇分支，演示库
@@ -659,8 +675,8 @@ Flask 路由
 
 ```powershell
 cd F:\woody\woodyweb\python
-python -B -m unittest discover -s auto -p "test_*.py"        # 877 个
-python -B -m unittest discover -s web\tests -p "test_*.py"   # 297 个
+python -B -m unittest discover -s auto -p "test_*.py"        # 911 个
+python -B -m unittest discover -s web\tests -p "test_*.py"   # 431 个
 ```
 
 注意：Web 层测试需要 Flask 与 PyMySQL，当前只装在系统 Python 3.7 上。  
@@ -671,15 +687,17 @@ python -B -m unittest discover -s web\tests -p "test_*.py"   # 297 个
 
 ```powershell
 cd F:\woody\woodyweb\python\auto
-python -B _php_port_compare.py        # stocksymbol，6280 个用例
-python -B _php_numfmt_compare.py      # 数字/时间格式化，87 个用例
-python -B _php_prefetch_compare.py    # 预取判定，26800 个用例
-python -B _php_refobj_compare.py      # refobj 纯数学，98 个用例
-python -B _php_sma_compare.py         # StockHistory 数值核心，436 个用例
-python -B _php_pairest_compare.py     # 配对双向估算，13 个用例
-python -B _php_futurepremium_compare.py   # 期货理论溢价，13 个用例
-python -B _php_smaconfig_compare.py       # 配置路径与 INI 格式，15 个用例
-python -B _php_refobj_compare.py --selftest   # 自检：证明对照抓得到注入的错误
-python -B _php_sma_compare.py --selftest      # 同上（含"两条布林式子必须不同"）
-python -B _php_rtrim0_fuzz.py 2000    # rtrim0 随机模糊
+python -B _scratch/_php_port_compare.py        # stocksymbol，6280 个用例
+python -B _scratch/_php_numfmt_compare.py      # 数字/时间格式化，87 个用例
+python -B _scratch/_php_prefetch_compare.py    # 预取判定，26800 个用例
+python -B _scratch/_php_refobj_compare.py      # refobj 纯数学，98 个用例
+python -B _scratch/_php_sma_compare.py         # StockHistory 数值核心，436 个用例
+python -B _scratch/_php_pairest_compare.py     # 配对双向估算，13 个用例
+python -B _scratch/_php_futurepremium_compare.py   # 期货理论溢价，13 个用例
+python -B _scratch/_php_smaconfig_compare.py       # 配置路径与 INI 格式，15 个用例
+python -B _scratch/_prod_qdiipage_compare.py       # /qdii 与生产端 qdiicn.php 逐格对照
+python -B _scratch/_prod_qdiipage_compare.py --selftest   # 自检：证明对照抓得到
+python -B _scratch/_php_refobj_compare.py --selftest   # 自检：证明对照抓得到注入的错误
+python -B _scratch/_php_sma_compare.py --selftest      # 同上（含"两条布林式子必须不同"）
+python -B _scratch/_php_rtrim0_fuzz.py 2000    # rtrim0 随机模糊
 ```

@@ -34,3 +34,9 @@ Thumbs.db
 # 四、本机数据库快照（改数据前的安全网，随机器而异，不该进版本库）
 # _snapshots 目录下是 mysqldump 出来的整库副本，动辄几百 KB。
 python/dbtools/_snapshots/
+
+# 五、生产端页面缓存
+# _prod_qdiipage_compare.py 抓生产端 qdiicn.php 时存的本机副本，用来在离线时
+# 继续做对照。它是外部页面的快照：内容随生产端每天变，进版本库只会得到一份
+# 过期且无人维护的副本。需要时重跑对照脚本即可重新抓取。
+python/auto/_scratch/_qdiicn_prod.html

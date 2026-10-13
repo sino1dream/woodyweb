@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% from "_data_table.html" import data_table %}
+{% block title %}{{ page.title }} - 基金估值{% endblock %}
+{% block content %}
+  {# QDII 分类页（woody/res/qdiicn.php）。
+
+       PHP 那边是 _mystockgroup.php 的 _echoStockGroupArray() 先按
+       IsFundA() / GetOfficialNetValue() 把符号分成 $arRef 与 $arFund 两组，
+       再依次渲染两个段落。这里两张表的数据都由 services 给好，
+       模板只决定顺序与说明文字 —— 与 fund_detail.html 的分工一致。
+
+       表1 代码列是新浪外链（GetExternalLink()），表2 代码列是站内详情页
+       链接（GetStockLink()）；生产端就是这个差别，别改成同一个。 #}
+  <h1>{{ page.title }}</h1>
+  <p class="group-description">{{ page.description }}</p>
+
+  {% if page.counts.symbols %}
+    <p class="hint">
+      共 {{ page.counts.symbols }} 只基金
+      {%- if page.counts.skipped %}，其中 {{ page.counts.skipped }} 只建不出引用对象已跳过{% endif %}。
+    </p>
+  {% endif %}
+
+  {# 表1：参考数据（php/ui/referenceparagraph.php 的 EchoReferenceParagraph）。
+       非宽屏时全部符号都进这张表，所以行数与 QDII 分类的符号数一致。 #}
+  {% if page.reference %}
+    <h2>参考数据</h2>
+    {{ data_table(page.reference, "reference-table", first_cell_is_html=True) }}
+    <p class="table-note">参考数据来自外部行情源，抓不到时对应行留空。</p>
+  {% endif %}
+
+  {# 表2：估值（php/ui/fundestparagraph.php 的 EchoFundArrayEstParagraph）。
+       后四列动态出现：整个列表一只都没有参考（实时）估值时不加那两列，
+       对应 PHP _getFundEstTableColumn() 里那两个 break。 #}
+  {% if page.est %}
+    <h2>估值</h2>
+    {{ data_table(page.est, "fund-est-table", first_cell_is_html=True) }}
+    <p class="table-note">
+      官方 / 参考 / 实时三档估值，缺哪档就不显示哪两列。
+      {% if page.est.count > 2 %}
+        排序：
+        <a href="{{ url_for('fund.qdii_page', sort='symbol') }}">按代码</a>、
+        <a href="{{ url_for('fund.qdii_page', sort='premium') }}">按官方溢价</a>
+        （对应 PHP 的 ``?sort=symbol`` / ``?sort=premium``）。
+      {% endif %}
+    </p>
+  {% endif %}
+
+  {% if not page.reference and not page.est %}
+    <p class="empty">暂无数据（数据库不可用或分类为空）。</p>
+  {% endif %}
+
+  <h2>其它分组</h2>
+  <ul class="group-nav">
+    {% for item in groups %}
+      <li><a href="{{ url_for('fund.fund_group_page', group=item.name) }}">{{ item.title }}</a>（{{ item.count }} 只）</li>
+    {% endfor %}
+  </ul>
+
+  <p><a href="{{ url_for('main.index') }}">返回首页</a></p>
+{% endblock %}

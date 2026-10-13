@@ -231,6 +231,28 @@ def in_array_xbi_qdii(symbol):
 
 
 def qdii_get_symbol_array():
+    """QDII 分组（``php/stock/stocksymbol.php:199`` 的 ``QdiiGetSymbolArray()``）。
+
+    **本地 PHP 仓库是旧快照，生产端已经扩充过**：仓库里是 8 个硬编码 +
+    XBI / XOP / OilEtf / QQQ / SPY 五组，共 33 个；而生产端
+    ``https://palmmicro.com/woody/res/qdiicn.php``（2026-10-12 抓取）是
+    **41 个**，多出下面这 8 个：:
+
+        SZ159509 纳指科技ETF景顺   SH513850 美国50ETF易方达
+        SZ159529 标普消费ETF景顺   SZ159577 美国50ETF汇添富
+        SH501312 海外科技LOF      SZ160216 国泰商品LOF
+        SZ164701 黄金LOF          SZ163208 全球油气能源LOF
+
+    这 8 个的**归属子组无法从本地 PHP 确认**，所以按生产端的可观测输出复现
+    —— 顺序上它们整块排在 SPY 组之后（不是插进 QQQ / SPY 组中间），
+    因此作为一个独立的追加段放在最后。已经排除"从原分组移过来"这种解释：
+    逐个抓了生产端的 ``qqqfundcn`` / ``spyfundcn`` / ``mscius50cn`` /
+    ``commoditycn`` / ``oilfundcn``，那几个分组仍各自显示这 8 只，
+    说明是**额外并入 qdii**，而非搬家。
+
+    为什么连顺序都要对齐：参考数据表与估值表的行序就是数组顺序，而页面是
+    人工比对的对象；顺序错了看不出公式问题，只会多出一堆无意义的差异。
+    """
     return (
         [
             "SH501300",
@@ -247,6 +269,17 @@ def qdii_get_symbol_array():
         + qdii_get_oil_etf_symbol_array()
         + qdii_get_qqq_symbol_array()
         + qdii_get_spy_symbol_array()
+        # 生产端 2026-10-12 新增的 8 个（本地 PHP 仓库里还没有，见 docstring）
+        + [
+            "SZ159509",
+            "SZ159529",
+            "SH513850",
+            "SZ159577",
+            "SH501312",
+            "SZ160216",
+            "SZ164701",
+            "SZ163208",
+        ]
     )
 
 

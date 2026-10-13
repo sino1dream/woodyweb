@@ -262,6 +262,33 @@ class MysqlReference(StockReference):
         except Exception:
             return symbol
 
+    def get_stock_link(self) -> str:
+        """对应 ``StockSymbol::GetStockLink()``：**站内**详情页链接。
+
+        PHP 原文（``php/stock/stocksymbol.php:1173``）::
+
+            if ($str = GetGroupStockLink($this->GetSymbol())) return $str;
+            return $this->GetMyStockLink();
+
+        产出形如 ``/woody/res/sh513100cn.php`` 的链接 —— 生产端
+        ``qdiicn.php`` 估值表首格正是这个形状。
+
+        **为什么不能复用 ``get_external_link()``**：那边是新浪行情页
+        （外站、``target="_blank"``），这边是自己的详情页。两者在页面上
+        是紧挨着的两张表（参考数据表用外链、估值表用站内链接），
+        复用会让估值表首格跳去新浪。这个错曾经真实存在过：
+        ``GetStockLink`` 被别名成 ``get_external_link``，详情页只有一张表
+        所以没暴露，直到分类页把两张表摆到一起做逐格对照才抓出来。
+        详见 :mod:`ref.stocklink` 的模块 docstring。
+        """
+        from ref.stocklink import get_stock_link
+
+        try:
+            return get_stock_link(self.get_symbol())
+        except Exception:
+            # 首格必须有内容：为空会让整行少一格、后面所有列错位
+            return self.get_symbol()
+
     # -- 取数兜底 ---------------------------------------------------------
     def _call(self, name: str, *args: Any) -> Any:
         """调数据源的方法；数据源没有该方法或抛异常时返回 ``None``。
@@ -1252,8 +1279,10 @@ MysqlReference.GetFactor = MysqlReference.get_factor
 MysqlReference.GetPosition = MysqlReference.get_position
 #: ``GetStockLink()``：基金详情页「估值」表首格用的就是它
 #: （``fundestparagraph.php`` 里 ``$ref->GetStockLink()``）。
-#: 语义与 ``GetExternalLink()`` 相同，只是那边叫 external、这边叫 stock。
-MysqlReference.GetStockLink = MysqlReference.get_external_link
+#: 它是**站内**详情页链接（``/woody/res/<sym>cn.php``），与参考数据表首格的
+#: 新浪外链不是一回事 —— 曾经错把它别名成 ``get_external_link``，
+#: 导致估值表首格跳去新浪，详见 :meth:`MysqlReference.get_stock_link`。
+MysqlReference.GetStockLink = MysqlReference.get_stock_link
 
 FundReference.GetOfficialDate = FundReference.get_official_date
 FundReference.SetForex = FundReference.set_forex

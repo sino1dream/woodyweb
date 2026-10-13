@@ -11,6 +11,8 @@
     <div class="site-title">Palmmicro Python Web</div>
     <nav class="site-nav">
       <a href="{{ url_for('main.index') }}">首页</a>
+      {# 美股QDII 分类页（woody/res/qdiicn.php）—— 生产端导航栏的第一个基金入口 #}
+      <a href="{{ url_for('fund.qdii_page') }}">美股QDII</a>
       <a href="{{ url_for('status.status_page') }}">状态</a>
     </nav>
   </header>

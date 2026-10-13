@@ -274,9 +274,13 @@ class FundGroupDefinitionTest(unittest.TestCase):
     def test_groups_are_disjoint_and_cover_every_candidate(self):
         self.assertEqual(set(self.lof) & set(self.etf), set())
         self.assertEqual(len(self.lof) + len(self.etf), len(self.all_symbols))
-        self.assertEqual(len(self.all_symbols), 47)
+        # 数字跟着生产端 qdiicn.php 走：QDII 组 2026-10-12 从 33 只扩到 41 只，
+        # 多出的 8 只里 4 只是 ETF（qdiietf 21 → 25），另 4 只 LOF 本来就在
+        # ``GetLofMixSymbolArray()`` 里、只是新进了 QDII 组（qdiilof 22 → 26）。
+        # 详见 core/stocksymbol.py 的 qdii_get_symbol_array() docstring。
+        self.assertEqual(len(self.all_symbols), 51)
         self.assertEqual(len(self.lof), 26)
-        self.assertEqual(len(self.etf), 21)
+        self.assertEqual(len(self.etf), 25)
 
     def test_symbol_group_lookup(self):
         self.assertEqual(self.group_of("SZ161130"), "qdiilof")
@@ -331,7 +335,7 @@ class FundGroupRouteTest(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertIn("QDII-ETF 基金指数对照表", html)
-        self.assertIn("共 21 只", html)
+        self.assertIn("共 25 只", html)
 
     def test_lof_group_lists_only_lof_symbols(self):
         response = self.client.get("/fund/qdiilof")

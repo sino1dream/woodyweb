@@ -9,6 +9,12 @@
   </form>
   <p class="hint">示例：SZ161130、SZ161125（LOF）、SH513100（ETF）</p>
 
+  <h2>基金分类</h2>
+  <ul class="group-nav">
+    {# 美股QDII 分类页（woody/res/qdiicn.php）：参考数据 + 估值两张表 #}
+    <li><a href="{{ url_for('fund.qdii_page') }}">美股QDII基金净值计算工具</a>（共 {{ qdii_count }} 只）</li>
+  </ul>
+
   <h2>基金分组</h2>
   <ul class="group-nav">
     {% for item in groups %}
