@@ -13,9 +13,9 @@
 | --- | --- | --- |
 | P0.1 | 符号清单：基金 + est 符号全集，与生产端页面核对 | ✅ `bfe86469`，本文 §一 |
 | P0.2 | 备份并写入 `stock` + `fundpair` | ✅ `69aa649e`，本文 §二 |
-| P0.3 | 历史数据回填（`quotecli` → `stockhistory`，`navcli` → `netvaluehistory`） | 待做 |
+| P0.3 | 历史数据回填（`quotecli` → `stockhistory`，`navcli` → `netvaluehistory`） | ✅ `344d5383`，本文 §三 |
 | P0.4 | 实时链路（`quoteupdatercli --daemon` → `realtimequote` + 盘口 + `estquote`） | 待做 |
-| P0.5–0.7 | 校准链路 + `fundest` + 期货实时 EST | 待做 |
+| P0.5–0.7 | 校准链路 + `fundest` + 期货实时 EST | 待做，两个已定位的坑见 §四.3 |
 | P0.8 | 一键重跑 `dbtools/bootstrap_fund_data.py`（默认 dry-run） | 待做 |
 
 P0.5a（修 fundestcalc 中间层基准价尺度错位，EST 放大 4648 倍）已单独提交
@@ -132,7 +132,135 @@ QdiiMix 成员，EST 走持仓口径（CK4 `HoldingsReference`，未迁）。
 
 ---
 
-## 三、P0.3 及以后要遵守的约定
+## 三、P0.3 历史数据回填（2026-10-14 完成，commit `344d5383`）
+
+写入前 `mysqldump` 全库到 `dbtools/_snapshots/history_before_20261014_p03.sql`。
+
+### 3.1 回填结果（当日实测）
+
+| 链路 | 入口 | 结果 |
+| --- | --- | --- |
+| 汇率 | `forexcli` | **4 条**进 `netvaluehistory`（USCNY / HKCNY / EUCNY / JPCNY，各 65 行历史） |
+| 净值 | `navcli` | **102 只**基金净值进 `netvaluehistory` |
+| 行情 | `quotecli --all-qdii` | **123/124** 进 `stockhistory` |
+
+`--all-qdii` 取 `symbolinventory.sina_quote_symbols()`（124 = 102 基金 + 22 est 中间层），
+**不含**期货与外汇：它们各有 `futurescli` / `forexcli` 入口，且
+`get_sina_symbol()` 对 `hf_*` 会给出 `gb_hf_*` 这种没有入口使用的形式
+（PHP `stocksymbol.php:913` 同样是落空到底）。
+
+回填后存量（探针 `_p0_3_residual_probe.py` 实测）：
+
+| 表 | 行数 | 覆盖符号 |
+| --- | --- | --- |
+| `netvaluehistory` | 378 | 108（102 基金 + 4 汇率 + QQQ/SPY 各 1 行） |
+| `stockhistory` | 1735 | 125（123 新浪 + `^NDX`/`^GSPC` 两条种子历史） |
+| `calibrationhistory` | 10 | 未动（闸门与守卫都拦住了，见 §四.3） |
+
+### 3.2 唯一没写入的符号：`znb_TPX`
+
+新浪对它返回**短格式**（无 OHLC 字段），且数据停在 2025-09-29；
+`save_reference` 的字段校验照 PHP 规矩整行跳过。生产端 SH513800 的
+EST 日期同样是 2025-09-29 —— 属同一处上游陈旧，不是我们的链路问题，
+等新浪恢复即可（重跑 `quotecli znb_TPX` 会补上）。
+
+### 3.3 顺带修掉的两个 P0.2 暴露问题
+
+1. **`navcli` 会把 est 中间层当基金抓净值**：SH000869（恒生香港银行指数）
+   剥出 6 位代码 `000869` 后被当成基金，东财返回**同名公募基金**的净值
+   0.2628 —— 而该指数点位约 5322，差 2 万倍，写进去会让官方 EST 尺度崩掉。
+   `collect_targets()` 现在排除 est 中间层（`test_navupdater.py` 钉住），
+   `sync_names` 同源一并修好。
+2. **清掉 QQQ/SPY 的 10 行 `close=1.0` 占位**
+   （`dbtools/purge_placeholder_quotes.py`，默认 dry-run；只删 est 中间层里
+   "本符号另有量级 >10 的行"证明是离群的）。这些是 pitfalls #60 那次
+   345 万事故的种子：`_est_quote_ref()` 的上一交易日兜底和 `_net_value()`
+   的净值优先都可能落到它们。
+
+---
+
+## 四、残留偏差归因 + P0.5 待办（探针 `_p0_3_residual_probe.py`实测）
+
+### 4.1 残留有多大、由什么构成
+
+回填后三个基金的官方 EST 对生产端（2026-10-12 页面快照）：
+
+| 基金 | 本地 EST | 生产 EST | 偏差 | 去掉比值失真后 | 剩余偏差 |
+| --- | --- | --- | --- | --- | --- |
+| SZ161130 | 4.6216 | 4.572 | **+1.08%** | 4.5760 | +0.09% |
+| SZ161125 | 3.1980 | 3.182 | **+0.50%** | 3.1754 | −0.21% |
+| SH513100 | 2.0731 | 2.049 | **+1.18%** | 2.0526 | +0.18% |
+
+"比值失真"指 `est_now / est_cal`。以 SZ161130 为例（探针打出逐项来源）：
+
+```text
+est_now = QQQ 10-07 净值 749.4131   （netvaluehistory 唯一一条真值）
+est_cal = QQQ 10-01 行情 742.03     （校准日 10-09 当天没值，退到上一交易日）
+ratio   = 749.4131 / 742.03 = 1.00995   → +0.995%
+```
+
+即：**本地 EST 偏高的主因不是公式，是一个价格/净值跨日混口径的比值**。
+中间层数据稀疏（探针实测）：
+
+| 中间层 | `netvaluehistory` | `stockhistory` |
+| --- | --- | --- |
+| QQQ | **1 行**（10-07 = 749.4131） | 2 行（10-01 = 742.03、10-13 = 743.57） |
+| SPY | **1 行**（10-07 = 769.4559） | 2 行（10-01 = 763.99、10-13 = 778.01） |
+| ^NDX | **0 行** | 8 行（到 10-09 = 30883.148） |
+| ^GSPC | **0 行** | 8 行（到 10-09 = 7811.54） |
+
+### 4.2 为什么这不是公式错
+
+PHP 的设计本来就是**两个日期**（`qdiiref.php`）：
+
+* 官方 EST 分子：`EstNetValue()` 用 `$est_ref->GetDate()`（中间层最新日期）
+  调 `_getOfficialEstVal($strDate)`（净值优先、行情价兜底）；
+* 分母锚点：`AdjustFactor()` 建 `fFactor` 时用**基金当天**的中间层值
+  （`_getEstNetValue(est_ref, 基金日)` → `est_ref->GetClose(基金日)`）。
+
+生产端两个日期都能落到**同源同日**的真实值，比值就是真实的市场变动信号。
+演示库里 QQQ/SPY 在 10-09（基金校准日）既无净值也无行情，锚点只能退到
+10-01 的价格，而分子用 10-07 的净值 —— 比值 1.00995 是**数据缺口的产物**，
+不是市场真的涨了 1%。补上每日净值后（P0.5），这个比值会变成
+nav(最新日)/nav(校准日) 的真实信号；从 §4.1 表看，去掉失真后三只基金
+与生产端都在 ±0.25% 内 —— 公式本身是对的，剩下的是普通的数据陈旧
+（指数行情停在 10-09、净值停在 10-12，生产端页面更新）。
+
+### 4.3 P0.5 的两个待办（都已定位，动代码前必读）
+
+**① 中间层净值缺口。** QQQ/SPY 各只有 10-07 一条净值，`^NDX`/`^GSPC`
+一条都没有。注意 `navcli` **永远补不了**它们：`nav_code_of()` 只认 6 位
+数字代码，QQQ/SPY 没有（SH000869 那种有代码的才需要 §3.3 的排除）。
+唯一现成的填充通道是 `autocalibrationcli sync-nav`（派生净值），
+而它正踩在下面这个坑上。
+
+**② `_implied_middle_nav` 的旧尺度恒等式。**
+`autocalibration._implied_middle_nav()` 用 `cny / cal_m` 反推净值，
+该恒等式**只在种子尺度成立**（cal_m = 0.008945 → 6.705/0.008945 = 749.58，
+与真实 NAV 吻合）。2026-10-13 按生产端口径重算后 QQQ 的 cal_m 已是
+**41.5793**（= 指数/净值），同一式子给出 6.69/41.58 = **0.161** ——
+差 4648 倍。`usnavsource.fetch_middle_nav()` 与 `calibrate_middle()`
+都走它，所以**现在跑 `sync-nav --apply` 会把 0.161 写进
+`netvaluehistory`**，重新制造 pitfalls #60/#61 那一类事故
+（净值优先的 `_official_est_value` 会直接把它当 `est_now`）。
+
+修复方向（P0.5 定稿，先写自检再写库）：生产尺度下正确的派生是
+**净值 = 配对标的（指数）当日收盘 / cal_m**（QQQ：30883.148/41.5793 = 742.6，
+正是价格尺度）；或者更简单 —— 直接用 QQQ/SPY **当日收盘价**当净值
+（ETF 净值与价格只差千分位，见生产端 `netvalueclosecn.php`），
+彻底不碰校准值。无论选哪条，写入前加**量级自检**（净值应落在当日价格
+的 ±20% 内，否则拒绝写），把这类尺度事故挡在写库之前。
+
+### 4.4 顺带确认
+
+页面加载时的自动校准（`fund_list_service.py:189` 的
+`calibrate_middle(..., apply=True)`）**没有**改写校准历史 ——
+闸门（净值日期 == 校准日期）与估值守卫都拦住了，`calibrationhistory`
+仍是回填前的 10 行（10-09 基金 / 10-07 中间层）。
+
+---
+
+## 五、P0.3 及以后要遵守的约定
 
 * 动演示库数据前先 `mysqldump` 全库到 `python/dbtools/_snapshots/`
   （已 gitignore，先例 `calib_before_20261012.sql` / `calib_before_20261013.sql`）；
