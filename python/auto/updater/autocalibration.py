@@ -215,7 +215,8 @@ class AutoCalibrator:
         #
         # 想真正修好这一点，需要给指数落历史行情（或接真实美股 ETF 净值源），
         # 见 ``usnavsource`` 模块 docstring 里的信源实测清单。
-        implied = self._implied_middle_nav(stock_id, cny)
+        # 传 symbol 是为了让"当日收盘价"优先取实时快照（见 _implied_middle_nav）
+        implied = self._implied_middle_nav(stock_id, cny, symbol=middle_symbol)
         old_calibration = self._calibration_value(stock_id)
         pair_old = self._pair_value_at(pair_symbol, calibration_date)
         outcome.net_value = implied
@@ -275,97 +276,82 @@ class AutoCalibrator:
             return None
         return getattr(record, "close", None)
 
-    def _implied_middle_nav(self, stock_id: Any, cny: Any) -> Any:
-        """反推出**该部署尺度下**的中间层每份净值。
+    def _implied_middle_nav(self, stock_id: Any, cny: Any = None,
+                           symbol: Any = None) -> Any:
+        """中间层的每份净值 —— **直接取它的当日收盘价**（P0.5 定稿的口径②）。
 
-        ## 推导
+        ## 为什么放弃「汇率 / cal_m」
 
-        ``fundcalc.PalmmicroFundCalculator.calc_with_calibration()`` 用到的
-        量有（都直接从 ``data`` 取）：
-
-        ```text
-        est_quote_ref = 汇率 / 中间层校准值        （代码里的 est_quote_ref）
-        hedge_value   = est_quote_ref × 中间层校准值 / 汇率
-        ```
-
-        代入即 ``hedge_value = 1``？？——不对，所以这两式不是独立的。
-        真正成立的是**校准口径的定义**（见 ``fundestcalc._resolve`` 的注释）：
+        旧式子长这样：
 
         ```text
-        est_quote_ref × cal_m = cny_ref
+        净值 = 汇率 / cal_m
         ```
 
-        以及基金校准值满足的恒等式：
+        它**只在种子尺度成立**：那时 ``cal_m = 0.008945``，
+        ``6.705 / 0.008945 = 749.58``，与生产端 QQQ 的真实净值 ``749.378``
+        吻合到 0.03% —— 因为那条种子校准值**本来就是按真实 NAV 解出来的**。
 
-        ```text
-        nv_f × cal_f / cny = est_m × cal_m
-        ```
+        校准口径改成生产尺度后（QQQ 的 ``cal_m = 41.5793``），
+        同一个式子给出 ``6.69 / 41.58 = 0.161``，差 **4648 倍**，而它会被
+        ``usnavsource`` 和 ``autocalibrationcli --set-nav`` 直接写进
+        ``netvaluehistory``（README_p0_data_layer.md §四.3 坑②，
+        pitfalls #60/#61 那一类"数字大得离谱还没报错"的事故）。
 
-        两式联立消去 ``cal_m``，得到本项目实测验证过的关系：
+        根因是那个恒等式把**尺度**和**净值**搅在一起了：``cal_m`` 会随部署
+        尺度重算，净值不会。任何把 ``cal_m`` 当分母的做法都会随尺度漂移。
 
-        ```text
-        est_m = 汇率 / cal_m² × cal_f × nv_f      （不实用）
-        ```
+        ## 新口径：净值 = 当日收盘价
 
-        —— 换个更直接的路径：``est_quote_ref = cny / cal_m``，
-        而 ``est_m``（中间层每份净值）与 ``est_quote_ref`` 只差一个 ``cal_m``：
+        ETF 的净值与交易价格只差千分位（做市商的一级申购赎回套利会把折溢价
+        抹平），生产端自己也是这么用的 —— ``netvalueclosecn.php`` 上美股 ETF
+        的"单位净值"就是它的收盘价。这条式子**完全不碰校准值**，所以刻度怎么
+        重算都不会坏，这正是我们要的性质。
 
-        ```text
-        est_m = est_quote_ref × cal_m = (cny / cal_m) × cal_m = cny
-        ```
+        剩下的误差来源只有**折溢价**（千分位）与**分红除息**（ETF 分红时 NAV
+        与价格同额下降，两者同步，不像开放式基金那样错位）。
 
-        ……这说明 ``est_quote_ref`` 与 ``est_m`` 的关系不能靠这三个量推出来。
+        ## 与 usnavsource 的分工
 
-        ## 实际采用的式子
+        本类只有 ``stock_id``，所以默认走 ``stockhistory`` 的历史收盘价；
+        调用方传了 ``symbol`` 就优先走实时快照 ``realtimequote``。
+        ``DerivedMiddleNavSource._latest_price`` 也是这个优先级（PHP 语义：
+        有实时行情就用实时的）。取不到价格时返回 ``None``，让调用方回落到
+        常量表/库里的净值 —— 绝不臆造一个数。
 
-        生产端可核对的事实：``^NDX 30807.93 / QQQ 净值 749.3773 = 41.1114``，
-        而生产端 QQQ 的校准值就是 **41.111**。所以
-
-        ```text
-        中间层净值 = 配对标的点位 / 生产口径校准值
-        ```
-
-        而在归一化尺度下，库里那个 ``cal_m``（0.008945）承担了全部尺度，
-        它与"生产口径校准值"的关系是 ``cal_m_prod = cny / cal_m_seed``：
-
-        ```text
-        cny / cal_m_seed = 6.705 / 0.008945 = 749.58   ← 恰好是 QQQ 的真实净值
-        ```
-
-        实测确认这个值 749.58 与生产端 QQQ 净值 749.378 吻合到 0.03%，
-        所以用它当分母：
-
-        ```text
-        cal_new = 配对标的点位 / (cny / cal_m_seed)
-        ```
-
-        实测 ``31091 / 749.58 = 41.478``，与生产端 41.111 同量级 ✓
-
-        ``cny`` 取不到时返回 ``None``，调用方回落到库里的净值。
+        ``cny`` 保留在签名里只为**不破坏已有调用方**，新口径用不到它。
         """
-        if self.connection is None:
-            return None
-        reader = getattr(self.source, "get_calibration_now", None)
-        if reader is None:
+        # ① 实时快照优先（PHP 语义：盘中就用盘中价）
+        if symbol is not None:
+            quote_reader = getattr(self.source, "get_stored_quote", None)
+            if quote_reader is not None:
+                try:
+                    quote = quote_reader(symbol)
+                except Exception:
+                    quote = None
+                price = getattr(quote, "price", None) if quote is not None else None
+                if price not in (None, ""):
+                    try:
+                        if abs(float(price)) > 0.0000005:
+                            return float(price)
+                    except (TypeError, ValueError):
+                        pass
+
+        # ② 退回历史收盘价
+        close_reader = getattr(self.source, "get_latest_history_close", None)
+        if close_reader is None:
             return None
         try:
-            record = reader(stock_id)
+            close = close_reader(stock_id)
         except Exception:
             return None
-        if record is None:
-            return None
-        calibration = getattr(record, "close", None)
-        if calibration in (None, ""):
+        if close in (None, ""):
             return None
         try:
-            rate = float(cny) if cny not in (None, "") else 1.0
-            value = float(calibration)
+            value = float(close)
         except (TypeError, ValueError):
             return None
-        if abs(value) <= 0.0000005:
-            return None
-        # 归一化尺度下的 cal_m 承担全部尺度：真实净值 = 汇率 / cal_m
-        return rate / value
+        return value if abs(value) > 0.0000005 else None
 
 
     def calibrate_many(self, symbols: Any, apply: bool = True) -> list:

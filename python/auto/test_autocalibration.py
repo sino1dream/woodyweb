@@ -100,8 +100,10 @@ class FakeDailyRecord:
 class FakeSource:
     """假数据源。
 
-    ``netvalue`` 是**归一化尺度**的（演示库就是 1.0），
-    ``calibration`` 是该尺度的校准值 —— 两者共同决定 `_implied_middle_nav`。
+    ``netvalue`` 是**归一化尺度**的（演示库就是 1.0），``calibration`` 是
+    该尺度的校准值。P0.5 之后 ``_implied_middle_nav`` 不再由这两者算出 ——
+    它直接取当日收盘价（``get_latest_history_close``），所以测试想让它有值
+    就注入该方法。这两个参数现在只影响「旧的、会被守卫拒绝的那条式子」。
     """
 
     #: 实时点位兜底值（对应 ``_pair_value`` 的第三级：新浪 ``gb_ndx``）。
@@ -320,13 +322,37 @@ class ScaleConversionTest(unittest.TestCase):
         self.assertFalse(outcome.skipped)
         self.assertEqual(outcome.pair_value, FakeSource.LIVE_PAIR_VALUE)
 
-    def test_implied_netvalue_is_real_looking(self):
-        """隐含净值应当接近真实的 QQQ 净值（749 左右），不是 1.0。"""
-        calibrator = _calibrator(FakeSource(calibration=self.OLD_CALIBRATION, cny=self.CNY))
-        implied = calibrator._implied_middle_nav(4, self.CNY)
+    def test_implied_nav_is_the_closing_price(self):
+        """隐含净值 = **当日收盘价**，不再是「汇率 / 校准值」。
 
-        self.assertAlmostEqual(implied, self.CNY / self.OLD_CALIBRATION, places=6)
-        self.assertAlmostEqual(implied, 749.58, delta=0.5)
+        旧口径只在种子尺度下凑巧等于真实的 749.58；换成生产尺度
+        （cal_m = 41.5793）它给出 0.161，差 4648 倍（§四.3 坑②）。
+        新口径里一个 ``cal_m`` 都不出现，所以刻度重算不会把它带崩。
+        """
+        seed = FakeSource(calibration=self.OLD_CALIBRATION, cny=self.CNY)
+        seed.get_latest_history_close = lambda stock_id: 749.4131
+        self.assertAlmostEqual(
+            _calibrator(seed)._implied_middle_nav(4, self.CNY), 749.4131, places=6)
+
+        # 校准值翻 4600 倍，结果一动不动 —— 这才是不再依赖尺度的证据
+        prod = FakeSource(calibration=41.5793, cny=6.69)
+        prod.get_latest_history_close = lambda stock_id: 749.4131
+        self.assertAlmostEqual(
+            _calibrator(prod)._implied_middle_nav(4, 6.69), 749.4131, places=6)
+
+    def test_realtime_quote_beats_history_close(self):
+        """有实时快照就用实时的（PHP 语义），历史收盘价是退路。"""
+
+        class _Quote(object):
+            price = "757.11"
+
+        source = FakeSource()
+        source.get_latest_history_close = lambda stock_id: 743.57
+        source.get_stored_quote = lambda symbol: _Quote()
+
+        implied = _calibrator(source)._implied_middle_nav(4, self.CNY, symbol="QQQ")
+
+        self.assertAlmostEqual(implied, 757.11, places=6)
 
     def test_without_calibration_falls_back(self):
         """没有原校准值时退回 PHP 原公式，并留下告警。
@@ -624,27 +650,101 @@ class NavMagnitudeGuardTest(unittest.TestCase):
         self.assertFalse(nav_matches_price(743.57 * 2.0, 743.57))
         self.assertFalse(nav_matches_price(743.57 * 0.5, 743.57))
 
-    def test_derived_source_falls_back_and_warns(self):
-        """生产尺度 + 有价格：恒等式的值被挡下，退回常量表并记 warning。"""
-        source = FakeSource(calibration=41.5793, cny=6.69)
+    def test_derived_nav_is_the_closing_price(self):
+        """口径②（P0.5 定稿）：净值就是当日收盘价 —— 与尺度彻底无关。"""
+        source = FakeSource(calibration=41.5793, cny=6.69)   # 生产尺度，故意的
         source.get_latest_history_close = lambda stock_id: 743.57
 
         nav_source = DerivedMiddleNavSource(source)
         value = nav_source._implied_nav("QQQ")
 
-        self.assertEqual(value, FALLBACK_BASE_NAV["QQQ"])   # 749.58，量级对
-        self.assertTrue(any("不同量级" in w for w in nav_source.warnings))
+        self.assertAlmostEqual(float(value), 743.57, places=6)
+        self.assertEqual(nav_source.warnings, [])
 
-    def test_seed_scale_still_uses_the_identity(self):
-        """种子尺度（cal_m = 0.008945）下恒等式是对的，不该被挡。"""
+    def test_seed_scale_no_longer_changes_the_answer(self):
+        """旧口径在种子尺度下会给出 749.58；新口径下刻度换不出第二个答案。
+
+        这条用例在钉一件事：结果**只由价格决定**。
+        """
         source = FakeSource(calibration=0.008945, cny=6.705)
         source.get_latest_history_close = lambda stock_id: 743.57
 
         nav_source = DerivedMiddleNavSource(source)
         value = nav_source._implied_nav("QQQ")
 
-        self.assertAlmostEqual(float(value), 749.58, delta=0.5)
+        self.assertAlmostEqual(float(value), 743.57, places=6)
         self.assertEqual(nav_source.warnings, [])
+
+    def test_no_fallback_constants_once_price_is_available(self):
+        """有价格就不再用常量表 —— 749.58 会随真实净值变，价格才跟着走。"""
+        source = FakeSource(calibration=41.5793, cny=6.69)
+        source.get_latest_history_close = lambda stock_id: 800.0
+
+        nav_source = DerivedMiddleNavSource(source)
+        self.assertNotEqual(float(nav_source._implied_nav("QQQ")),
+                            FALLBACK_BASE_NAV["QQQ"])
+
+
+class PriceAsNetValueTest(unittest.TestCase):
+    """``净值 = 当日收盘价`` 这条口径的行为锚点。
+
+    背景同上。旧口径 ``汇率 / cal_m`` 把**尺度**（会随部署重算）和**净值**
+    （不随尺度变）搅在一起，所以刻度一变就崩；新口径里一个 ``cal_m`` 都不
+    出现，下面这些用例保证它真的不出现。
+    """
+
+    def _source(self, calibration=41.5793, cny=6.69, close=None):
+        source = FakeSource(calibration=calibration, cny=cny)
+        if close is not None:
+            source.get_latest_history_close = lambda stock_id: close
+        return source
+
+    def test_calibration_scale_is_irrelevant(self):
+        """校准值翻 4600 倍，净值一动不动。"""
+        small = self._source(calibration=0.008945, close=743.57)
+        big = self._source(calibration=41.5793, close=743.57)
+
+        nav_small = DerivedMiddleNavSource(small)._implied_nav("QQQ")
+        nav_big = DerivedMiddleNavSource(big)._implied_nav("QQQ")
+
+        self.assertAlmostEqual(float(nav_small), float(nav_big), places=6)
+        self.assertAlmostEqual(float(nav_big), 743.57, places=6)
+
+    def test_realtime_quote_wins_over_history(self):
+        """有实时快照就用实时的（PHP 语义），历史收盘价是退路。"""
+
+        class _Quote(object):
+            price = "757.11"
+            date = "2026-10-14"
+
+        source = self._source(close=743.57)
+        source.get_stored_quote = lambda symbol: _Quote()
+
+        nav_source = DerivedMiddleNavSource(source)
+        record = nav_source.fetch_middle_nav("QQQ")
+
+        self.assertAlmostEqual(record.nav, 757.11, places=6)
+        self.assertEqual(record.date, "2026-10-14")
+
+    def test_fetch_middle_nav_date_tracks_the_quote_date(self):
+        """日期 = 那个价格的行情日期，闸门才有东西可比。"""
+        source = self._source(close=743.57)
+        source.get_latest_history_date = lambda stock_id: "2026-10-13"
+
+        record = DerivedMiddleNavSource(source).fetch_middle_nav("QQQ")
+
+        self.assertEqual(record.date, "2026-10-13")
+        self.assertEqual(record.base_date, "2026-10-13")
+        self.assertAlmostEqual(record.nav, 743.57, places=6)
+
+    def test_no_price_falls_back_to_constants(self):
+        """查不到价格时退回常量表，不臆造数字。"""
+        source = self._source(close=None)
+
+        nav_source = DerivedMiddleNavSource(source)
+
+        self.assertEqual(nav_source._implied_nav("QQQ"), FALLBACK_BASE_NAV["QQQ"])
+        self.assertEqual(nav_source.fetch_middle_nav("QQQ"), None)
 
 
 if __name__ == "__main__":

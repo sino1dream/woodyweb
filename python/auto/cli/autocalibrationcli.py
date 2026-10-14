@@ -198,8 +198,8 @@ def cmd_sync_nav(args) -> int:
 
     本项目没有免费可用的美股 ETF 官方 NAV 源（实测清单见
     ``usnavsource`` 模块 docstring），所以用**派生净值**：
-    ``基准净值 × 今日价格 / 基准日价格``，基准净值锚定在真实 NAV 上
-    （``汇率 / 校准值``，实测与生产端 QQQ 净值吻合到 0.03%）。
+    ``净值(t) = 当日收盘价(t)`` —— ETF 的净值与价格只差千分位的折溢价。
+    这样净值日期跟着行情走，闸门自然就能前进。
 
     只写 ``netvaluehistory``，且**已有该日期就不覆盖**（与抓取层语义一致）。
     """
@@ -321,22 +321,19 @@ def cmd_set_nav(args) -> int:
 
         value = args.value
         if value is None:
-            # 不指定数值时，用"行情价 / 原校准值"反推一个合理净值 ——
-            # 这正是 _implied_middle_nav 的逆运算（真实净值 = 汇率 / 校准值）。
-            latest_calibration = source.get_calibration_now(stock_id)
-            if latest_calibration is None or not latest_calibration.close:
-                print("没有校准值可反推净值，请用 --value 显式指定。")
+            # 口径（P0.5 定稿）：ETF 的每份净值 ≈ 当日收盘价，两者只差千分位
+            # 的折溢价。旧口径用"汇率 / 校准值"，那条式子只在种子尺度成立，
+            # 生产尺度下会算出 0.161（差 4648 倍），见
+            # README_p0_data_layer.md §四.3 坑②。
+            value = _latest_price(symbol, source, stock_id)
+            if value is None:
+                print("取不到 %s 的当日价格，请用 --value 显式指定净值。" % symbol)
                 return 1
-            cny = _latest_cny(source)
-            value = float(cny) / float(latest_calibration.close)
-            print("未指定 --value，按「汇率 %s / 原校准值 %s」反推净值 = %s" % (
-                cny, latest_calibration.close, round(value, 6)))
+            print("未指定 --value，按当日收盘价 %s 作净值。" % value)
 
-        # **量级自检**：`汇率 / cal_m` 只在种子尺度成立（0.008945 → 749.58）。
-        # 生产尺度下（QQQ 的 cal_m = 41.5793）同一式子给出 0.161，差 4648 倍 ——
-        # 直接写进 netvaluehistory 会重演 pitfalls #60/#61 那一类事故。
-        # 拿当日价格当尺子（ETF 净值与价格同量级），不合规就拒绝写。
-        # 显式 --value 也一并过检：手工输错一位小数点同样是灾难。
+        # **量级自检**：拿当日价格当尺子（ETF 净值与价格同量级），不合规就
+        # 拒绝写。显式 --value 也一并过检：手工输错一位小数点同样是灾难
+        # （pitfalls #60/#61 那一类"数字差几千倍还没报错"的事故）。
         from updater.autocalibration import nav_matches_price
 
         reference = _latest_price(symbol, source, stock_id)
@@ -344,8 +341,7 @@ def cmd_set_nav(args) -> int:
             ratio = float(value) / float(reference) if reference else 0.0
             print("拒绝写入：净值 %s 与当日价格 %s 不同量级（比值 %.4g，应为 1 附近）。"
                   % (value, reference, ratio))
-            print("要么用 --value 显式给一个与价格同量级的净值，要么先修")
-            print("autocalibration._implied_middle_nav（见 README_p0_data_layer.md §四.3）。")
+            print("要么用 --value 显式给一个与价格同量级的净值。")
             return 1
 
         if not args.apply:
@@ -362,15 +358,6 @@ def cmd_set_nav(args) -> int:
     finally:
         cursor.close()
         source.connection.close()
-
-
-def _latest_cny(source):
-    """最新美元人民币中间价；取不到返回 1.0。"""
-    cny_id = source.get_stock_id("USCNY")
-    if cny_id is None:
-        return 1.0
-    value = source.get_latest_net_value_close(cny_id)
-    return value if value not in (None, "") else 1.0
 
 
 def _latest_price(symbol, source, stock_id):
