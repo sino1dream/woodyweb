@@ -8,18 +8,28 @@
 
     cd F:\\woody\\woodyweb\\python
 
-    python -B auto\\quoteupdatercli.py --once            # 抓一轮就退出（可配合计划任务）
-    python -B auto\\quoteupdatercli.py --daemon          # 常驻，按 --interval 定时抓
-    python -B auto\\quoteupdatercli.py --daemon --interval 60
-    python -B auto\\quoteupdatercli.py --only-open       # 只在有市场开市时才抓
-    python -B auto\\quoteupdatercli.py --api             # 打印数据源接口说明（换源参考）
-    python -B auto\\quoteupdatercli.py --list-sources    # 列出已注册的行情源
+    python -B auto\\cli\\quoteupdatercli.py --once            # 抓一轮就退出（可配合计划任务）
+    python -B auto\\cli\\quoteupdatercli.py --daemon          # 常驻，按 --interval 定时抓
+    python -B auto\\cli\\quoteupdatercli.py --daemon --interval 60
+    python -B auto\\cli\\quoteupdatercli.py --only-open       # 只在有市场开市时才抓
+    python -B auto\\cli\\quoteupdatercli.py --api             # 打印数据源接口说明（换源参考）
+    python -B auto\\cli\\quoteupdatercli.py --list-sources    # 列出已注册的行情源
 
 环境变量：
 
 * ``PALMMICRO_QUOTE_SOURCE``          行情源名字（默认 ``sina``）
 * ``PALMMICRO_QUOTE_INTERVAL``        间隔秒数（默认 60）
 * ``PALMMICRO_QUOTE_REFRESH_ON_REQUEST`` 设为 1 时，页面请求内也会顺手更新一批
+
+常驻模式的两点实现（对应 PHP ``stockprefetch.php`` 的逐符号节流）：
+
+* **逐符号节流**：每轮只抓"到了该抓的时候"的符号 —— 交易中每分钟抓，
+  收盘后 A 股等 2 小时 / 港股 3 小时 / 其它（美股）16 小时，周末分别再多
+  加 8 / 4 小时（``updater.stockprefetch`` 的三个 ``*NeedFile``，与 PHP
+  逐条对应）。``--once`` 是显式全量，不走节流。
+* **断点续抓**：启动时把 ``realtimequote`` 表里各符号的 ``fetched_at``
+  灌给更新器当"上次抓取时刻"，否则每次重启都会把全部符号当成从没抓过，
+  第一轮无条件全量抓一轮 —— 那恰好是最容易触发新浪频率限制的时刻。
 """
 
 from __future__ import annotations
@@ -47,6 +57,7 @@ from updater.quoteupdater import (  # noqa: E402
     build_default_updater,
     collect_symbols_from_source,
     is_any_market_open,
+    stored_fetch_times,
 )
 
 
@@ -58,10 +69,28 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--source", default=None, help="行情源名字，默认取环境变量或 sina")
     parser.add_argument("--only-open", action="store_true", help="只在有市场开市时才抓")
     parser.add_argument("--limit", type=int, default=0, help="最多抓多少个符号（0 表示不限）")
+    parser.add_argument("--refresh-symbols", type=int, default=900,
+                        help="常驻模式下多少秒重新收集一次符号列表（默认 900；"
+                             "P0.3 之后新写入库的符号不用重启也能进抓取范围）")
     parser.add_argument("--api", action="store_true", help="打印数据源接口说明")
     parser.add_argument("--list-sources", action="store_true", help="列出已注册的行情源")
     parser.add_argument("--verbose", action="store_true", help="每轮都打印明细")
     return parser.parse_args()
+
+
+def seed_last_fetch(updater, pairs) -> int:
+    """把 ``realtimequote`` 表里的 ``fetched_at`` 灌给更新器当"上次抓取时刻"。
+
+    返回灌入的符号数。表读不到（没建库 / 没历史）就安静返回 0 ——
+    那等价于"全部符号从没抓过"，行为退化成重启即全量抓，只是多耗一轮配额。
+    """
+    epochs = stored_fetch_times(getattr(updater, "store", None))
+    mapping = {}
+    for symbol, sina_symbol, _stock_id in pairs:
+        if symbol in epochs:
+            mapping[sina_symbol] = epochs[symbol]
+    updater.seed_last_fetch(mapping)
+    return len(mapping)
 
 
 def print_api() -> int:
@@ -149,23 +178,44 @@ def main() -> int:
         print("请指定 --once 或 --daemon（--api 可查看数据源接口说明）。")
         return 1
 
+    seeded = seed_last_fetch(updater, pairs)
     print("进入定时抓取，间隔 %d 秒；Ctrl+C 退出。" % interval)
+    print("已按 realtimequote 里的历史抓取时刻续跑 %d 个符号（节流基准）。" % seeded)
+    last_refresh = time.time()
     while True:
         started = time.time()
         try:
+            # 符号列表定期重收集：P0.3 之后新入库的符号（或以后补的种子）
+            # 不用重启 daemon 就能进抓取范围。PHP 是每次页面请求重新收集，
+            # 语义等价，只是我们没必要每轮都查一次库。
+            if args.refresh_symbols > 0 and (started - last_refresh) >= args.refresh_symbols:
+                fresh = collect_symbols_from_source(fund_source, limit=args.limit)
+                if [item[0] for item in fresh] != [item[0] for item in pairs]:
+                    print("[%s] 符号列表变化：%d -> %d 个" % (
+                        time.strftime("%H:%M:%S"), len(pairs), len(fresh)))
+                    pairs = fresh
+                    updater.symbols_provider = lambda: pairs
+                last_refresh = started
+
             if args.only_open and not is_any_market_open([symbol for symbol, _source, _id in pairs]):
                 if args.verbose:
                     print("[%s] 无市场开市，跳过" % time.strftime("%H:%M:%S"))
             else:
-                updated = updater.update(pairs)
+                # respect_throttle=True：逐符号按市场时段节流（PHP 语义）
+                updated = updater.update(pairs, respect_throttle=True)
                 line = "[%s] 更新 %d 条" % (time.strftime("%H:%M:%S"), updated)
+                if updater.last_skipped_count:
+                    line += "（节流跳过 %d）" % updater.last_skipped_count
                 if updater.last_error:
                     line += "  错误：%s" % updater.last_error
                 elif args.verbose:
+                    # 只列**本轮真正抓到**的符号 —— 缓存与快照表里还有历史
+                    # 遗留值，混在一起会让人以为节流没生效
+                    known = updater.get_all(ttl=10 ** 9)
                     line += "  " + " ".join(
-                        "%s=%s" % (symbol, quote.price)
-                        for symbol, quote in sorted(updater.get_all(ttl=10 ** 9).items())
-                        if quote.price
+                        "%s=%s" % (symbol, known[symbol].price)
+                        for symbol in sorted(updater.last_updated_symbols)
+                        if symbol in known and known[symbol].price
                     )
                 # flush 让后台运行时也能及时看到日志（stdout 默认带缓冲）
                 print(line, flush=True)

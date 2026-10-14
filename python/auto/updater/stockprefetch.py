@@ -336,7 +336,7 @@ def symbols_to_fetch(
     """
     selected = []
     for text, symbol in prefetch.items():
-        file_name = os.path.join(DEFAULT_QUOTE_DIRECTORY, _quote_file_stem(text) + ".txt")
+        file_name = quote_file_name(text)
         if symbol.is_sina_fund():
             if not sina_fund_need_file(symbol, file_name, now, file_mtime=file_mtime):
                 continue
@@ -355,6 +355,18 @@ def _quote_file_stem(symbol: str) -> str:
     from ref.stockref import _sina_symbol_file_stem
 
     return _sina_symbol_file_stem(symbol)
+
+
+def quote_file_name(sina_symbol: str) -> str:
+    """该符号对应的"缓存文件"路径 —— 只当**键**用，不要求真实存在。
+
+    为什么把它公开：``quoteupdater`` 的节流判定要复用本模块的三个
+    ``*NeedFile`` 函数，而它们的 ``file_mtime`` 参数是按**路径**索引的
+    （PHP 那边就是按 ``DebugGetSinaFileName()`` 生成的文件名）。
+    daemon 没有文件缓存，用 ``realtimequote`` 表的 ``fetched_at`` 充当
+    "文件修改时间"，所以需要同一条路径生成规则来对键。
+    """
+    return os.path.join(DEFAULT_QUOTE_DIRECTORY, _quote_file_stem(sina_symbol) + ".txt")
 
 
 def _prefetch(selected: Sequence, fetch_quotes: Callable, save_quote: Callable = None) -> None:

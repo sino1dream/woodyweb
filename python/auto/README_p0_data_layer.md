@@ -14,7 +14,7 @@
 | P0.1 | 符号清单：基金 + est 符号全集，与生产端页面核对 | ✅ `bfe86469`，本文 §一 |
 | P0.2 | 备份并写入 `stock` + `fundpair` | ✅ `69aa649e`，本文 §二 |
 | P0.3 | 历史数据回填（`quotecli` → `stockhistory`，`navcli` → `netvaluehistory`） | ✅ `344d5383`，本文 §三 |
-| P0.4 | 实时链路（`quoteupdatercli --daemon` → `realtimequote` + 盘口 + `estquote`） | 待做 |
+| P0.4 | 实时链路（`quoteupdatercli --daemon` → `realtimequote` + 盘口 + `estquote`） | ✅ 本文 §五 |
 | P0.5–0.7 | 校准链路 + `fundest` + 期货实时 EST | 待做，两个已定位的坑见 §四.3 |
 | P0.8 | 一键重跑 `dbtools/bootstrap_fund_data.py`（默认 dry-run） | 待做 |
 
@@ -260,7 +260,126 @@ nav(最新日)/nav(校准日) 的真实信号；从 §4.1 表看，去掉失真�
 
 ---
 
-## 五、P0.3 及以后要遵守的约定
+## 五、P0.4 实时链路（2026-10-14 完成）
+
+探针：`auto/_scratch/_p0_4_estquote_probe.py`（只读，报 estquote 的覆盖与空值）。
+备份：动库前已 `mysqldump` 两张快照表到
+`python/dbtools/_snapshots/snapshots_before_20261014_p04.sql`。
+
+### 5.1 做了什么（按生产语义常驻 `--daemon`）
+
+| # | 改动 | 对应 PHP |
+| --- | --- | --- |
+| 1 | 逐符号节流接进 daemon：`update(respect_throttle=True)` | `stockprefetch.php` 的 `SinaFundNeedFile` / `FutureNeedNewFile` / `StockNeedNewQuotes`（已迁 `updater/stockprefetch.py`，与 PHP 逐条对应）。`--once` 是显式全量，**不**走节流 |
+| 2 | `default_est_symbols()` 补第四部分：港日欧中间层 | 见下 |
+| 3 | 断点续跑：启动把 `realtimequote.fetched_at` 灌成"上次抓取时刻" | PHP 用缓存文件 mtime 承担同一角色；不灌则每次重启都无条件全量抓一轮，那正是最容易触发新浪限流的时刻 |
+| 4 | `is_any_market_open()` 时区修复 | 见 §5.2 ④ |
+| 5 | `--refresh-symbols`（默认 900 秒）定期重收集符号表 | PHP 每次页面请求都重新收集；我们没必要每轮查库，但 900 秒能接住"回填后新入库的符号" |
+| 6 | `collect_symbols_from_source()` 加第三来源：est 中间层 | 见 §5.2 ③ |
+
+**第 2 项的必要性**：`default_est_symbols()` 原来只有三摊 —— `qdii_est_symbol_map()`
+的值集合、QQQ/SPY、持仓型的 INDA/IBB/USO，全都是**美股**。港日欧的映射散在
+`QdiiHkGetEstSymbol()` 等函数里，早期漏了，于是 daemon 抓到了行情也只写进
+`realtimequote`，官方 EST 的"实时快照优先"一步（`_middle_day_quote` 第 2 级）对
+港股基金全部落空，只能退到 `stockhistory` 的收盘价。现在补上
+`symbolinventory.est_symbols()` 的 22 个（^HSI / ^HSTECH / ^HSCE / SH000869 /
+znb_NKY / znb_CAC / znb_DAX / znb_TPX …）。
+
+### 5.2 真实数据抓出来的四个问题（都已修）
+
+**① 解析分派用了"新浪代码"而不是"库内符号"——港股指数全空。**
+`parse_symbol()` 原来把新浪代码（`rt_hkHSI`）交给 `StockReference` /
+`StockSymbol` 做分派；可 `is_symbol_h()` 认的是 `^HSI` 这种带 `^` 的写法，
+`rt_hkHSI` 既不是 A 股也不是港股符号，于是落到最后"字段数 >= 29 才算美股"
+那一支 —— 而 `rt_hk` 那行只有 25 个字段，`has_data = False`。
+
+后果不是"少一列"，而是**写进库里的空值**：`realtimequote` 与 `estquote` 各多出
+3 条 `price`/`close` 为空的行，且 `quote_date` 被 `_coerce_date()` 填成了抓取
+当天（`_coerce_time()` 填 `00:00:00`），看上去就像"刚抓到过"。而
+`_middle_quote()` 读 estquote **只看 close 不看日期**，空值会一路传下去。
+
+修法是照 PHP 来：PHP 的引用对象一直握着**股票符号**，`LoadSinaData()` 内部才调
+`GetSinaSymbol()` 算文件名。对照实验（同一行真实数据）：
+
+```text
+parse_symbol('rt_hkHSI', line)  ->  has_data=False, price=''
+parse_symbol('^HSI',     line)  ->  price=24339.23  date=2026-10-14  time=15:16:58
+```
+
+**② 取不到价也写库，把上一轮的好值覆盖成空串。**
+`_save_to_store()` 现在**没价就不写库**（内存缓存照旧写入，页面按空值显示空白）。
+这是对 PHP 的有意偏离：PHP 抓到空行照样写缓存文件，那一轮页面显示空白；
+而 `realtimequote` / `estquote` 是**跨进程共享的唯一数据源**，一覆盖，所有进程
+都读不到价了。保留旧值 + 旧 `fetched_at`，调用方凭时间戳照样能看出它不新鲜
+（`is_stored_fresh`）。
+
+**③ est 中间层没进抓取范围（`znb_TPX` 永远缺一行）。**
+`collect_symbols_from_source()` 只认"有 `stockhistory` 的符号" + 期货。可中间层
+的作用就是给 QDII 估值当"当前值"，不该依赖历史表写没写 —— 实测 `znb_TPX`
+上游只有 6 个字段、抓不到历史序列（§三.2），于是它一直不在抓取范围里，
+`estquote` 里永远缺这一行。现在加第三来源：按 est 名单从 `stock` 表补齐，
+`znb_TPX` 即刻进链（值 3132.6，与生产端一致，见 §5.5）。
+
+**④ `is_any_market_open()` 把服务器时间当成了各市场本地时间。**
+`is_stock_market_trading()` 把传入时刻的时分按**该符号所在市场**解释，所以必须
+先按上海 `localize` 再逐符号 `astimezone`。原来直接传服务器本地时间，结果是
+美股符号在北京时间白天被当成"交易中"、在北京时间深夜（恰恰是美股盘中）被当成
+休市 —— 方向是**少抓**，比多抓危险，`--only-open` 因此会漏掉整个美股时段。
+
+### 5.3 决策：外汇符号不进 daemon 符号表
+
+PHP `_getAllSymbolArray()` 预取 `fx_*`，但**它的消费方（页面外汇显示）Python 侧
+没有**；EST 的数学用的是 `netvaluehistory` 里的中间价（`forexcli` / chinamoney
+链路），与 `fx_*` 的即期价（spot）不是一回事，混进快照表反而有 spot / mid-rate
+语义混淆的风险。所以不加，等真有消费方再说。
+
+### 5.4 daemon 实测（真实数据，非 mock）
+
+修复前 4 轮（13:52–13:55，每轮 65 秒）：每轮稳定"更新 109 条（节流跳过 18）"。
+修复后单轮（15:41，上海时间）：
+
+```text
+[15:41:05] 更新 7 条（节流跳过 121）
+  ^HSCE=8181.09 ^HSI=24321.15 ^HSTECH=4172.3
+  hf_ES=7866.462 hf_NQ=30812.975
+  znb_CAC=7862.2998 znb_DAX=25316.7598
+```
+
+逐条核对：港股三指盘中（每分钟抓）✅；期货几乎全天 ✅；欧指在上海 15:41 =
+巴黎 09:41 已开盘 ✅；A 股 15:00 已收、美股休市、`znb_NKY` 东京 16:41 已收 ——
+全部跳过 ✅。这正是 PHP 的逐符号节流语义。
+
+落库结果（`_p0_4_estquote_probe.py`）：`estquote` **24 行、0 空值**，
+`symbolinventory.est_symbols()` 的 22 个中间层**全覆盖**（另有 ^GSPC / ^NDX
+由 fundpair 侧带入，它们不在 `est_symbols()` 里但同样是中间层）。
+
+> 排查笔记：第一次前台跑时出现过"更新 0 条"。那不是代码问题 —— 上一个
+> `timeout` 没杀干净的 daemon 与它**并发**，后者的 seeding 读到前者刚写的
+> `fetched_at`（间隔 < 60 秒），于是全部被节流跳过。同一时刻只跑一个 daemon。
+
+### 5.5 与生产端的一处已知偏差：`znb_TPX` 时刻差 1 小时
+
+生产端 <https://palmmicro.com/woody/res/sh513800cn.php>（唯一用 TPX 的基金）：
+
+| | 价格 | 涨幅 | 日期 | 时间 |
+| --- | --- | --- | --- | --- |
+| 生产端 | 3132.6 | -1.71% | 2025-09-29 | **16:12** |
+| 本地 | 3132.6 | -1.71% | 2025-09-29 | **15:12** |
+
+价格与日期**完全一致**（上游确实陈旧到 2025-09-29，与 §三.2 一致），只有时刻差
+一小时。根因是 PHP 的**双重换算**（`php/stock/stockref.php:331-355`）：
+`new TickYMD(intval($ar[5]))` 先按**当前进程时区**渲染出 15:12
+（`DebugGetTime($iTime, false)` 的 `false` 分支不改时区），紧接着又把"2025-09-29
+15:12:00"这串**已是东京时间**的文本 `strtotime()` 回上海时间，再
+`DebugGetTime(..., 'Asia/Tokyo')` 转到东京 → 16:12。Python 只换算一次，
+**15:12 才是正确的东京时间**。
+
+影响面：只作用于 6 字段短格式的 `znb_` 行（目前仅 `znb_TPX`），且只是显示的
+`HH:MM`，不进估值计算。不修 —— 修了反而错。
+
+---
+
+## 六、P0.3 及以后要遵守的约定
 
 * 动演示库数据前先 `mysqldump` 全库到 `python/dbtools/_snapshots/`
   （已 gitignore，先例 `calib_before_20261012.sql` / `calib_before_20261013.sql`）；

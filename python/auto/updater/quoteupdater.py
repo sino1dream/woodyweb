@@ -33,7 +33,14 @@ from typing import Any, Dict, List, Mapping, Sequence
 from source import quotesource
 from sql.quotestore import decode_orderbook, orderbook_from_lists
 from ref.stockref import StockReference
-from core.stocksymbol import StockSymbol
+from core.stocksymbol import TIME_ZONE_SHANGHAI, StockSymbol
+from core import tzutil
+from updater.stockprefetch import (
+    future_need_new_file,
+    quote_file_name,
+    sina_fund_need_file,
+    stock_need_new_quotes,
+)
 
 #: PHP ``define('TRADING_QUOTE_NUM', 5)``：五档。抓盘口时按这个档数向引用对象取值。
 ORDER_BOOK_LEVELS = 5
@@ -159,16 +166,30 @@ def order_book_from_reference(reference: Any, levels: int = None) -> dict:
     )
 
 
-def parse_symbol(sina_symbol: str, line: str, source_name: str = "sina") -> StockReference:
+def parse_symbol(symbol: str, line: str, source_name: str = "sina") -> StockReference:
     """把一行原始行情解析成 ``StockReference``。
 
     这里复用 ``StockReference`` 而不是自己写解析：解析层已经与 PHP 逐项对照过
     （6280 个用例），复用它就不必再维护第二套解析逻辑。
+
+    ## 为什么传进来的是**库内符号**而不是新浪代码
+
+    ``StockReference`` / ``StockSymbol`` 都得用库里那个符号（``^HSI``）构造，
+    新浪代码（``rt_hkHSI``）只是**取数用的键**——PHP 也是这样：
+    ``LoadSinaData()`` 内部才调 ``GetSinaSymbol()`` 去算文件名，引用对象本身
+    一直握着股票符号。
+
+    曾经这里传的是新浪代码，后果是**港股指数字段全部解析不出来**：
+    ``StockSymbol('rt_hkHSI')`` 既不是 A 股也不是港股符号（``is_symbol_h()``
+    认的是 ``^HSI`` 这类带 ``^`` 的写法），走到最后"字段数 >= 29 才算美股"
+    那一步时，``rt_hk`` 那行只有 25 个字段，于是 ``has_data = False``——
+    estquote 里因此留下三条 close 为空的行（quote_date 被 ``_coerce_date``
+    填成了抓取当天，看起来像刚抓到过）。详见 README_p0_data_layer.md §五.2。
     """
-    reference = StockReference(sina_symbol, quote_loader=lambda _name: line)
-    # StockReference 的符号就是新浪符号；下面按它的类型分派解析
+    reference = StockReference(symbol, quote_loader=lambda _name: line)
+    # 分派用库内符号：新浪代码在 load_* 内部由 get_sina_symbol() 自己算出来
     try:
-        symbol_obj = StockSymbol(sina_symbol)
+        symbol_obj = StockSymbol(symbol)
         if symbol_obj.is_sina_future():
             reference.load_sina_future_data()
         elif symbol_obj.is_sina_forex():
@@ -310,6 +331,14 @@ class QuotesUpdater:
         self.last_error = None
         self.last_run_at = 0.0
         self.last_updated_count = 0
+        #: 每个数据源代码**上一次抓取的时刻**（epoch 秒），按符号节流用。
+        #: PHP 用缓存文件的 mtime 承担这个角色；我们对应物是 ``realtimequote``
+        #: 表的 ``fetched_at``，由 daemon 启动时灌进来（见 ``seed_last_fetch``）。
+        self._last_fetch: Dict[str, float] = {}
+        #: 上一轮被节流跳过的符号数（只报告，不影响抓取）
+        self.last_skipped_count = 0
+        #: 上一轮**真正抓到行**的符号（按库内符号名），供调用方如实汇报
+        self.last_updated_symbols: List[str] = []
 
     # -- 缓存读取 ---------------------------------------------------------
     def get(self, symbol: str, ttl: int = None) -> Any:
@@ -463,11 +492,16 @@ class QuotesUpdater:
         }
 
     # -- 抓取 -------------------------------------------------------------
-    def update(self, pairs: Sequence = None) -> int:
+    def update(self, pairs: Sequence = None, respect_throttle: bool = False) -> int:
         """抓一批并更新缓存，返回成功更新的条数。
 
         ``pairs`` 每项是 ``(符号, 数据源代码[, stock_id])``。失败时不改动缓存，
         把错误记在 ``last_error`` 里（对应 PHP 抓取失败返回 false 后不做处理）。
+
+        ``respect_throttle=True`` 时按 PHP ``_prefetchSinaData()`` 的逐符号
+        节流筛一遍（交易中才抓、收盘后按市场等够间隔再抓），被跳过的符号
+        计数放在 ``last_skipped_count``。**默认关**：``--once`` 这类显式
+        全量抓取不该被节流挡下，测试也沿用旧行为。
         """
         if pairs is None:
             pairs = self._provider_pairs()
@@ -475,7 +509,22 @@ class QuotesUpdater:
         wanted = [item for item in wanted if item[0] and item[1]]
         if not wanted:
             self.last_updated_count = 0
+            self.last_updated_symbols = []
+            self.last_skipped_count = 0
             return 0
+
+        if respect_throttle:
+            now_epoch = self.clock()
+            kept = [item for item in wanted
+                    if symbol_needs_quote(item[0], item[1],
+                                          self._last_fetch.get(item[1]), now_epoch)]
+            self.last_skipped_count = len(wanted) - len(kept)
+            wanted = kept
+            if not wanted:
+                self.last_run_at = now_epoch
+                self.last_updated_count = 0
+                self.last_updated_symbols = []
+                return 0
 
         sina_symbols = [item[1] for item in wanted]
         try:
@@ -484,35 +533,76 @@ class QuotesUpdater:
             self.last_error = "%s: %s" % (type(exc).__name__, exc)
             self.last_run_at = self.clock()
             self.last_updated_count = 0
+            self.last_updated_symbols = []
             return 0
 
         if lines is None:
             self.last_error = "数据源返回失败（None）"
             self.last_run_at = self.clock()
             self.last_updated_count = 0
+            self.last_updated_symbols = []
             return 0
 
         self.last_error = None
         source_name = getattr(self.source, "name", "unknown")
         now = self.clock()
         updated = 0
+        updated_symbols = []
         for symbol, sina_symbol, stock_id in wanted:
             line = lines.get(sina_symbol)
             if not line:
                 continue
-            reference = parse_symbol(sina_symbol, line, source_name)
+            # 分派用库内符号（见 parse_symbol 的说明）：sina_symbol 只当取数键
+            reference = parse_symbol(symbol, line, source_name)
             quote = quote_from_reference(symbol, sina_symbol, reference, source_name, now=now)
             self.put(quote)
             self._save_to_store(stock_id, quote)
             updated += 1
+            updated_symbols.append(symbol)
+
+        # **整批都记"抓过了"**（不只是抓到行的那几个）：PHP 对选中的符号
+        # 一律写缓存文件（哪怕是空行），mtime 同样前进 —— 否则新浪对某个符号
+        # 持续返回空时，它每一轮都会被选中，白耗配额。
+        for sina_symbol in sina_symbols:
+            self._last_fetch[sina_symbol] = now
 
         self.last_run_at = now
         self.last_updated_count = updated
+        self.last_updated_symbols = updated_symbols
         return updated
 
+    def seed_last_fetch(self, mapping: Mapping) -> None:
+        """灌入"各符号上一次抓取时刻"（``{数据源代码: epoch 秒}``）。
+
+        daemon 启动时调用，数据来自 ``realtimequote`` 表的 ``fetched_at``
+        （跨进程共享的那份"上次抓取是什么时候"）。没有它，每次重启 daemon
+        都会把全部符号当成"从来没抓过"，第一轮无条件全量抓 —— 而那恰好是
+        新浪最容易触发频率限制的时刻。
+        """
+        with self._lock:
+            for sina_symbol, epoch in (mapping or {}).items():
+                if sina_symbol and epoch:
+                    self._last_fetch[str(sina_symbol)] = float(epoch)
+
     def _save_to_store(self, stock_id: Any, quote: RecentQuote) -> None:
-        """把快照写进 ``realtimequote``；命中中间层名单时再写 ``estquote``。"""
+        """把快照写进 ``realtimequote``；命中中间层名单时再写 ``estquote``。
+
+        ## 取不到价时**不写库**（与 PHP 的差别，是有意为之）
+
+        PHP 抓到空行照样写缓存文件，于是那一轮页面显示空白；这里若照做，
+        新浪偶尔返回空行（频率限制、个别符号上游空缺）就会把上一轮抓到的
+        好价格**覆盖成空串**——而 ``realtimequote`` / ``estquote`` 是跨进程
+        共享的**唯一**数据源，一覆盖，所有进程都读不到价了。实测确有此事：
+        港股三个指数因为解析分派用了新浪代码（见 :func:`parse_symbol`），
+        库里留下 3 条 close 为空的行。
+
+        所以这里改成"没价就不写"：库里保留上一次的好值，``fetched_at`` 也
+        停在那时，调用方凭时间戳照常能看出它不新鲜（``is_stored_fresh``）。
+        内存缓存仍然写入（那是本轮的真实结果，页面按空值显示空白）。
+        """
         if not stock_id:
+            return
+        if not quote.price:
             return
 
         if self.store is not None:
@@ -623,6 +713,28 @@ def collect_symbols_from_source(fund_source, limit: int = 0) -> List:
         except Exception:
             # futurespair 不存在（尚未建表）时忽略，不影响原有行为
             pass
+
+        # ③ **中间层标的**（est 符号）：它们的作用就是给 QDII 估值当"当前值"，
+        #    所以**不看有没有 stockhistory**——个别中间层上游陈旧（实测
+        #    znb_TPX 只有 6 个字段、抓不到历史序列），P0.3 回填时落下了它，
+        #    于是它一直进不了抓取范围，estquote 里也就永远缺这一行。
+        #    这里按 est 名单补齐，让"中间层覆盖"不再依赖历史表写没写。
+        try:
+            est_names = [str(symbol) for symbol in default_est_symbols()]
+            if est_names:
+                placeholders = ", ".join(["%s"] * len(est_names))
+                cursor.execute(
+                    "SELECT id AS stock_id, symbol FROM stock "
+                    "WHERE symbol IN (%s) ORDER BY symbol" % placeholders,
+                    est_names,
+                )
+                for row in cursor.fetchall():
+                    if row["stock_id"] not in have:
+                        have.add(row["stock_id"])
+                        rows.append(row)
+        except Exception:
+            # stock 表不可用 / 无该列时忽略：退回到"只看有历史的符号"
+            pass
     finally:
         cursor.close()
 
@@ -648,11 +760,24 @@ def is_any_market_open(symbols: Sequence, now: _datetime.datetime = None) -> boo
 
     对应 PHP ``StockNeedNewQuotes()`` 里 ``IsStockMarketTrading()`` 的判断，
     用 ``stocksymbol.StockSymbol`` 的现成实现（已与 PHP 逐项对照过）。
+
+    **时区**：``is_stock_market_trading()`` 把传入时刻的时分按**该符号所在
+    市场**解释，所以这里必须先把"现在"折算成服务器时间（上海）再逐符号
+    ``astimezone`` 过去。曾经直接把服务器本地时间传进去，结果是美股符号
+    在北京时间白天被当成"交易中"、在北京时间深夜（恰恰是美股盘中）
+    被当成"休市" —— 方向是**少抓**，比多抓危险。
     """
     moment = now or _datetime.datetime.now()
+    if moment.tzinfo is None:
+        base = tzutil.localize(moment, TIME_ZONE_SHANGHAI)
+    else:
+        base = moment
     for symbol in symbols:
         try:
-            if StockSymbol(symbol).is_stock_market_trading(moment):
+            symbol_obj = StockSymbol(symbol)
+            market_moment = base.astimezone(
+                tzutil.get_time_zone(symbol_obj.get_time_zone()))
+            if symbol_obj.is_stock_market_trading(market_moment):
                 return True
         except Exception:
             continue
@@ -708,14 +833,21 @@ HOLDINGS_EST_SYMBOLS = ("INDA", "IBB", "USO")
 def default_est_symbols() -> List:
     """中间层标的名单（要写 ``estquote`` 的符号）。
 
-    三部分合起来才完整：
+    四部分合起来才完整：
 
     1. ``fundcalc.qdii_est_symbol_map()`` 的**值集合** —— 显式映射的中间层标的
-       （XOP / IBB / VNQ / ^DJI / ^GSPC / ^NDX …）；
+       （XOP / IBB / VNQ / ^DJI / ^GSPC / ^NDX …，只覆盖**美股 QDII**）；
     2. **QQQ 与 SPY** —— 它们没有被显式映射，而是作为默认值走
        ``qdii_qqq_symbols()`` / ``qdii_spy_symbols()`` 两条路径，
        不补上就会让最大的两类 QDII 基金反而没有中间层数据；
-    3. :data:`HOLDINGS_EST_SYMBOLS` —— 持仓型估值用的标的。
+    3. :data:`HOLDINGS_EST_SYMBOLS` —— 持仓型估值用的标的；
+    4. ``symbolinventory.est_symbols()`` —— **港股 / 日 / 欧**的中间层
+       （^HSI / ^HSTECH / ^HSCE / SH000869 / znb_NKY / znb_CAC / znb_DAX /
+       znb_TPX）。``qdii_est_symbol_map()`` 只有美股那一摊（PHP
+       ``QdiiGetEstArray()``），港日欧的映射散在 ``QdiiHkGetEstSymbol()``
+       等函数里，早期漏了它们：daemon 抓到了行情却只写进 ``realtimequote``，
+       官方 EST 的"实时快照优先"一步（``_middle_day_quote`` 第 2 级）
+       对港股基金全部落空，只能退到 ``stockhistory`` 的收盘价。
 
     自动推导而不是手写列表，是为了以后加基金时不用记得同步这里。
     """
@@ -728,6 +860,12 @@ def default_est_symbols() -> List:
         pass
     symbols.update(("QQQ", "SPY"))
     symbols.update(HOLDINGS_EST_SYMBOLS)
+    try:
+        from core.symbolinventory import est_symbols
+
+        symbols.update(str(symbol) for symbol in est_symbols())
+    except Exception:
+        pass
     return sorted(symbols)
 
 
@@ -779,3 +917,81 @@ def build_default_updater(**kwargs) -> QuotesUpdater:
     )
     updater.connection = connection  # 交给使用方自行关闭（进程级单例则随进程结束）
     return updater
+
+
+# ---------------------------------------------------------------------------
+# 按符号的市场节流（PHP ``stockprefetch.php`` 的三个 *NeedFile 函数）
+# ---------------------------------------------------------------------------
+def _market_now(now_epoch: float) -> _datetime.datetime:
+    """把 epoch 换成**带时区的当前时刻**（服务器本地时间 = 上海时间）。
+
+    PHP 在预取前 ``$sym->SetTimeZone()`` 改进程默认时区，之后 ``GetNowYMD()``
+    取到的是该市场的当地时间。Python 没有进程默认时区，所以这里先按服务器
+    时区（上海）挂上 tzinfo，再由 ``stockprefetch._to_market_datetime()``
+    折算到每个符号自己的时区 —— 两处都不能省，否则美股符号会按北京时间
+    判断开没开市（实测凌晨 3 点（北京时间）会被当成美股交易中）。
+    """
+    naive = _datetime.datetime.fromtimestamp(float(now_epoch))
+    return tzutil.localize(naive, TIME_ZONE_SHANGHAI)
+
+
+def stored_fetch_times(store: Any) -> Dict[str, float]:
+    """从快照表读各符号**上一次抓取时刻**（``{库内符号: epoch 秒}``）。
+
+    跨进程续跑的基准：daemon 重启后据此判断"这个符号刚被抓过吗"。
+    表不可用、行里没有 ``fetched_at`` 的都跳过；一条都不行就返回空字典
+    （调用方退化成"全部从没抓过"）。
+    """
+    result: Dict[str, float] = {}
+    if store is None:
+        return result
+    try:
+        rows = store.load_all()
+    except Exception:
+        return result
+    for row in rows or []:
+        symbol = str(row.get("symbol") or "")
+        fetched = row.get("fetched_at")
+        if not symbol or fetched is None:
+            continue
+        try:
+            result[symbol] = float(fetched.timestamp())
+        except AttributeError:
+            # 不是 datetime（理论上是字符串）时放弃这一条，不让整批失败
+            continue
+    return result
+
+
+def symbol_needs_quote(symbol: str, sina_symbol: str, last_fetch_epoch: Any,
+                       now_epoch: float) -> bool:
+    """单个符号此刻要不要抓（对应 PHP ``_prefetchSinaData()`` 的分派）。
+
+    三拨符号走三条判据（与 PHP 逐条对应）：
+
+    * ``f_`` 场外基金 → ``SinaFundNeedFile()``（净值已到就不抓，30 分钟间隔）；
+    * 期货 / 外汇 → ``FutureNeedNewFile()``（期货几乎全天交易，收盘后按
+      23 小时 + 周末 7 小时的间隔补抓）；
+    * 其它（A 股基金、境外 ETF、指数）→ ``StockNeedNewQuotes()``
+      （交易中每分钟、收盘后 A 股 2 小时 / 港股 3 小时 / 其它 16 小时，
+      周末再分别多加 8 / 4 小时）。
+
+    ``last_fetch_epoch`` 为 ``None`` 表示从来没抓过 —— 对应 PHP 的"缓存文件
+    不存在"，一律要抓。判定本身抛异常时**返回 True**（保守抓取），
+    与"取符号列表失败不影响页面"是同一条原则。
+    """
+    file_name = quote_file_name(sina_symbol or symbol)
+
+    def mtime(_path, _last=last_fetch_epoch):
+        # ``None`` -> stockprefetch 视为"文件不存在"（need_file 会返回 1）
+        return None if _last is None else int(_last)
+
+    try:
+        symbol_obj = StockSymbol(symbol)
+        now = _market_now(now_epoch)
+        if symbol_obj.is_sina_fund():
+            return bool(sina_fund_need_file(symbol_obj, file_name, now, file_mtime=mtime))
+        if symbol_obj.is_sina_future() or symbol_obj.is_sina_forex():
+            return bool(future_need_new_file(file_name, now, file_mtime=mtime))
+        return bool(stock_need_new_quotes(symbol_obj, file_name, now, file_mtime=mtime))
+    except Exception:
+        return True
