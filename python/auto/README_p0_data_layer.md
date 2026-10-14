@@ -11,8 +11,8 @@
 
 | # | 内容 | 状态 |
 | --- | --- | --- |
-| P0.1 | 符号清单：基金 + est 符号全集，与生产端页面核对 | ✅ 本文 §一 |
-| P0.2 | 备份并写入 `stock` + `fundpair` | 待做 |
+| P0.1 | 符号清单：基金 + est 符号全集，与生产端页面核对 | ✅ `bfe86469`，本文 §一 |
+| P0.2 | 备份并写入 `stock` + `fundpair` | ✅ `69aa649e`，本文 §二 |
 | P0.3 | 历史数据回填（`quotecli` → `stockhistory`，`navcli` → `netvaluehistory`） | 待做 |
 | P0.4 | 实时链路（`quoteupdatercli --daemon` → `realtimequote` + 盘口 + `estquote`） | 待做 |
 | P0.5–0.7 | 校准链路 + `fundest` + 期货实时 EST | 待做 |
@@ -98,7 +98,41 @@ QdiiMix 成员，EST 走持仓口径（CK4 `HoldingsReference`，未迁）。
 
 ---
 
-## 二、P0.2 及以后要遵守的约定
+## 二、P0.2 符号写入（2026-10-14 完成，commit `69aa649e`）
+
+写入脚本 `dbtools/seed_p0_symbols.py`，清单来自 `core/symbolinventory.py`
+（单一事实源，7 个单测钉住；探针与 seed 脚本都引它，不会漂移）。
+
+### 2.1 为什么必须先写符号
+
+`cli/quotecli.py` 对**库里没有的符号直接跳过落库**。P0.2 之前演示库
+21 个符号里只有 4 只是 QDII 基金，整条抓取链路对其余符号全是空转。
+
+### 2.2 写入结果
+
+| 项 | 写入前 | 写入后 |
+| --- | --- | --- |
+| `stock` 行 | 21 | **139**（+118：98 只基金 + 20 个 est） |
+| `fundpair` 行 | 8 | **75**（+67；70 对需求里 3 对原来就有） |
+
+* 名称**全部从新浪行情抓**（124/124 成功），不手填 —— 手填就会出现
+  "两个名字指同一个东西"的口径重影（`seed_reference_symbols.py` 的
+  `REMOVE_STOCKS` 就是擦这个屁股的）；
+* `fundpair` 只补缺的行：表里"基金→ETF"与"ETF→指数"两个方向并存
+  （QQQ→^NDX 等），覆盖会毁掉后者；
+* 备份：`dbtools/_snapshots/symbols_before_20261014_115541.sql`（472KB）。
+
+### 2.3 安全约定（脚本内置）
+
+* 默认 dry-run，`--apply` 才写库；
+* `--apply` 前自动 `mysqldump` 全库；找不到 mysqldump 就拒绝执行，
+  除非显式 `--skip-backup`；
+* 新浪抓不到名称的符号**不写**（`name` 是 NOT NULL），只在报告里列出，
+  等网络好的时候重跑即可补齐。
+
+---
+
+## 三、P0.3 及以后要遵守的约定
 
 * 动演示库数据前先 `mysqldump` 全库到 `python/dbtools/_snapshots/`
   （已 gitignore，先例 `calib_before_20261012.sql` / `calib_before_20261013.sql`）；
