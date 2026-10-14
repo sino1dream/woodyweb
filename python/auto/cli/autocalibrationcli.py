@@ -17,11 +17,27 @@
 用户跑了 ``quoteupdatercli --daemon``（只抓**行情快照**）之后发现
 校准值不动，就是这个原因。
 
-本命令提供三件事：
+本命令提供几件事：
 
-1. ``--show``   看中间层"净值日期 / 校准日期 / 闸门状态"；
-2. ``--force``  忽略闸门，按当前行情重算并写库（运维补算用）；
-3. ``--set-nav`` 手工把中间层的净值日期往前推（让往后的自动校准能正常触发）。
+1. ``--show``    看中间层"净值日期 / 校准日期 / 闸门状态"；
+2. ``--force``   忽略闸门，按当前行情重算并写库（运维补算用）；
+3. ``--set-nav`` 手工把中间层的净值日期往前推（让往后的自动校准能正常触发）；
+4. ``--funds``   算**基金层**校准值 ``cal_f``（另一层次，见 ``cmd_funds``）。
+
+## 两个层次别搞混
+
+``cal_m``（中间层，P0.5）与 ``cal_f``（基金层，P0.6）是两件事：
+
+==================  ================  ======================================
+层次                例子              校准值含义
+==================  ================  ======================================
+中间层 ``cal_m``     ``QQQ``           ``指数 / ETF净值``（= 41.11）
+基金层 ``cal_f``     ``SZ161130``      ``指数 × 汇率 / 基金净值``（= 45028）
+==================  ================  ======================================
+
+默认（不带 ``--funds``）走中间层；``--funds`` 走基金层。
+**没有 ``cal_f`` 就算不出官方 EST**（``fundestcalc`` 直接返回 ``None``），
+这是 P0.6 之前 ``fundestcli`` 只能写进 3 只基金的原因。
 
 用法：
 
@@ -31,6 +47,8 @@
     python -B auto\\autocalibrationcli.py                  # 预演（不写库）
     python -B auto\\autocalibrationcli.py --apply          # 走闸门写入
     python -B auto\\autocalibrationcli.py --force --apply  # 忽略闸门强制写入
+    python -B auto\\autocalibrationcli.py --funds          # 基金层 cal_f 预演
+    python -B auto\\autocalibrationcli.py --funds --apply  # 基金层写库
 """
 
 from __future__ import annotations
@@ -196,6 +214,78 @@ def _calibrate_forced(calibrator, source, symbol, apply: bool):
         return calibrator.calibrate_middle(symbol, apply=apply)
     finally:
         calibrator._calibration_date = original
+
+
+def _fund_targets(source, symbol=None) -> list:
+    """要校准的**基金**符号（``cal_f`` 那一层）。
+
+    清单取 :func:`~calc.fundcalc.qdii_est_symbol_map` —— 与 PHP
+    ``QdiiGetEstArray()`` 同源，所以能拿到各家基金 ⇄ 估值标的的对应。
+    只看落在 ``stock`` 表里的。
+    """
+    from calc.fundcalc import qdii_est_symbol_map
+
+    if symbol:
+        return [symbol]
+    return [s for s in sorted(qdii_est_symbol_map())
+            if source.get_stock_id(s) is not None]
+
+
+def cmd_funds(args) -> int:
+    """算基金的 ``cal_f``（另一层次，见模块 docstring）。
+
+    对应 ``_QdiiReference::AdjustFactor()``（``php/stock/qdiiref.php:176``），
+    式子是 ``标的 × 汇率 / 基金净值``。没有它就**没有官方 EST**。
+    """
+    source = _source()
+    calibrator = build_auto_calibrator(source)
+    apply = args.apply
+
+    print("层次：基金层 cal_f（另一层次是中间层 cal_m，不带 --funds 走那条）")
+    print("模式：%s%s" % ("强制（忽略闸门）" if args.force else "走闸门",
+                      "，写库" if apply else "，预演（不写库）"))
+    print("")
+    print("%-10s %-8s %-12s %-10s %-16s %s" % (
+        "基金", "标的", "标的价", "基金净值", "算出的 cal_f", "结果"))
+    print("-" * 84)
+
+    written = 0
+    for symbol in _fund_targets(source, args.symbol):
+        old = None
+        stock_id = source.get_stock_id(symbol)
+        if stock_id is not None:
+            old = getattr(source.get_calibration_now(stock_id), "close", None)
+
+        original = calibrator._calibration_date
+        if args.force:
+            calibrator._calibration_date = lambda _stock_id: None
+        try:
+            outcome = calibrator.calibrate_fund(symbol, apply=apply)
+        finally:
+            calibrator._calibration_date = original
+
+        if outcome.skipped:
+            print("%-10s %-8s %-12s %-10s %-16s %s" % (
+                symbol, outcome.pair_symbol or "-", "-", "-", old or "-", outcome.skipped))
+            continue
+
+        print("%-10s %-8s %-12s %-10s %-16s %s" % (
+            symbol, outcome.pair_symbol or "-", outcome.pair_value, outcome.net_value,
+            round(outcome.calibration, 6) if outcome.calibration is not None else "-",
+            "已写库" if outcome.written else ("预演" if not apply else "未写（已有）")))
+        print("        [算式] 标的价 × 汇率 / 基金净值（PHP QdiiGetCalibration）"
+              "  锚点日 %s" % outcome.date)
+        if outcome.written:
+            written += 1
+        for warning in outcome.warnings:
+            print("        [注] %s" % warning)
+
+    print("")
+    print("写了 %d 条。" % written)
+    if not apply:
+        print("这是预演。要写库请加 --apply。")
+    source.connection.close()
+    return 0
 
 
 def cmd_sync_nav(args) -> int:
@@ -435,11 +525,13 @@ def cmd_api(args) -> int:
 
 
 def main(argv=None) -> int:
-    parser = argparse.ArgumentParser(description="中间层校准值的查看与重算")
+    parser = argparse.ArgumentParser(description="校准值的查看与重算（中间层 cal_m / 基金层 cal_f）")
     parser.add_argument("--show", action="store_true", help="看净值/校准日期与闸门状态")
     parser.add_argument("--apply", action="store_true", help="真的写库（默认只预演）")
     parser.add_argument("--force", action="store_true", help="忽略闸门，强制重算")
-    parser.add_argument("--symbol", help="只处理这一个中间层符号")
+    parser.add_argument("--symbol", help="只处理这一个符号")
+    parser.add_argument("--funds", action="store_true",
+                        help="走基金层：算 cal_f（默认走中间层 cal_m），可用 --symbol 指定一只")
     parser.add_argument("--set-nav", metavar="符号", help="手工写入该符号的净值（推进净值日期）")
     parser.add_argument("--sync-nav", action="store_true",
                         help="用派生源把中间层净值推进到最新行情日期")
@@ -456,6 +548,8 @@ def main(argv=None) -> int:
         return cmd_set_nav(args)
     if args.show:
         return cmd_show(args)
+    if args.funds:
+        return cmd_funds(args)
     return cmd_calibrate(args)
 
 

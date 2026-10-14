@@ -225,6 +225,58 @@ class MiddlePairTest(unittest.TestCase):
         self.assertIsNone(_calibrator(FakeSource())._pair_symbol("ZZZZ"))
 
 
+class LayerGuardTest(unittest.TestCase):
+    """**层次守卫**：``calibrate_middle`` 只服务中间层，基金走 ``calibrate_fund``。
+
+    ## 为什么要分开
+
+    两个层次的分母不是同一个东西：
+
+    * 中间层（``QQQ``）：P0.5 定稿的口径是「净值 = 当日收盘价」——
+      美股 ETF 的净值与交易价只差千分位，成立；
+    * 基金层（``SH513100``）：分母必须是 ``netvaluehistory`` 里的**单位净值**。
+
+    QDII 基金的场内价与净值差着**折溢价**，实测 SH513100 净值 2.0563、
+    场内价 2.399，差 **16.7%**。基金一旦漏进中间层那条路径，校准值就整体偏掉
+    这么多，而估值恰好会因此"等于场内价"（2.441）—— 量级完全正常，
+    是最难发现的那一种错。演示库里真的出过这条记录（id=88，
+    2026-10-14 的 83792.206883，用 2.399 当分母），已删、已补这道守卫。
+
+    PHP 那边不会有这个问题：``FundReference::LoadSinaFundData()``
+    （``php/stock/stockref.php:483``）里 ``$this->strPrice = $ar[1]; // net value``，
+    基金的"价"本身就是净值，所以 ``AdjustFactor()`` 的 ``GetPrice()`` 拿对了。
+    """
+
+    def test_fund_is_rejected_and_nothing_is_written(self):
+        source = FakeSource(stock={"QQQ": 4, "SH513100": 3})
+        calibrator = _calibrator(source)
+        outcome = calibrator.calibrate_middle("SH513100", apply=True)
+        self.assertTrue(outcome.skipped)
+        self.assertIn("calibrate_fund", outcome.skipped)
+        self.assertIsNone(outcome.calibration)
+        # 真要写库也写不出东西：守卫在取净值之前就返回了
+        self.assertEqual(source.connection.calibration, [])
+        self.assertEqual(source.connection.commits, 0)
+
+    def test_middle_layer_is_not_mistaken_for_a_fund(self):
+        """守卫不能把正常路径也挡掉 —— ``QQQ``/``SPY`` 是**值**不是**键**。
+
+        ``qdii_est_symbol_map()`` 的键是基金、值是估值标的，实测两者没有交集
+        （33 个基金 / 14 个标的），所以"在不在键里"是个干净的判据。
+        """
+        calibrator = _calibrator(FakeSource())
+        self.assertFalse(calibrator._is_fund_layer_symbol("QQQ"))
+        self.assertFalse(calibrator._is_fund_layer_symbol("SPY"))
+        self.assertTrue(calibrator._is_fund_layer_symbol("SH513100"))
+        self.assertFalse(calibrator._is_fund_layer_symbol(""))
+
+    def test_qqq_still_reaches_the_calibration_steps(self):
+        """中间层符号不受影响：跳过的原因不能是层次守卫。"""
+        source = FakeSource()
+        outcome = _calibrator(source).calibrate_middle("QQQ", apply=False)
+        self.assertNotIn("calibrate_fund", outcome.skipped or "")
+
+
 class ScaleConversionTest(unittest.TestCase):
     """**尺度换算**：本项目的核心修正。
 

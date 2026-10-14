@@ -16,7 +16,7 @@
 | P0.3 | 历史数据回填（`quotecli` → `stockhistory`，`navcli` → `netvaluehistory`） | ✅ `344d5383`，本文 §三 |
 | P0.4 | 实时链路（`quoteupdatercli --daemon` → `realtimequote` + 盘口 + `estquote`） | ✅ `05b6f2c3`，本文 §五 |
 | P0.5 | 校准链路跑通（中间层净值 → 闸门 → `calibrationhistory`） | ✅ `a2e84b05`，本文 §四.3 |
-| P0.6–0.7 | `fundest` 官方 EST 落库 + 期货实时 EST | 待做 |
+| P0.6–0.7 | `fundest` 官方 EST 落库 + 期货实时 EST | ✅ 本文 §六 |
 | P0.8 | 一键重跑 `dbtools/bootstrap_fund_data.py`（默认 dry-run） | 待做 |
 
 P0.5a（修 fundestcalc 中间层基准价尺度错位，EST 放大 4648 倍）已单独提交
@@ -235,7 +235,7 @@ nav(最新日)/nav(校准日) 的真实信号；从 §4.1 表看，去掉失真�
 唯一现成的填充通道是 `autocalibrationcli sync-nav`（派生净值），而这个坑②
 刚好堵在它上面。
 
-净值换口径（见 ②）之后这条通道通了。**已按 §六 的安全约定备份后写入**
+净值换口径（见 ②）之后这条通道通了。**已按 §七 的安全约定备份后写入**
 （备份 `dbtools/_snapshots/navcalib_before_20261014_p05.sql`）：
 
 ```text
@@ -481,7 +481,154 @@ PHP `_getAllSymbolArray()` 预取 `fx_*`，但**它的消费方（页面外汇�
 
 ---
 
-## 六、P0.3 及以后要遵守的约定
+## 六、P0.6：官方 EST 落 `fundest` + 期货实时 EST（2026-10-15 完成）
+
+备份：`dbtools/_snapshots/fundcalib_before_20261015_p06.sql`（动库前，
+`calibrationhistory` / `lastcalibration` / `fundest` / `stockhistory` 四张表）。
+探针：`auto/_scratch/_p0_6_probe.py`（闸门归因）、`_p0_6_state.py`（落库取样）、
+`_p0_6_est_compare.py`（与生产端 `qdiicn.php` 逐只对照）。
+
+### 6.1 校准值有两个层次，分母不是同一个东西
+
+P0.5 打通的是**中间层**，P0.6 补的是**基金层**（`_QdiiReference::AdjustFactor()`，
+`qdiiref.php:176`）：
+
+| 层次 | 对象 | 式子 | 例子 |
+| --- | --- | --- | --- |
+| 中间层 `cal_m` | `QQQ` | `指数 / ETF净值` | 41.111773 |
+| 基金层 `cal_f` | `SZ161130` | `指数 × 汇率 / 基金净值` | 44605.71 |
+
+关键差别在分母：中间层用"当日收盘价"当净值（美股 ETF 净值与价格只差千分位，
+P0.5 定稿口径②）；**基金层必须是 `netvaluehistory` 里的单位净值** ——
+QDII 的场内价与净值差着折溢价（SH513100：净值 2.0563、场内价 2.399，差 16.7%）。
+两个层次混用会把校准值整项带偏，见 §6.6 那条实测抓到的错记录（pitfalls #66）。
+
+`cal_f` 的 `est` 必须是**指数**（`^NDX`），不是杠杆替代后的 ETF（`QQQ`）——
+`qdii_est_symbol()` 返回的就是 PHP `QdiiGetEstSymbol()` 的原始值，两者差约 41 倍。
+
+### 6.2 锚点日的口径（复现得上是硬证据）
+
+PHP 三个量都锚在基金净值日。但 QDII 净值发布比海外行情晚一拍，照抄会一条都
+算不出来（演示库净值已到 10-12，指数行情止于 10-09）。沿用演示库既有三条的口径：
+
+```text
+锚点 = est 标的最新行情日期（净值日与行情日取较大者）
+净值 = 该锚点上**已发布**的最新基金净值（≤ 锚点）
+汇率 = 锚点当天（没有就退到之前最近一条）
+```
+
+逐位复现（写库前的对照）：
+
+```text
+SZ161125  ^GSPC 7811.54   × 6.7035 / 3.1679 = 16529.7700   库里 16529.770002
+SZ161130  ^NDX  30883.148 × 6.7035 / 4.5976 = 45028.9679   库里 45028.967857
+SH513100  ^NDX  30883.148 × 6.7035 / 2.0622 = 100390.4484  库里 100390.448365
+```
+
+两个易错点（都踩过）：锚点**不能**取 `realtimequote`（快照是"此刻"，锚点必须是
+已收盘的那天）；取 est 值**不能**用 `_pair_value`（它的兜底会去新浪抓实时点位，
+于是拿今天的指数配昨天的净值）—— 用 `_est_value_on()` 严格按日期取。
+
+### 6.3 官方 EST：为什么 33 只里一开始只有 3 只写进去
+
+`StockUpdateEstResult()` 的三道闸门（净值未到 / 时刻早于 20:55 / 该日期已有记录）
+**一条都没挡**。真正的原因是 `fundestcalc._build()` 里中间层那行是*有条件*创建的
+（`if middle_calibration:`），而 AGG/IBB/XBI/VNQ 这些"中间层自己就是估值标的"
+的基金本来就没有 `cal_m` —— 生产端页面上它们**全都有值**（SH501300=0.914、
+SH513290=1.646、SZ159502=1.453）。
+
+改成无条件建行（缺省 `calibration=0.0`）、去掉 `_qdii_value()` 里那道
+`if not cal_m` 之后，33 只全部可写。这一类"守卫保护的前提已经消失"的静默少数据，
+记在 pitfalls #69。
+
+### 6.4 快照归档：`realtimequote` 不会自己进历史
+
+29 只基金一开始报"锚点日 2026-10-09 及之前没有单位净值" —— 它们的净值只有
+10-12 一条，晚于 10-09 的锚点。补法是先把指数快照落进历史：
+
+```text
+python -B auto/cli/quotecli.py --archive-snapshot
+    ^NDX  30569.4809 @ 2026-10-13
+    ^GSPC 7805.4502 @ 2026-10-13
+```
+
+daemon 只写 `realtimequote`（一行快照、覆盖式），`stockhistory` 要单独归档这一步
+—— **快照与历史是两条独立的通道**，架构约定见 `auto/refquote.py`。归档后锚点推到
+10-13，`_nav_on_or_before` 找到 10-12 的净值，33 只全部算得出。
+
+### 6.5 期货实时 EST：四处修正后第一次真正接通
+
+`实时 EST = 参考 EST + 期货`。此前它永远回落到中间层快照，四件事叠加：
+
+| # | 问题 | 对应 PHP |
+| --- | --- | --- |
+| ① | 期货时间戳是**上海时间**，指数是纽约时间，日期经常差一天 | `_onSinaFuture()` 之后要 `_convertDateTimeToUS()` |
+| ② | `CheckAdjustFactorTime()` 有**三个**条件，只实现了两条 | 还有 `if ($etf_ref->IsExtendedMarket()) return false;`（只许常规时段） |
+| ③ | 拿刚抓的期货去比库里**昨天**的指数快照 | PHP 里两者是同一批抓的，时刻天然相同 → 抓期货前先刷新指数快照 |
+| ④ | `CalcFactor` 把 `cny=None` 当"缺参数"返回 `None` | PHP 是 `if ($this->cny_ref)`；美股指数/期货这一对 `cny_ref` 为 false → 应取 1.0 |
+
+修完写入期货校准值（`^NDX` 1.007178、`^GSPC` 1.006373，即"期货 / 指数"）。
+
+**量纲换算还翻过一次方向**（pitfalls #67）：P0.5 把 `cal_m` 从 `ETF/指数`
+（0.008945）改成 `指数/净值`（41.111），分子分母互换了，旧的一步式
+`ETF价 = 期货价 × cal_m / cal_futures` 给出 123 万（1660 倍），实时 EST 显示成
+3414 而不是 2.05。现在拆成两步 + 量级保险：
+
+```python
+index_price = price / factor              # 期货 -> 指数点位
+value = index_price / middle_calibration  # 指数 -> ETF 价
+if abs(value / 中间层已知价 - 1.0) > 0.5: return None   # 宁可回落
+```
+
+### 6.6 落库结果与生产端对照
+
+```text
+fundest              39 行 / 33 个符号（33 行 @ 2026-10-13）
+calibrationhistory   35 行 @ 2026-10-13（33 只基金 + QQQ + SPY）
+                      3 行 @ 2026-10-14（^NDX / ^GSPC 的期货校准值）
+中间层               QQQ 41.111773、SPY 10.032583（生产锚点 41.111 / 10.035）
+```
+
+实时 EST 的来源（`futurescli --est` 实测）：`^NDX`/`^GSPC` 系的基金走
+**期货 hf_NQ / hf_ES**（SH513100 2.0195、SH513300 2.5072、SH513500 2.4587 …），
+港日欧那些没有期货配对的回落**中间层快照** —— 与 PHP 的分支一致。
+
+与生产端 `qdiicn.php`（2026-10-15 抓取）逐只对照：本地是 10-13 的数、生产端是
+10-14 的，**同日可比 0 只**。跨日只做量级检查：33 只偏差 |max| **3.13%**
+（SZ159502）、|min| 0.04% —— 没有尺度错误，剩下的是数据新鲜度差一个交易日
+（P0.8 的定时重跑会补上）。
+
+生产端 41 只里我们有 33 只：缺的 8 只（SH501312、SH513850、SZ159509、SZ159529、
+SZ159577、SZ160216、SZ163208、SZ164701）是 §1.3 说的**持仓口径**（CK4
+`HoldingsReference`，未迁），页面归属也是 P1 的事。
+
+### 6.7 事后抓到的一条错记录（层次混用）
+
+写完第二天复查时发现 `SH513100 2026-10-14 = 83792.206883`。反解三个输入
+（逐候选代入，只有一组对到 1e-11）：
+
+```text
+est = 30039.8261（^NDX 实时）  cny = 6.6917  nav = 2.399 ← 场内价，不是净值
+正确：est × cny / 2.0563 = 97756.9（10-14）或 99480.5（10-13）
+```
+
+后果不是"数大了"，而是 `GetQdiiValue = est × cny / fFactor` 会**等于场内价**
+（2.441）—— 量级、单位都对，只有逐格对生产端才看得出来。
+
+两件事：① 备份后删掉该行（`_scratch/_p0_6_fix_bad_calibration.py`，默认 dry-run），
+删除后官方 EST 2.0563、实时 2.0195（生产端 10-14 是 2.01）；② 加**层次守卫** ——
+`calibrate_middle()` 开头挡掉"有 QDII 估值标的的基金"，判据是
+`qdii_est_symbol_map()` 的键（33 个基金与 14 个标的没有交集，不误伤中间层），
+回归测试 `test_autocalibration.LayerGuardTest`。
+
+顺带确认了一条 PHP 语义：`AdjustFactor()` 用的是 `GetPrice()`，而
+`FundReference::LoadSinaFundData()` 里 `$this->strPrice = $ar[1]; // net value`
+（`php/stock/stockref.php:483`）—— **基金的"价"就是单位净值**。所以照抄 PHP 字面去
+取实时行情价，反而错。
+
+---
+
+## 七、P0.3 及以后要遵守的约定
 
 * 动演示库数据前先 `mysqldump` 全库到 `python/dbtools/_snapshots/`
   （已 gitignore，先例 `calib_before_20261012.sql` / `calib_before_20261013.sql`）；

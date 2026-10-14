@@ -167,6 +167,10 @@ def parse_futures_payload(symbol: str, payload: str) -> Any:
     def field(index: int) -> str:
         return fields[index].strip() if index < len(fields) else ""
 
+    date = field(FIELD_DATE)
+    time = field(FIELD_TIME)
+    date, time = convert_to_symbol_time_zone(symbol, date, time)
+
     return FuturesQuote(
         symbol=symbol,
         sina_symbol=symbol,
@@ -175,10 +179,51 @@ def parse_futures_payload(symbol: str, payload: str) -> Any:
         high=field(FIELD_HIGH),
         low=field(FIELD_LOW),
         open=field(FIELD_OPEN),
-        date=field(FIELD_DATE),
-        time=field(FIELD_TIME),
+        date=date,
+        time=time,
         name=field(FIELD_NAME),
     )
+
+
+def convert_to_symbol_time_zone(symbol: str, date: Any, time: Any):
+    """把新浪给的 ``(日期, 时刻)`` 换到**该符号所在市场**的时区。
+
+    对应 PHP ``_onSinaFuture()`` → ``_convertDateTimeToUS()``：新浪的期货
+    时间戳是**上海时间**，PHP 先按上海解读、再换到本符号时区。
+
+    ```php
+    function _convertDateTimeToUS($strDate, $strTime) {
+        $iTime = strtotime($strDateTime);
+        $this->strTime = DebugGetTime($iTime, 'America/New_York');
+        $this->strDate = $strYear.date('-m-d', $iTime);
+    }
+    ```
+
+    ## 曾经漏了这一步，后果是期货永远校准不上
+
+    ``parse_futures_payload`` 直接把新浪原值当成了本符号的本地时间。实测
+    （2026-10-15 01:05 北京时间）新浪给的是 ``2026-10-15 01:04:19``，
+    换算到纽约是 ``2026-10-14 13:04:19`` —— **差 12 小时、还跨了一天**。
+
+    而 :func:`~calc.futurescalib.check_adjust_time` 要拿它跟指数的纽约时间比
+    "日期 + HH:MM"，于是：期货 ``2026-10-15 01:04`` vs 指数
+    ``2026-10-14 13:04`` → 永远不等 → ``AverageCalibraion()``
+    永远不触发 → ``realtimequote`` 里躺着期货价、``calibrationhistory``
+    里却没有期货校准值 → 实时 EST 永远回落到中间层快照。
+
+    换算失败时**原样返回**（不编造），由调用方自己判断。
+    """
+    if not date or time in (None, ""):
+        return date, time
+    try:
+        from core.stocksymbol import TIME_ZONE_SHANGHAI, StockSymbol
+        from ref.stockref import _parse_datetime, format_date, format_time
+
+        target = StockSymbol(symbol).get_time_zone()
+        moment = _parse_datetime("%s %s" % (date, time), TIME_ZONE_SHANGHAI)
+        return format_date(moment, target), format_time(moment, target)
+    except Exception:
+        return date, time
 
 
 def parse_futures_text(text: str) -> dict:

@@ -591,11 +591,26 @@ class EstimateCalculator:
         if est_symbol:
             est_id = self.source.get_stock_id(est_symbol)
             middle_calibration = self._calibration_of(est_id) if est_id else None
-            if middle_calibration:
-                config[est_symbol] = {
-                    "calibration": float(middle_calibration),
-                    "position": self._position_of(est_id),
-                }
+            # **中间层那一行无论如何都要建**，不能因为没有校准值就不建。
+            #
+            # 曾经这里写成 ``if middle_calibration:`` —— 于是所有 est 标的是
+            # 无配对 ETF（AGG / IBB / XBI / VNQ ...）的基金，``data`` 里根本
+            # 没有中间层行，``_qdii_value()`` 再校验一轮后返回 ``None``，
+            # 官方 EST 一只都算不出来。**生产端证明这是错的**：
+            # ``https://palmmicro.com/woody/res/qdiicn.php`` 上
+            # SH501300（AGG）照常显示官方 EST 0.914、SH513290（IBB）1.646、
+            # SZ159502（XBI）1.453 —— 一条都不缺。
+            #
+            # 中间层有没有校准值，决定不了"能不能估值"：
+            # ``fundcalc.calc_with_calibration()`` 用的是 ``hedge_value``
+            # （由 :meth:`_qdii_value` 算好后塞进 data），``cal_m`` 在整条
+            # 式子里**不出现**。它只在历史上充当过"防止算出离谱结果"的闸门，
+            # 而 ``est_quote_ref`` 早已不再用恒等式反推（见 :meth:`_est_quote_ref`），
+            # 那道闸门保护的东西已经不在了，留下来的只是"静默算不出来"。
+            config[est_symbol] = {
+                "calibration": float(middle_calibration) if middle_calibration else 0.0,
+                "position": self._position_of(est_id) if est_id else 1.0,
+            }
         return config
 
     def _calibration_date_of(self, stock_id: Any) -> Any:
@@ -934,13 +949,12 @@ class EstimateCalculator:
         middle_row = data.get(hedge_symbol)
         if not isinstance(middle_row, dict):
             return None
-        try:
-            cal_m = float(middle_row.get("calibration") or 0)
-        except (TypeError, ValueError):
-            cal_m = 0.0
-        if not cal_m:
-            # 中间层没有校准值：它自己不参与"配对估值"这条路
-            return None
+        # 中间层的校准值（``cal_m``）**不参与这条式子** —— 它只对某些 est 标的
+        # 存在（QQQ / SPY 有配对 ^NDX / ^GSPC），AGG / XBI 这类没有配对的 ETF
+        # 就没有。**曾经拿它当闸门**（没有就 return None），于是那些基金的官方
+        # EST 永远算不出来；生产端页面上它们明明都有值（SH501300 = 0.914）。
+        # 现在 :meth:`_build` 无条件建中间层那一行，这里也不再拿 ``cal_m`` 挡路。
+        #
         # 校准时用的汇率（cny_cal）：_build() 按校准日期写进 data["CNY"]
         try:
             cny_ref = float(data.get("CNY") or data.get("CNYest") or cny)

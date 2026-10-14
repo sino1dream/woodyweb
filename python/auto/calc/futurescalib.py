@@ -75,22 +75,103 @@ class FuturesPairStore:
         return row["symbol"] if row else None
 
 
+#: 换算出来的中间层值，与它已知价格之间允许的偏离（其余情形按"量级不对"处理）。
+#: 0.5 是因为期货与 ETF 快照可能不是同一时刻抓的，盘中波动加时差留 50% 足够宽松。
+MIDDLE_VALUE_TOLERANCE = 0.5
+
+#: PHP ``IsExtendedMarket()`` 认可的常规交易时段（``GetHourMinute()`` 的整数形式）。
+#: 早于此开盘、晚于此收盘都算"延长时段"，作者的要求是**只在常规时段校准**。
+REGULAR_SESSION_OPEN_HM = 930
+REGULAR_SESSION_CLOSE_HM = 1600
+
+
+def _time_zone_of(symbol: Any) -> Any:
+    """符号所属市场的时区；取不到返回 ``None``（调用方会跳过换算）。"""
+    if not symbol:
+        return None
+    try:
+        from core.stocksymbol import StockSymbol
+
+        return StockSymbol(symbol).get_time_zone()
+    except Exception:
+        return None
+
+
+def hour_minute(hhmm: str) -> int:
+    """``"15:42"`` -> ``1542``，对应 PHP ``GetHourMinute()``。"""
+    try:
+        hour, minute = str(hhmm).split(":")[:2]
+        return int(hour) * 100 + int(minute)
+    except (TypeError, ValueError):
+        return -1
+
+
 def check_adjust_time(future_date: Any, future_time: Any,
-                      index_date: Any, index_time: Any) -> bool:
+                      index_date: Any, index_time: Any,
+                      future_time_zone: Any = None,
+                      index_time_zone: Any = None) -> bool:
     """对应 ``CheckAdjustFactorTime()``：日期与时刻都相同才允许校准。
 
-    时刻按 **HH:MM** 比较（PHP 是 ``GetHM()``，截到分），
-    因为两个行情源的秒级时间戳不可能严格相等。
+    PHP 原文（``php/stock/stockref.php:235``）里**三个条件**，此前只实现了两条：
+
+    ```php
+    if ($etf_ref->HasData() == false)        return false;
+    if ($etf_ref->IsExtendedMarket())        return false;     // ← 漏了这条
+    $strTimeZone = $etf_ref->GetTimeZone();
+    if ($this->GetTimeZone() == $strTimeZone) { 原样比 }
+    else { 先把本符号的时刻换算到 $strTimeZone 再比 }        // ← 漏了这条
+    if ($strDate != $etf_ref->GetDate())            return false;
+    if (GetHM($strTime) != $etf_ref->GetTimeHM())   return false;
+    return true;
+    ```
+
+    **为什么必须补中间那条**：``期货价 / 指数`` 只有在两个市场**同时开着常规盘**
+    的那一瞬间才是干净的比值。盘前盘后的期货价含隔夜跳空、指数却没动，
+    算出来的比值会把跳空误当成基差 —— 演示库里 hf_NQ 快照是纽约时间 03:42
+    （盘前），配上昨天的 ^NDX 收盘，校准值会偏到离谱。
     """
     if not future_date or not index_date:
         return False
-    if str(future_date) != str(index_date):
+
+    # 时区不同时先把期货那一刻换算到指数的时区再比（PHP 的 ConvertTick）
+    fd, ft = str(future_date), future_time
+    if future_time_zone and index_time_zone and future_time_zone != index_time_zone:
+        converted = convert_quote_datetime(future_date, future_time, future_time_zone, index_time_zone)
+        if converted is None:
+            return False
+        fd, ft = converted
+
+    if fd != str(index_date):
         return False
-    future_hm = format_hm(future_time)
+    future_hm = format_hm(ft)
     index_hm = format_hm(index_time)
     if not future_hm or not index_hm:
         return False
-    return future_hm == index_hm
+    if future_hm != index_hm:
+        return False
+
+    # IsExtendedMarket()：只在常规时段校准
+    hhmm = hour_minute(index_hm)
+    if hhmm < REGULAR_SESSION_OPEN_HM or hhmm > REGULAR_SESSION_CLOSE_HM:
+        return False
+    return True
+
+
+def convert_quote_datetime(date: Any, time: Any, from_time_zone: str, to_time_zone: str):
+    """把 ``(日期, 时刻)`` 从 ``from_time_zone`` 换到 ``to_time_zone``。
+
+    对应 PHP 里先 ``strtotime()`` 再 ``DebugGetDate/DebugGetTime($iTime, $tz)``。
+    换算失败返回 ``None``（宁可不校准，也不拿错刻度的值去算比值）。
+    """
+    if not date or time in (None, ""):
+        return None
+    text = "%s %s" % (date, format_hm(time) or "00:00")
+    try:
+        from ref.stockref import convert_date_time
+
+        return convert_date_time(text, from_time_zone, to_time_zone)
+    except Exception:
+        return None
 
 
 class FuturesCalibrator:
@@ -125,9 +206,18 @@ class FuturesCalibrator:
         """对应 ``CalcFactor()``：``校准值 = 期货价 × 汇率 / 指数价``。
 
         与 ``QdiiGetCalibration()`` 同一个式子，只是"源值"换成期货价。
+
+        ``cny`` 为 ``None`` 时按 **1.0**（不乘汇率）：PHP 里是
+        ``if ($this->cny_ref)`` 才取汇率，而美股指数/期货这一对
+        ``cny_ref`` 恒为 false（两端都不是 A 股，见
+        ``fundpairref.php:14-43``）。曾经这里跟 :meth:`calc_factor` 的调用方
+        一样把 ``None`` 当"缺参数"直接 return None，结果时刻对齐了也**永远写不进**
+        校准值 —— 实时 EST 因此一直回落到中间层快照。
         """
-        if future_price in (None, "") or index_price in (None, "") or cny in (None, ""):
+        if future_price in (None, "") or index_price in (None, ""):
             return None
+        if cny in (None, ""):
+            cny = 1.0
         try:
             index_value = float(index_price)
         except (TypeError, ValueError):
@@ -318,9 +408,13 @@ class FuturesCalibrator:
         """
         if future_quote is None or index_quote is None:
             return None
+        # 时区不同时先换算到指数的时区再比，与 PHP 的 ConvertTick 一致
+        index_tz = _time_zone_of(index_symbol)
+        future_tz = _time_zone_of(getattr(future_quote, "symbol", None))
         if not check_adjust_time(
             getattr(future_quote, "date", None), getattr(future_quote, "time", None),
             getattr(index_quote, "date", None), getattr(index_quote, "time", None),
+            future_time_zone=future_tz, index_time_zone=index_tz,
         ):
             return None
 
@@ -425,23 +519,37 @@ class FuturesCalibrator:
         }
         ```
 
-        ## 量纲换算（这里踩过一个大坑）
+        ## 量纲换算（这里踩过**两次**坑，两次都是同一类错误）
 
-        期货校准值 ``cal_futures = 期货 / 指数``，中间层校准值
-        ``cal_m = ETF / 指数`` —— **两者分母都是指数，可以直接换算**：
+        换算要分两步，每一步都用**当时**的校准口径定义：
 
         ```text
-        ETF价 = 指数 × cal_m
-        指数  = 期货价 / cal_futures
-        ⇒ ETF价 = 期货价 × cal_m / cal_futures
+        指数点位 = 期货价 / cal_futures          （cal_futures = 期货 / 指数）
+        ETF价   = 指数点位 / cal_m               （生产口径：cal_m = 指数 / ETF净值）
+        ⇒ ETF价 = 期货价 / (cal_futures × cal_m)
         ```
 
-        实测数值（``^NDX``）：``31369.43 × 0.008945 / 0.370904 = 756.85``，
-        与 QQQ 的快照价 ``756.80`` 吻合到 0.007% —— 换算正确。
+        **第一次坑**：直接把期货价当中间层值用 —— 期货价是指数点位（三万多），
+        中间层值在"ETF 价"空间里（约七百多），实时 EST 大了 100 倍。
 
-        **不换算的后果**：直接把期货价当中间层值用，实时 EST 会大 100 倍
-        （实测 487.68 而非 4.59）。因为期货价是指数点位（三万多），
-        而中间层值在 ``cal_m`` 空间里（约七百多）。
+        **第二次坑（P0.6 实测）**：式子写成了 ``ETF价 = 期货价 × cal_m / cal_futures``
+        —— 那是 ``cal_m = ETF / 指数``（**旧的归一化尺度**，0.008945）下的写法。
+        P0.5 把中间层校准值按生产口径改成 ``指数 / 净值``（QQQ = 41.111）之后，
+        同一个式子给出 ``30255 × 41.11 / 1.007 = 123 万``，比应有的
+        ``730`` 大 **1660 倍**，实时 EST 显示成 3414 而不是 2.05。
+
+        教训：`cal_m` 的**方向**变了（分子分母互换），所有用到它的换算都要跟着翻。
+        这类"某个比值到底是谁除谁"的问题，最稳的写法是把中间量显式算出来
+        （先算出指数点位、再换成 ETF 价），而不是合成一个会随定义翻转的式子。
+
+        ## 一道量级保险
+
+        换算完还要**与中间层已知的价格对一下**（ETF 实时快照价 / 最新收盘价）。
+        偏离超过 :data:`MIDDLE_VALUE_TOLERANCE` 就返回 ``None`` ——
+        宁可让实时 EST 回落到中间层快照（旧行为，值是对的），
+        也不要把一个大了三个数量级的数送进估值。
+        ``nav_matches_price`` 那把"净值 vs 价格"的尺子在这里也能用：
+        中间层值与它的价格本来就是同一量级。
 
         没有校准值、没有期货价时返回 ``None``，调用方回落到中间层快照。
         """
@@ -454,14 +562,25 @@ class FuturesCalibrator:
             price = float(getattr(future_quote, "price", None))
         except (TypeError, ValueError):
             return None
-        if not factor:
-            return None
 
         # 中间层的校准值（cal_m），用来把"指数点位"换到中间层空间
         middle_calibration = self._proxy_calibration(index_symbol)
         if not middle_calibration:
             return None
-        return price * float(middle_calibration) / float(factor)
+
+        index_price = price / float(factor)                     # 期货 -> 指数点位
+        value = index_price / float(middle_calibration)         # 指数 -> ETF 价
+
+        proxy = self.proxy_symbol_of(index_symbol)
+        reference = self._proxy_price(proxy) if proxy else None
+        try:
+            reference = float(reference) if reference not in (None, "") else None
+        except (TypeError, ValueError):
+            reference = None
+        if reference and abs(value / reference - 1.0) > MIDDLE_VALUE_TOLERANCE:
+            # 量级不对就别用 —— 详见上面"第二次坑"
+            return None
+        return value
 
     def _proxy_calibration(self, index_symbol: str) -> Any:
         """中间层 ETF 的校准值（``cal_m``）。

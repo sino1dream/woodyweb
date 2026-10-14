@@ -30,6 +30,7 @@ from source.futuresquotes import (
     parse_futures_payload,
     parse_futures_text,
 )
+from core.stocksymbol import TIME_ZONE_SHANGHAI
 
 
 #: 真实的 ``hq_str_hf_NQ`` 响应（2026-10-07 实测）。
@@ -86,11 +87,29 @@ class FuturesParseTest(unittest.TestCase):
         self.assertEqual(quote.price, "31365.390")
         self.assertEqual(quote.high, "31521.000")
         self.assertEqual(quote.low, "31143.000")
-        self.assertEqual(quote.time, "23:44:39")
+        # 时间**不是**新浪原值：PHP 的 _onSinaFuture 会 _convertDateTimeToUS，
+        # 即先按上海时间解读、再换到本符号时区（见下一条用例）。
+        self.assertEqual(quote.time, "11:44:39")
         self.assertEqual(quote.prev_price, "31483.250")
         self.assertEqual(quote.open, "31510.000")
         self.assertEqual(quote.date, "2026-10-07")
         self.assertEqual(quote.name, "纳斯达克100指数期货")
+
+    def test_time_is_converted_out_of_shanghai(self):
+        """新浪给的``23:44:39``是上海时间，必须换到纽约（``11:44:39``）。
+
+        曾经漏了这一步：期货存的是上海时刻、指数存的是纽约时刻，
+        ``CheckAdjustFactorTime()`` 于是**永远不可能对齐**（还常常差一天），
+        期货校准值一条都写不进去，实时 EST 只能回落中间层快照。
+        """
+        quote = parse_futures_payload("hf_NQ", LIVE_NQ)
+        self.assertEqual(quote.date, "2026-10-07")
+        self.assertEqual(quote.time, "11:44:39")
+        # 跨日那一侧：上海 10-15 凌晨 -> 纽约还是 10-14
+        late = LIVE_NQ.replace("23:44:39", "01:04:19").replace("2026-10-07", "2026-10-15")
+        overnight = parse_futures_payload("hf_NQ", late)
+        self.assertEqual(overnight.date, "2026-10-14")
+        self.assertEqual(overnight.time, "13:04:19")
 
     def test_symbol_is_used_as_the_sina_symbol(self):
         quote = parse_futures_payload("hf_NQ", LIVE_NQ)
@@ -107,7 +126,8 @@ class FuturesParseTest(unittest.TestCase):
     def test_fetched_datetime(self):
         quote = parse_futures_payload("hf_NQ", LIVE_NQ)
         moment = quote.fetched_datetime()
-        self.assertEqual(moment, datetime.datetime(2026, 10, 7, 23, 44, 39))
+        # 已换算到纽约时区（见 test_time_is_converted_out_of_shanghai）
+        self.assertEqual(moment, datetime.datetime(2026, 10, 7, 11, 44, 39))
 
     def test_fetched_datetime_missing_parts(self):
         self.assertIsNone(FuturesQuote("hf_NQ", "hf_NQ").fetched_datetime())
@@ -168,29 +188,91 @@ class FuturesClientTest(unittest.TestCase):
 
 
 class CheckAdjustTimeTest(unittest.TestCase):
-    """``CheckAdjustFactorTime()``：日期与 HH:MM 都相同才允许校准。"""
+    """``CheckAdjustFactorTime()``：日期与 HH:MM 都相同才允许校准。
+
+    PHP 里还有第三个条件 —— ``IsExtendedMarket()``：**只在常规时段
+    9:30-16:00 校准**。用例里的时刻都取盘中（``11:44``），
+    盘前盘后的拒绝由 :class:`SessionGateTest` 单独盯。
+    """
 
     def test_aligned(self):
         self.assertTrue(check_adjust_time(
-            "2026-10-07", "23:44:39", "2026-10-07", "23:44:00"))
+            "2026-10-07", "11:44:39", "2026-10-07", "11:44:00"))
 
     def test_seconds_are_ignored(self):
         """PHP 用 ``GetHM()`` 截到分，秒级差异不算不一致。"""
         self.assertTrue(check_adjust_time(
-            "2026-10-07", "23:44:01", "2026-10-07", "23:44:59"))
+            "2026-10-07", "11:44:01", "2026-10-07", "11:44:59"))
 
     def test_different_date_rejected(self):
         self.assertFalse(check_adjust_time(
-            "2026-10-07", "23:44:39", "2026-10-06", "23:44:39"))
+            "2026-10-07", "11:44:39", "2026-10-06", "11:44:39"))
 
     def test_different_hour_minute_rejected(self):
         self.assertFalse(check_adjust_time(
-            "2026-10-07", "23:44:39", "2026-10-07", "23:45:39"))
+            "2026-10-07", "11:44:39", "2026-10-07", "11:45:39"))
 
     def test_missing_values_rejected(self):
-        self.assertFalse(check_adjust_time(None, "23:44:39", "2026-10-07", "23:44:39"))
-        self.assertFalse(check_adjust_time("2026-10-07", None, "2026-10-07", "23:44:39"))
-        self.assertFalse(check_adjust_time("2026-10-07", "23:44:39", "2026-10-07", None))
+        self.assertFalse(check_adjust_time(None, "11:44:39", "2026-10-07", "11:44:39"))
+        self.assertFalse(check_adjust_time("2026-10-07", None, "2026-10-07", "11:44:39"))
+        self.assertFalse(check_adjust_time("2026-10-07", "11:44:39", "2026-10-07", None))
+
+
+class SessionGateTest(unittest.TestCase):
+    """``IsExtendedMarket()``：盘前盘后不允许校准。
+
+    PHP ``php/stock/stockref.php``：
+
+    ```php
+    $iVal = $this->GetHourMinute();
+    if ($iVal < 930 || $iVal > 1600)    return true;   // 延长时段
+    ```
+
+    为什么必须有这条：``期货价 / 指数`` 只有在两个市场**同时开着常规盘**的
+    那一瞬间才是干净的比值。盘前的期货价含隔夜跳空、指数却还停在昨收，
+    算出来的比值会把跳空误当成基差。
+    """
+
+    def test_regular_session_allowed(self):
+        self.assertTrue(check_adjust_time(
+            "2026-10-14", "13:06:53", "2026-10-14", "13:06:00"))
+
+    def test_pre_market_rejected(self):
+        """纽约 03:42（盘前）：演示库里 hf_NQ 快照正是这个时刻。"""
+        self.assertFalse(check_adjust_time(
+            "2026-10-14", "03:42:07", "2026-10-14", "03:42:07"))
+
+    def test_after_close_rejected(self):
+        """纽约 17:16（收盘后）：^NDX 快照常常停在这里。"""
+        self.assertFalse(check_adjust_time(
+            "2026-10-13", "17:16:00", "2026-10-13", "17:16:00"))
+
+    def test_boundaries_are_inclusive(self):
+        self.assertTrue(check_adjust_time(
+            "2026-10-14", "09:30:00", "2026-10-14", "09:30:59"))
+        self.assertTrue(check_adjust_time(
+            "2026-10-14", "16:00:00", "2026-10-14", "16:00:59"))
+
+
+class TimeZoneAlignmentTest(unittest.TestCase):
+    """时区不同时先换算到指数的时区再比（PHP 的 ``ConvertTick``）。"""
+
+    def test_same_time_zone_compares_directly(self):
+        self.assertTrue(check_adjust_time(
+            "2026-10-14", "13:06:53", "2026-10-14", "13:06:00",
+            "America/New_York", "America/New_York"))
+
+    def test_shanghai_futures_align_after_conversion(self):
+        """期货那侧还是上海时间时，换算过来能对上（先按上海解读再换纽约）。"""
+        # 上海 2026-10-15 01:06 -> 纽约 2026-10-14 13:06
+        self.assertTrue(check_adjust_time(
+            "2026-10-15", "01:06:53", "2026-10-14", "13:06:00",
+            TIME_ZONE_SHANGHAI, "America/New_York"))
+
+    def test_without_conversion_the_same_pair_misses(self):
+        """不给时区参数就当同时区比 —— 差一天，必然不等。"""
+        self.assertFalse(check_adjust_time(
+            "2026-10-15", "01:06:53", "2026-10-14", "13:06:00"))
 
 
 class FakeCursor:
@@ -348,8 +430,8 @@ class FuturesCalibratorTest(unittest.TestCase):
 
     def test_calibrate_writes_on_alignment(self):
         calibrator = self._calibrator()
-        future = FuturesQuote("hf_NQ", "hf_NQ", price="200.0", date="2026-10-07", time="23:44:00")
-        index = FuturesQuote("^NDX", "^NDX", price="100.0", date="2026-10-07", time="23:44:30")
+        future = FuturesQuote("hf_NQ", "hf_NQ", price="200.0", date="2026-10-07", time="11:44:00")
+        index = FuturesQuote("^NDX", "^NDX", price="100.0", date="2026-10-07", time="11:44:30")
         factor = calibrator.calibrate("^NDX", future, index, 1.0, apply=True)
 
         self.assertAlmostEqual(factor, 2.0, places=9)
@@ -361,9 +443,9 @@ class FuturesCalibratorTest(unittest.TestCase):
     def test_calibrate_averages_on_second_write(self):
         """同一天第二次校准取**平均**（对应 PHP ``WriteDailyAverage()``）。"""
         calibrator = self._calibrator()
-        first = FuturesQuote("hf_NQ", "hf_NQ", price="200.0", date="2026-10-07", time="23:44:00")
-        second = FuturesQuote("hf_NQ", "hf_NQ", price="400.0", date="2026-10-07", time="23:44:00")
-        index = FuturesQuote("^NDX", "^NDX", price="100.0", date="2026-10-07", time="23:44:00")
+        first = FuturesQuote("hf_NQ", "hf_NQ", price="200.0", date="2026-10-07", time="11:44:00")
+        second = FuturesQuote("hf_NQ", "hf_NQ", price="400.0", date="2026-10-07", time="11:44:00")
+        index = FuturesQuote("^NDX", "^NDX", price="100.0", date="2026-10-07", time="11:44:00")
 
         calibrator.calibrate("^NDX", first, index, 1.0, apply=True)
         calibrator.calibrate("^NDX", second, index, 1.0, apply=True)
@@ -376,7 +458,7 @@ class FuturesCalibratorTest(unittest.TestCase):
     def test_calibrate_from_proxy_uses_middle_etf(self):
         """用中间层 ETF 反推指数 —— 不需要与指数时刻对齐。"""
         calibrator = self._calibrator()
-        future = FuturesQuote("hf_NQ", "hf_NQ", price="31365.0", date="2026-10-07", time="23:44:00")
+        future = FuturesQuote("hf_NQ", "hf_NQ", price="31365.0", date="2026-10-07", time="11:44:00")
         factor = calibrator.calibrate_from_proxy("^NDX", future, apply=False)
 
         implied = 756.7999 / 0.008945
@@ -405,28 +487,60 @@ class FuturesCalibratorTest(unittest.TestCase):
 class RealtimeSourceValueTest(unittest.TestCase):
     """``realtime_source_value()`` 的**量纲换算**。
 
-    期货校准值 ``cal_futures = 期货 / 指数``，中间层校准值 ``cal_m = ETF / 指数``，
-    两者分母都是指数，所以：
+    两步走，每步都用**当前的**校准口径定义：
 
     ```text
-    ETF价 = 期货价 × cal_m / cal_futures
+    cal_futures = 期货 / 指数          （期货校准值）
+    cal_m       = 指数 / ETF净值        （生产口径的中间层校准值，QQQ = 41.111）
+
+    指数点位 = 期货价 / cal_futures
+    ETF价    = 指数点位 / cal_m
+    ⇒  ETF价 = 期货价 / (cal_futures × cal_m)
     ```
 
-    **不换算的后果**：直接把期货价当中间层值用，实时 EST 会大 100 倍
-    （实测 487.68 而非 4.59）—— 因为期货价是指数点位（三万多），
-    而中间层值在 ``cal_m`` 空间里（七百多）。这个 bug 在本轮真的踩到了。
+    ## 这条式子翻过一次方向（P0.6 实测踩到）
+
+    P0.5 之前 ``cal_m`` 是"ETF / 指数"的归一化尺度（0.008945），那时的写法是
+    ``ETF价 = 期货价 × cal_m / cal_futures``。P0.5 把中间层校准值按生产口径
+    改成"指数 / 净值"（QQQ = 41.111）之后，**分子分母互换了**，同一个式子给出
+    ``30255 × 41.11 / 1.007 = 123 万`` —— 比应有的 730 大 **1660 倍**，
+    实时 EST 显示成 3414 而不是 2.05。
+
+    教训：`cal_m` 的方向一变，所有用到它的换算都要跟着翻。所以现在写成
+    **先算指数点位、再换成 ETF 价**两步，而不是合成一个会随定义翻转的式子。
     """
 
-    #: 2026-10-07 实测值
+    #: 一组自洽的数：^NDX 30807.93 / QQQ净值 749.3773 = 41.111（= cal_m，生产口径）
+    INDEX_PRICE = 30807.93
     FUTURE_PRICE = 31369.43
-    CAL_FUTURES = 0.370904
-    CAL_MIDDLE = 0.008945
-    QQQ_QUOTE = 756.7999
+    QQQ_NAV = 749.3773
+    CAL_FUTURES = FUTURE_PRICE / INDEX_PRICE      # 期货 / 指数
+    CAL_MIDDLE = INDEX_PRICE / QQQ_NAV            # 指数 / 净值
+    QQQ_QUOTE = 749.3773                          # 中间层快照价
 
     class Source:
+        """最小数据源：``^NDX``(6) 有期货校准值、``QQQ``(4) 有中间层校准值。
+
+        三个常量从**外层测试类**取 —— 嵌套类的类体**看不到**外层类的命名空间，
+        直接写 ``CAL_FUTURES`` 只能拿到自己类体里那份，曾经这里就残留了一份
+        旧口径的副本（0.370904 / 0.008945），于是"常量改了、测试用的还是旧的"，
+        表现得像是换算写错了。现在统一走 ``RealtimeSourceValueTest`` 全名。
+
+        子类想改口径（比如把 ``cal_m`` 写反）覆盖同名类属性即可，``None`` 表示用默认。
+        """
+
+        CAL_FUTURES = None
+        CAL_MIDDLE = None
+        QQQ_QUOTE = None
+
         def __init__(self):
+            outer = RealtimeSourceValueTest
             self._ids = {"^NDX": 6, "hf_NQ": 13, "QQQ": 4}
-            self._calibrations = {6: self.CAL_FUTURES, 4: self.CAL_MIDDLE}
+            self._calibrations = {
+                6: self.CAL_FUTURES or outer.CAL_FUTURES,
+                4: self.CAL_MIDDLE or outer.CAL_MIDDLE,
+            }
+            self._quote = self.QQQ_QUOTE or outer.QQQ_QUOTE
             self.connection = FakeConnection(stock=self._ids)
 
         def get_stock_id(self, symbol):
@@ -440,15 +554,11 @@ class RealtimeSourceValueTest(unittest.TestCase):
 
         def get_stored_quote(self, symbol):
             if symbol == "QQQ":
-                return FuturesQuote("QQQ", "gb_qqq", price=str(self.QQQ_QUOTE), date="2026-10-07")
+                return FuturesQuote("QQQ", "gb_qqq", price=str(self._quote), date="2026-10-07")
             return None
 
         def get_latest_history_close(self, stock_id):
             return None
-
-        CAL_FUTURES = 0.370904
-        CAL_MIDDLE = 0.008945
-        QQQ_QUOTE = 756.7999
 
     def _calibrator(self):
         source = self.Source()
@@ -471,9 +581,37 @@ class RealtimeSourceValueTest(unittest.TestCase):
     def test_matches_formula(self):
         calibrator = self._calibrator()
         quote = FuturesQuote("hf_NQ", "hf_NQ", price=str(self.FUTURE_PRICE))
-        expected = self.FUTURE_PRICE * self.CAL_MIDDLE / self.CAL_FUTURES
+        expected = self.FUTURE_PRICE / (self.CAL_FUTURES * self.CAL_MIDDLE)
         self.assertAlmostEqual(
             calibrator.realtime_source_value("^NDX", quote), expected, places=9)
+        # 两步拆解：期货 -> 指数 -> ETF
+        self.assertAlmostEqual(self.FUTURE_PRICE / self.CAL_FUTURES, self.INDEX_PRICE, places=6)
+        self.assertAlmostEqual(self.INDEX_PRICE / self.CAL_MIDDLE, self.QQQ_NAV, places=6)
+
+    def test_magnitude_guard_rejects_flipped_convention(self):
+        """量级对不上时宁可返回 None（让调用方回落中间层快照）。
+
+        盯的就是上面那次 1660 倍事故：把 ``× cal_m`` 写成 ``/ cal_m``
+        （或反过来）会得到三个数量级偏移的值，不该送进估值。
+        """
+        class FlippedSource(self.Source):
+            CAL_MIDDLE = 1.0 / RealtimeSourceValueTest.CAL_MIDDLE   # 方向写反
+
+        source = FlippedSource()
+        calibrator = FuturesCalibrator(source, connection=source.connection)
+        quote = FuturesQuote("hf_NQ", "hf_NQ", price=str(self.FUTURE_PRICE))
+        self.assertIsNone(calibrator.realtime_source_value("^NDX", quote))
+
+    def test_without_reference_price_no_guard_but_value_returned(self):
+        """拿不到中间层参考价时没有尺子 —— 放行，不把"查不到"变成"算不出来"。"""
+        class NoQuote(self.Source):
+            def get_stored_quote(self, symbol):
+                return None
+
+        source = NoQuote()
+        calibrator = FuturesCalibrator(source, connection=source.connection)
+        quote = FuturesQuote("hf_NQ", "hf_NQ", price=str(self.FUTURE_PRICE))
+        self.assertIsNotNone(calibrator.realtime_source_value("^NDX", quote))
 
     def test_returns_none_without_futures_calibration(self):
         class NoCalibration(self.Source):

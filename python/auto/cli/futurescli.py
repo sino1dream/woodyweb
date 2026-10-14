@@ -39,7 +39,7 @@ for _path in (AUTO_DIR, PYTHON_DIR):
 from calc.fundestcalc import build_estimate_calculator  # noqa: E402
 from calc.futurescalib import FALLBACK_FUTURES, build_futures_calibrator, check_adjust_time  # noqa: E402
 from source.futuresquotes import FUTURES_NAMES, SinaFuturesClient  # noqa: E402
-from sql.historytable import CalibrationSql  # noqa: E402
+from sql.historytable import CalibrationSql, format_hm  # noqa: E402
 from core.stockdata import MySqlFundDataSource  # noqa: E402
 
 
@@ -91,6 +91,57 @@ def _store_futures_quote(source, quote) -> bool:
     return True
 
 
+def _refresh_index_snapshot(source, index_symbol: str) -> bool:
+    """把**指数**的实时快照刷新到"此刻"，再让期货去跟它比。
+
+    PHP 里 ``FundPairReference`` 构造时，期货与指数两个引用对象是**同一批**
+    抓的（``PrefetchSinaStockData`` 一次抓齐），所以它们的时刻天然相同 ——
+    ``CheckAdjustFactorTime()`` 才有机会通过。
+
+    本命令原来的做法是拿"刚抓的期货"跟"库里昨天的指数快照"比，
+    结构性地不可能对齐。所以这里先把指数刷一遍，
+    两个行情就都是"这一分钟"的了。
+    """
+    from source.sinaquotes import SinaQuoteClient
+
+    stock_id = source.get_stock_id(index_symbol)
+    if stock_id is None:
+        return False
+    from core.stocksymbol import StockSymbol
+    from ref.stockref import StockReference, sina_quote_file_name
+
+    sina_symbol = StockSymbol(index_symbol).get_sina_symbol()
+    client = SinaQuoteClient()
+    text = client.fetch([sina_symbol])
+    if not text:
+        return False
+    from source.sinaquotes import split_quote_lines
+
+    line = split_quote_lines(text).get(sina_symbol)
+    if not line:
+        return False
+    reference = StockReference(index_symbol, quote_loader=lambda _name: line)
+    reference.file_name = sina_quote_file_name(sina_symbol)
+    try:
+        reference.load_sina_data()
+    except Exception:
+        return False
+    if not reference.has_quote_data():
+        return False
+
+    import datetime as _dt
+
+    from sql.quotestore import RealtimeQuoteStore
+
+    RealtimeQuoteStore(getattr(source, "connection", None)).save(
+        stock_id, index_symbol, sina_symbol,
+        reference.get_price(), reference.get_prev_price(), reference.str_name,
+        reference.str_date, reference.str_time, "sina",
+        _dt.datetime.now().timestamp(),
+    )
+    return True
+
+
 def cmd_fetch(args) -> int:
     """抓期货 → 落快照 → 尝试校准。"""
     source = _source()
@@ -102,6 +153,13 @@ def cmd_fetch(args) -> int:
         print("没有可抓的期货符号（先跑 python -B dbtools\\_seed_futures_pair.py --apply）。")
         source.connection.close()
         return 0
+
+    # 先把指数快照刷到"此刻"：PHP 里期货与指数是同批抓的，时刻天然相同；
+    # 拿刚抓的期货去比昨天的指数快照，结构性地永远对不齐。
+    print("刷新指数快照（让两边的时刻可比）：")
+    for index_symbol in sorted(FALLBACK_FUTURES):
+        print("  %-8s %s" % (index_symbol, "已刷新" if _refresh_index_snapshot(source, index_symbol) else "刷新失败"))
+    print("")
 
     print("抓取期货：%s" % ", ".join(symbols))
     quotes = client.fetch(symbols)
@@ -138,14 +196,27 @@ def cmd_fetch(args) -> int:
         if index_quote is None:
             print("  %-8s 跳过（库里没有 %s 的行情快照）" % (index_symbol, index_symbol))
             continue
+        # CheckAdjustFactorTime 要按 PHP 的三个条件比：日期、时刻（HH:MM）、
+        # 以及**必须落在常规时段 9:30-16:00**（盘前盘后不准校准）。
+        # 时区不同的话还要先把期货那一刻换算到指数的时区再比。
+        try:
+            from core.stocksymbol import StockSymbol
+        except ImportError:
+            StockSymbol = None
+        future_tz = StockSymbol(future_symbol).get_time_zone() if StockSymbol else None
+        index_tz = StockSymbol(index_symbol).get_time_zone() if StockSymbol else None
         aligned = check_adjust_time(
             quote.date, quote.time,
             getattr(index_quote, "date", None), getattr(index_quote, "time", None),
+            future_time_zone=future_tz, index_time_zone=index_tz,
         )
-        print("  %-8s 期货 %s %s vs 指数 %s %s -> %s" % (
+        reason = "" if aligned else _misalign_reason(
+            quote.date, quote.time, index_quote, future_tz, index_tz)
+        print("  %-8s 期货 %s %s vs 指数 %s %s -> %s%s" % (
             index_symbol, quote.date, quote.time,
             getattr(index_quote, "date", None), getattr(index_quote, "time", None),
-            "时刻对齐，可校准" if aligned else "时刻不一致，跳过"))
+            "时刻对齐，可校准" if aligned else "不可校准",
+            "（%s）" % reason if reason else ""))
         if aligned and args.apply:
             factor = calibrator.calibrate(index_symbol, quote, index_quote, None, apply=False)
             print("      校准值（未写库，供核对）= %s" % factor)
@@ -181,6 +252,34 @@ def _stored_quote(source, symbol):
     quote.date = row["quote_date"]
     quote.time = row["quote_time"]
     return quote
+
+
+def _misalign_reason(future_date, future_time, index_quote, future_tz, index_tz) -> str:
+    """说清对齐失败是哪一条不满足 —— 否则看到"不可校准"完全无从下手。
+
+    三条分别对应 PHP ``CheckAdjustFactorTime()`` 里的：常规时段闸门、
+    日期不等、时刻不等。
+    """
+    from calc.futurescalib import (REGULAR_SESSION_CLOSE_HM, REGULAR_SESSION_OPEN_HM,
+                                   convert_quote_datetime, hour_minute)
+
+    if index_quote is None:
+        return "库里没有指数行情"
+    fd, ft = str(future_date), future_time
+    if future_tz and index_tz and future_tz != index_tz:
+        converted = convert_quote_datetime(future_date, future_time, future_tz, index_tz)
+        if converted is not None:
+            fd, ft = converted
+    if fd != str(getattr(index_quote, "date", None)):
+        return "日期不等（期货 %s vs 指数 %s）" % (fd, getattr(index_quote, "date", None))
+    hm = format_hm(ft)
+    index_hm = format_hm(getattr(index_quote, "time", None))
+    if hm != index_hm:
+        return "时刻不等（%s vs %s）" % (hm, index_hm)
+    hhmm = hour_minute(hm or "")
+    if hhmm < REGULAR_SESSION_OPEN_HM or hhmm > REGULAR_SESSION_CLOSE_HM:
+        return "不在常规时段 9:30-16:00（现在 %s，PHP IsExtendedMarket 会拒绝）" % hm
+    return ""
 
 
 def cmd_show(args) -> int:

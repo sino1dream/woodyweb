@@ -171,7 +171,11 @@ class NoLeverageRefsTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         html = _squeezed(response.get_data(as_text=True))
         self.assertNotIn("fundlist-table", html)
-        self.assertNotIn("对冲值", html)
+        # 只认「基金指数对照表」自己那段（标题 + 注脚），不要全文搜「对冲值」——
+        # 校准记录表（fund_detail.html 的 calibration 段）也有同名的列和注脚，
+        # 加了那一列之后这条断言就开始误报：表其实没渲染，是另一张表撞了名字。
+        self.assertNotIn("基金指数对照表", html)
+        self.assertNotIn("对冲一份本基金要配多少份", html)
 
 
 if __name__ == "__main__":

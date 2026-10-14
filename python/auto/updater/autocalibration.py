@@ -146,6 +146,14 @@ class AutoCalibrator:
             outcome.skipped = "符号不在 stock 表里"
             return outcome
 
+        # **层次守卫**：本方法只服务**中间层**，基金走 :meth:`calibrate_fund`。
+        # 混进来会算出一条看着像、实则错一个折溢价的值（实测见下）。
+        if self._is_fund_layer_symbol(middle_symbol):
+            outcome.skipped = (
+                "这是基金，不是中间层 —— 基金层的校准值走 calibrate_fund"
+                "（本方法拿价格当净值，QDII 基金的折溢价能把校准值带偏十几个百分点）")
+            return outcome
+
         net_value, net_date = self._latest_net_value(stock_id)
         if net_value is None or net_date is None:
             outcome.skipped = "没有单位净值"
@@ -279,6 +287,43 @@ class AutoCalibrator:
                     return outcome
             outcome.written = self._write(stock_id, net_date, factor)
         return outcome
+
+    def _is_fund_layer_symbol(self, symbol: Any) -> bool:
+        """``symbol`` 是不是**基金层**（有 QDII 估值标的的基金）。
+
+        ## 为什么中间层路径要挡住基金
+
+        两个层次的分母不是同一个东西：
+
+        ==================  ==========================================
+        层次                分母
+        ==================  ==========================================
+        中间层（本类）      ``净值的替身`` = **当日收盘价**（ETF 净值≈价格）
+        基金层              ``netvaluehistory`` 里的**单位净值**
+        ==================  ==========================================
+
+        美股 ETF 的净值与价格只差千分位，所以"拿价格当净值"在中间层是成立的
+        （P0.5 定稿的口径②）。但 **QDII 基金的场内价与净值差着折溢价** ——
+        实测 SH513100：净值 2.0563、场内价 2.399，差 **16.7%**。
+
+        一旦基金漏进本方法，校准值就按折溢价整体偏掉，而估值又恰好会因此
+        "等于场内价"，看着非常合理：实测那条错记录让 EST 从 2.056 变成 2.441。
+        PHP 那边不会有这个问题 —— ``FundReference::LoadSinaFundData()`` 里
+        ``$this->strPrice = $ar[1]; // net value``，基金的"价"本身就是净值。
+
+        判据用 ``qdii_est_symbol_map()`` 的**键**（基金）而不是值（标的）：
+        实测两者没有交集（33 个基金 / 14 个标的），不会误伤中间层。
+        """
+        if not symbol:
+            return False
+        try:
+            from calc.fundcalc import qdii_est_symbol_map
+        except ImportError:
+            return False
+        try:
+            return symbol in qdii_est_symbol_map()
+        except Exception:
+            return False
 
     def _scale_converted(self, old_calibration: Any, pair_old: Any, pair_value: Any,
                          net_value: Any, cny: Any, outcome: Any,
@@ -460,6 +505,180 @@ class AutoCalibrator:
             outcome.skipped = "没有中间层标的"
             return outcome
         return self.calibrate_middle(middle, apply=apply)
+
+    def calibrate_fund(self, fund_symbol: str, apply: bool = True) -> CalibrationOutcome:
+        """给一只**基金自己**算校准值（``cal_f``）。
+
+        对应 ``_QdiiReference::AdjustFactor()``（``php/stock/qdiiref.php:176``）——
+        与 :meth:`calibrate_middle` 是**两个不同层次**：
+
+        ==================  ============================  =============================
+        层次                对象例子                      校准值含义
+        ==================  ============================  =============================
+        中间层（P0.5）      ``QQQ``                       ``指数 / ETF净值``（= 41.11）
+        基金层（本方法）     ``SZ161130``                  ``指数 × 汇率 / 基金净值``（= 45028）
+        ==================  ============================  =============================
+
+        ```php
+        $strDate = $this->GetDate();
+        if ($strCNY = $cny_ref->GetClose($strDate))
+        {
+            if (($strEst = $this->_getEstNetValue($est_ref, $strDate)) === false)
+                if (($strEst = $est_ref->GetClose($strDate)) === false)   return false;
+            $this->fFactor = QdiiGetCalibration($strEst, $strCNY, $this->GetPrice());
+            $this->InsertFundCalibration();
+        }
+        ```
+
+        ## ``est`` 要用**指数**，不是 ETF
+
+        ``QdiiGetCalibration(est, cny, nav) = est × cny / nav``，其中 ``est`` 取
+        :func:`~calc.fundcalc.qdii_est_symbol` —— 即 PHP ``QdiiGetEstSymbol()``
+        的**原始值**。它给的是**指数**（``SZ161130 -> ^NDX``），不是"杠杆替代"
+        后的 ETF（``QQQ``）—— 两者差约 41 倍，用错就是量级事故。
+
+        实测对照（演示库已有的三条校准记录，逐位吻合）：
+
+        ```text
+        SZ161125  ^GSPC 7811.54  × 6.7035 / 3.1679 = 16529.7700   库里 16529.770002
+        SZ161130  ^NDX 30883.148 × 6.7035 / 4.5976 = 45028.9679   库里 45028.967857
+        SH513100  ^NDX 30883.148 × 6.7035 / 2.0622 = 100390.4484  库里 100390.448365
+        ```
+
+        ## 锚点日期为什么取"标的的最新行情日"，而不是基金净值日
+
+        PHP 的三个量都锚在**基金净值那一天**。但 QDII 净值的发布节奏与海外行情
+        并不同步：演示库里基金净值已到 10-12，而指数行情（``stockhistory``）
+        止于 10-09 —— 拿基金净值日当锚点，三条基金**一条都算不出来**。
+
+        现有那三条记录本身就是按"标的最新行情日 = 10-09"建的（配 10-08 的净值
+        与 10-09 的汇率），所以这里沿用同一口径：
+
+        ```text
+        锚点 = est 标的最新行情日期（净值日与行情日取较大者）
+        净值 = 该锚点上**已发布**的最新基金净值（≤ 锚点）
+        汇率 = 锚点当天（没有就退到之前最近一条）
+        ```
+
+        这样三量落在同一参照日上，且能逐位复现库里的既有值（见上表）——
+        **复现得上是这条路径最硬的证据**。写入日期也用锚点日期，
+        :attr:`CalibrationOutcome.date` 因此可能早于基金最新净值日。
+        """
+        outcome = CalibrationOutcome(symbol=fund_symbol)
+
+        stock_id = self.source.get_stock_id(fund_symbol)
+        if stock_id is None:
+            outcome.skipped = "符号不在 stock 表里"
+            return outcome
+
+        try:
+            from calc.fundcalc import qdii_est_symbol
+        except ImportError:
+            outcome.skipped = "取不到 qdii_est_symbol 映射"
+            return outcome
+        est_symbol = qdii_est_symbol(fund_symbol)
+        if not est_symbol:
+            outcome.skipped = "没有 QDII 估值标的（qdii_est_symbol）"
+            return outcome
+        outcome.pair_symbol = est_symbol
+
+        est_id = self.source.get_stock_id(est_symbol)
+        anchor = self._est_anchor_date(est_symbol, est_id)
+        if anchor is None:
+            outcome.skipped = "%s 没有行情/净值，定不了锚点" % est_symbol
+            return outcome
+
+        calibration_date = self._calibration_date(stock_id)
+        if calibration_date is not None and str(calibration_date) == str(anchor):
+            outcome.skipped = "锚点日 %s 已校准过" % anchor
+            return outcome
+
+        nav_value, nav_date = self._nav_on_or_before(stock_id, anchor)
+        if nav_value is None:
+            outcome.skipped = "锚点日 %s 及之前没有单位净值" % anchor
+            return outcome
+        outcome.date = anchor
+        outcome.net_value = nav_value
+
+        est_value = self._est_value_on(est_symbol, est_id, anchor)
+        if est_value is None:
+            outcome.skipped = "%s 在 %s 没有行情/净值" % (est_symbol, anchor)
+            return outcome
+        outcome.pair_value = est_value
+
+        cny = self._cny(anchor)
+        outcome.cny = cny
+
+        factor = self.calc_factor(est_value, nav_value, cny)
+        if factor is None:
+            outcome.skipped = "校准值算不出来（净值或标的价无效）"
+            return outcome
+        outcome.calibration = factor
+        outcome.formula = "est*cny/net"
+        if nav_date is not None and str(nav_date) != str(anchor):
+            outcome.warnings.append(
+                "净值取的是 %s（锚点日 %s 之前最近一条已发布净值）"
+                % (nav_date, anchor))
+        outcome.written = self._write(stock_id, anchor, factor) if apply else False
+        return outcome
+
+    def _est_anchor_date(self, est_symbol: str, est_id: Any) -> Any:
+        """``est`` 标的最新数据日期（锚点），见 :meth:`calibrate_fund`。
+
+        取 ``netvaluehistory`` 与 ``stockhistory`` 两个最新日期里较大的那个：
+        ``^NDX`` 这类指数只有行情行，``AGG`` 这类 ETF 两条都有。
+        **不看 ``realtimequote``** —— 快照是"此刻"，锚点必须是"已收盘的那天"。
+        """
+        candidates = []
+        for reader_name in ("get_latest_net_value_date", "get_latest_history_date"):
+            reader = getattr(self.source, reader_name, None)
+            if reader is None or est_id is None:
+                continue
+            try:
+                value = reader(est_id)
+            except Exception:
+                value = None
+            if value:
+                candidates.append(str(value))
+        return max(candidates) if candidates else None
+
+    def _nav_on_or_before(self, stock_id: Any, date: Any):
+        """``date`` 及之前**已发布**的单位净值，返回 ``(净值, 日期)``。
+
+        QDII 净值本来就比海外行情晚一拍（QDII 当天净值要等美股收盘后才出），
+        所以"锚点日的净值"在概念上就是"锚点之前最近一条"。逐日回退最多 10 天，
+        避免无界查询。
+        """
+        reader = getattr(self.source, "get_netvalue_close", None)
+        if reader is None:
+            return None, None
+        for day in _date_range_end(date, 10):
+            try:
+                value = reader(stock_id, day)
+            except Exception:
+                value = None
+            if value not in (None, ""):
+                return value, day
+        return None, None
+
+    def _est_value_on(self, est_symbol: str, est_id: Any, date: Any) -> Any:
+        """``est`` 标的在锚点日的值：净值 → 行情价 → 快照（三条都卡日期）。
+
+        **不用** :meth:`_pair_value` 那条路 —— 它第 4 级会去新浪取"此刻"的点位，
+        那是给中间层"当天已收盘"的场景兜底的；用在基金锚点上等于拿今天的指数
+        配昨天的净值（实测把 SH513100 的 cal 算成 97692 而非 100390）。
+        """
+        for reader_name in ("get_netvalue_close", "get_history_close"):
+            reader = getattr(self.source, reader_name, None)
+            if reader is None or est_id is None:
+                continue
+            try:
+                value = reader(est_id, date)
+            except Exception:
+                value = None
+            if value not in (None, ""):
+                return value
+        return self._stored_quote_on(est_symbol, date)
 
     # -- 算式 -------------------------------------------------------------
     def calc_factor(self, pair_value: Any, net_value: Any, cny: Any = None) -> Any:
@@ -839,6 +1058,27 @@ class AutoCalibrator:
 #: 派生净值与当日价格之间允许的偏离（ETF 净值与价格只差千分位；放宽到 ±25%
 #: 是为了容纳分红除息与"净值是收盘后、价格是盘中"的时间差）。
 NAV_PRICE_TOLERANCE = 0.25
+
+
+def _date_range_end(date: Any, days: int) -> list:
+    """``date`` 起逐日回退的日期列表（含 ``date`` 本身，共 ``days`` 天）。
+
+    用来找"某日及之前最近一条记录"。``date`` 可能是 ``datetime.date``
+    或字符串，统一按 ``date`` 处理。
+    """
+    import datetime
+
+    if isinstance(date, datetime.datetime):
+        base = date.date()
+    elif isinstance(date, datetime.date):
+        base = date
+    else:
+        try:
+            base = datetime.datetime.strptime(str(date)[:10], "%Y-%m-%d").date()
+        except ValueError:
+            return []
+    step = datetime.timedelta(days=1)
+    return [str(base - step * offset) for offset in range(days)]
 
 
 def nav_matches_price(nav: Any, price: Any) -> bool:

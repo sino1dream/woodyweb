@@ -11,8 +11,25 @@
     python -B auto\\quotecli.py SZ161130 SZ161125           # 抓取并落库
     python -B auto\\quotecli.py --group qdiilof --check      # 按分组批量抓
     python -B auto\\quotecli.py --all-qdii --check           # 清单里的全部符号
+    python -B auto\\quotecli.py --archive-snapshot ^NDX ^GSPC  # 把收盘快照归档进行情历史
 
-说明：
+## ``--archive-snapshot`` 是干什么的
+
+后台 daemon（``quoteupdatercli --daemon``）只把当天行情写进 ``realtimequote``
+**快照**（一行、覆盖式），从不写 ``stockhistory`` —— 后者得靠"收盘后跑一次
+quotecli"才能得到。但有两个前提常常不成立：
+
+1. 指数（``^NDX`` / ``^GSPC``）只能从新浪取**当前点位**，取不到历史序列，
+   所以除了某几次手工回填，它们的 ``stockhistory`` 一直是空的/旧的；
+2. 收盘后再跑 quotecli 时，某些市场已经开盘/数据已变，写进去的不是原来那天的收盘价。
+
+而快照里存着的正是**那一天的收盘价**（daemon 在市场收盘后抓的），把它搬进
+``stockhistory`` 才是"补历史"的正解。这一步是 P0.6 的前置：``cal_f``
+（``AdjustFactor``）要求"标的行情日 == 锚点日"，指数行情停在 10-09、
+基金净值已经到 10-12 时，30 只基金**一只都算不出校准值**。
+
+行为：按快照的 ``quote_date`` 写一行；同名 (stock_id, date) 已存在就跳过
+（幂等，重复跑无害）。
 
 * 只写 ``stockhistory`` / ``stockhistorydate`` / ``netvaluehistory``；
   不写校准值（那是 ``calibrationhistory``，由估值流程决定）。
@@ -64,6 +81,8 @@ def parse_args() -> argparse.Namespace:
                         help="取符号清单里的全部 QDII 符号（基金 + est + 汇率/期货）")
     parser.add_argument("--check", action="store_true", help="只抓取并打印，不写数据库")
     parser.add_argument("--timeout", type=float, default=10.0, help="HTTP 超时秒数")
+    parser.add_argument("--archive-snapshot", action="store_true",
+                        help="不抓网络：把库里的收盘快照（realtimequote）归档进 stockhistory")
     return parser.parse_args()
 
 
@@ -86,8 +105,66 @@ def collect_symbols(args: argparse.Namespace) -> list:
     return list(DEFAULT_SYMBOLS)
 
 
+def cmd_archive_snapshot(args: argparse.Namespace) -> int:
+    """把快照里的收盘价归档进 ``stockhistory``（见模块 docstring）。
+
+    只读 ``realtimequote``、只写 ``stockhistory`` / ``stockhistorydate``，
+    **不碰网络** —— 网络取数那一环 daemon 已经做过了。
+    """
+    symbols = collect_symbols(args)
+    if not symbols:
+        print("没有指定符号（--archive-snapshot 需要显式给出符号或用 --all-qdii）。")
+        return 1
+
+    config = mysql_config_from_env(load_mysql_env(os.environ))
+    import pymysql
+
+    connection = pymysql.connect(
+        host=config["host"], port=config["port"], user=config["user"],
+        password=config["password"], database=config["database"],
+        charset="utf8", cursorclass=pymysql.cursors.DictCursor,
+    )
+    source = MySqlFundDataSource(connection)
+    store = QuoteStore(connection)
+
+    print("%-10s %-12s %-14s %s" % ("符号", "快照日期", "收盘价", "结果"))
+    print("-" * 62)
+    written = 0
+    try:
+        for symbol in symbols:
+            stock_id = source.get_stock_id(symbol)
+            if stock_id is None:
+                print("%-10s %-12s %-14s %s" % (symbol, "-", "-", "不在 stock 表里"))
+                continue
+            quote = source.get_stored_quote(symbol)
+            if quote is None:
+                print("%-10s %-12s %-14s %s" % (symbol, "-", "-", "没有快照"))
+                continue
+            date = getattr(quote, "date", None)
+            price = getattr(quote, "price", None)
+            if not date or price in (None, ""):
+                print("%-10s %-12s %-14s %s" % (symbol, date or "-", price or "-", "快照没有日期或价格"))
+                continue
+            existing = source.get_history_close(stock_id, str(date))
+            if existing not in (None, ""):
+                print("%-10s %-12s %-14s %s" % (symbol, date, existing, "已有历史行，跳过"))
+                continue
+            store.write_history(stock_id, str(date), price)
+            store.write_stock_history_date(stock_id, str(date))
+            written += 1
+            print("%-10s %-12s %-14s %s" % (symbol, date, price, "已归档"))
+        connection.commit()
+    finally:
+        connection.close()
+    print("")
+    print("归档 %d 条。" % written)
+    return 0
+
+
 def main() -> int:
     args = parse_args()
+    if args.archive_snapshot:
+        return cmd_archive_snapshot(args)
     symbols = collect_symbols(args)
     client = SinaQuoteClient(timeout=args.timeout)
 
