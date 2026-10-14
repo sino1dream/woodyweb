@@ -10,12 +10,18 @@
     python -B auto\\quotecli.py SZ161130 SZ161125 --check     # 指定符号
     python -B auto\\quotecli.py SZ161130 SZ161125           # 抓取并落库
     python -B auto\\quotecli.py --group qdiilof --check      # 按分组批量抓
+    python -B auto\\quotecli.py --all-qdii --check           # 清单里的全部符号
 
 说明：
 
 * 只写 ``stockhistory`` / ``stockhistorydate`` / ``netvaluehistory``；
   不写校准值（那是 ``calibrationhistory``，由估值流程决定）。
 * ``--check`` 不打网络以外的地方，先看能不能取到数据再决定是否落库。
+* ``--all-qdii`` 取 ``core.symbolinventory.sina_quote_symbols()``
+  （102 只基金 + 22 个 est 中间层 = 124 个），与 P0.2 写 ``stock``
+  行同一个清单模块，不会漂移。**不含**期货（``hf_*``，走 futurescli）、
+  即期外汇与中间价（走 forexcli）—— ``get_sina_symbol()`` 对它们
+  会给出 ``gb_hf_*`` 这种没有入口用的形式。
 """
 
 from __future__ import annotations
@@ -54,6 +60,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="抓取新浪行情并落库")
     parser.add_argument("symbols", nargs="*", help="要更新的符号，缺省用内置示例")
     parser.add_argument("--group", help="按基金分组批量取符号（qdiilof / qdiietf）")
+    parser.add_argument("--all-qdii", action="store_true",
+                        help="取符号清单里的全部 QDII 符号（基金 + est + 汇率/期货）")
     parser.add_argument("--check", action="store_true", help="只抓取并打印，不写数据库")
     parser.add_argument("--timeout", type=float, default=10.0, help="HTTP 超时秒数")
     return parser.parse_args()
@@ -62,6 +70,14 @@ def parse_args() -> argparse.Namespace:
 def collect_symbols(args: argparse.Namespace) -> list:
     if args.symbols:
         return list(args.symbols)
+    if args.all_qdii:
+        # 与 P0.2 写 stock 行同一个清单（core/symbolinventory.py）。
+        # 用 ``sina_quote_symbols()`` 而不是 ``required_stock_symbols()``：
+        # 后者含期货/外汇，它们各有取数入口（futurescli / forexcli），
+        # 且 ``get_sina_symbol()`` 对 ``hf_*`` 会给出没人用的 ``gb_hf_*``。
+        from core.symbolinventory import sina_quote_symbols
+
+        return list(sina_quote_symbols())
     if args.group:
         definition = get_fund_group(args.group)
         if definition is None:

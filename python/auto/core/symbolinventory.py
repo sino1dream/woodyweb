@@ -116,3 +116,23 @@ def required_stock_symbols() -> List[str]:
         if symbol not in result:
             result.append(symbol)
     return result
+
+
+def sina_quote_symbols() -> List[str]:
+    """要走**新浪行情链路**的符号：基金 + est 中间层（124 个）。
+
+    故意不含三类，它们各有取数入口：
+
+    * **期货** ``hf_*`` —— ``futurescli`` / ``source/futuresquotes.py``
+      用裸 ``hf_`` 符号；而 ``get_sina_symbol()`` 对它们会给出
+      ``gb_hf_nq`` 这种形式（PHP 同样如此，``stocksymbol.php:913``
+      的 fall-through），没有入口用那个形式；
+    * **即期外汇** ``fx_*`` —— ``forexcli``（中国货币网 / 新浪 ``f_``）；
+    * **中间价** ``USCNY`` 等 —— 同样走 ``forexcli``，且写的是
+      ``netvaluehistory`` 而不是 ``stockhistory``。
+    """
+    result = []
+    for symbol in fund_symbols() + est_symbols():
+        if symbol not in result:
+            result.append(symbol)
+    return result

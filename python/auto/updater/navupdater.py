@@ -29,6 +29,8 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 from source import navsource
 
+from core.symbolinventory import est_symbols
+
 # 收盘后多久算净值已更新。对应 PHP YahooUpdateNetValue() 里的 `< 1655`。
 DEFAULT_UPDATE_HOUR_MINUTE = 1655
 
@@ -196,8 +198,18 @@ class NavUpdater:
     def collect_targets(self) -> List:
         """从库里取要更新净值的基金符号。
 
-        只取能剥出 6 位数字代码的符号（``SZ161130``、``SH513100``），
-        QQQ/^GSPC 这类非中国基金代码不在此列 —— 它们走 ``estquote``。
+        两条过滤：
+
+        1. 只取能剥出 6 位数字代码的符号（``SZ161130``、``SH513100``），
+           QQQ/^GSPC 这类非中国基金代码不在此列 —— 它们走 ``estquote``；
+        2. **排除 est 中间层**（``core.symbolinventory.est_symbols()``）。
+           它们是"取数对象"不是基金，可有的带 6 位代码 —— 最典型的是
+           ``SH000869``（恒生香港银行指数）：剥出 ``000869`` 后会被当成
+           基金代码，净值源于是返回**同名公募基金**的单位净值
+           （实测 0.2628，而该指数点位约 5322，差 2 万倍），写进
+           ``netvaluehistory`` 会让官方 EST 整条链路尺度崩掉。
+           P0.2 把符号补全之前 ``SH000869`` 不在 ``stock`` 表里，
+           所以这个坑一直没暴露 —— 补符号才把它带出来。
         """
         connection = getattr(self.store, "connection", None)
         if connection is None:
@@ -209,9 +221,16 @@ class NavUpdater:
         finally:
             cursor.close()
 
+        try:
+            est_targets = set(est_symbols())
+        except Exception:
+            est_targets = set()
+
         targets = []
         for row in rows:
             symbol = str(row["symbol"])
+            if symbol in est_targets:
+                continue
             if nav_code_of(symbol):
                 targets.append((symbol, row["id"]))
         return targets

@@ -119,6 +119,20 @@ class SymbolInventoryTest(unittest.TestCase):
                        "fx_susdcny", "fx_shkdcny", "fx_sjpycny", "fx_seurcny"):
             self.assertIn(symbol, required, symbol)
 
+    def test_sina_quote_symbols_excludes_other_pipelines(self):
+        """新浪行情链路只抓基金 + est；期货/外汇各有入口。"""
+        from core.symbolinventory import sina_quote_symbols
+
+        symbols = sina_quote_symbols()
+        self.assertEqual(len(symbols), 124)
+        self.assertEqual(len(symbols), len(set(symbols)), "有重复符号")
+        for symbol in fund_symbols() + est_symbols():
+            self.assertIn(symbol, symbols, symbol)
+        for symbol in ("USCNY", "HKCNY", "EUCNY", "JPCNY",
+                       "hf_NQ", "hf_ES", "hf_CL", "hf_NK",
+                       "fx_susdcny", "fx_shkdcny", "fx_sjpycny", "fx_seurcny"):
+            self.assertNotIn(symbol, symbols, symbol)
+
 
 if __name__ == "__main__":
     unittest.main()
