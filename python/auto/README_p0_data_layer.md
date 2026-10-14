@@ -16,7 +16,7 @@
 | P0.3 | 历史数据回填（`quotecli` → `stockhistory`，`navcli` → `netvaluehistory`） | ✅ `344d5383`，本文 §三 |
 | P0.4 | 实时链路（`quoteupdatercli --daemon` → `realtimequote` + 盘口 + `estquote`） | ✅ `05b6f2c3`，本文 §五 |
 | P0.5 | 校准链路跑通（中间层净值 → 闸门 → `calibrationhistory`） | ✅ `a2e84b05`，本文 §四.3 |
-| P0.6–0.7 | `fundest` 官方 EST 落库 + 期货实时 EST | ✅ 本文 §六 |
+| P0.6–0.7 | `fundest` 官方 EST 落库 + 期货实时 EST | ✅ `ee6dcee2`，本文 §六 |
 | P0.8 | 一键重跑 `dbtools/bootstrap_fund_data.py`（默认 dry-run） | 待做 |
 
 P0.5a（修 fundestcalc 中间层基准价尺度错位，EST 放大 4648 倍）已单独提交
