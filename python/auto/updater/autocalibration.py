@@ -91,6 +91,10 @@ class CalibrationOutcome:
     written: bool = False
     skipped: str = ""
     scale_converted: bool = False
+    #: 这次用的是哪条式子：``"pair/net"`` 是 PHP ``CalcFactor`` 的原路径，
+    #: ``""`` 表示退到了旧的"按配对比值缩放"（见 ``_scale_converted``）。
+    #: 给运维看 —— 两者算出来的数不一样，排查时必须知道走的是哪条。
+    formula: str = ""
     guard: Any = None
     warnings: list = field(default_factory=list)
 
@@ -219,27 +223,45 @@ class AutoCalibrator:
         implied = self._implied_middle_nav(stock_id, cny, symbol=middle_symbol)
         old_calibration = self._calibration_value(stock_id)
         pair_old = self._pair_value_at(pair_symbol, calibration_date)
-        outcome.net_value = implied
-        if (old_calibration not in (None, "") and pair_old not in (None, "")
-                and abs(float(pair_old)) > 0.0000005
-                and abs(float(pair_value)) > 0.0000005):
-            outcome.scale_converted = True
-            try:
-                factor = float(old_calibration) * float(pair_old) / float(pair_value)
-            except (TypeError, ValueError, ZeroDivisionError):
-                factor = None
-        elif old_calibration not in (None, ""):
-            # 保守退路：不动校准值（实测放行）
-            factor = float(old_calibration)
-            outcome.warnings.append(
-                "取不到基准日（%s）的配对值 %s，按「不改变校准值」处理"
-                % (calibration_date, pair_symbol))
+
+        # **能不能直接用 PHP 的原公式**，取决于 netvaluehistory 里的那个净值
+        # 是不是"真实每份净值"的量级。
+        #
+        # PHP 从不判断这件事 —— 它那边中间层的 ``netvaluehistory`` 存的就是
+        # 真实每份净值（QQQ = 749.378）。本项目演示库曾经把它归一化成 1.0
+        # （``seed_demo_data.MARKET_LAYERS``），那时照抄 ``pair / net`` 会把
+        # 校准值放大约 750 倍（实测 QQQ 得到 31099，生产端是 41.111）。
+        #
+        # 现在中间层净值由 ``sync-nav`` 按"当日收盘价"写入（P0.5，见
+        # :meth:`_implied_middle_nav`），与官方 NAV 只差千分位，所以这道判断
+        # 会放行 —— **判断的尺子就是第一步装的那个 ``nav_matches_price``**。
+        # **没有尺子 ≠ 可信**：``nav_matches_price`` 对 ``price=None`` 是放行的
+        # （那条规则是"别把查不到价格变成净值永远算不出来"），而这里要判断的
+        # 是"净值是不是真实每份净值"，两件事 —— 拿不到当日价格就只能走旧退路。
+        try:
+            has_price = (implied not in (None, "")
+                         and abs(float(implied)) > 0.0000005)
+        except (TypeError, ValueError):
+            has_price = False
+        if has_price and nav_matches_price(net_value, implied):
+            # PHP ``DailyCalibration()``（fundpairref.php:196-201）原文：
+            #
+            #     $fFactor = CalcFactor($fPairNetValue, $strNetValue, $strDate);
+            #     $cal_sql->WriteDaily($strStockId, $strDate, $fFactor);
+            #
+            # 实测它就是生产端的定义口径（2026-10-13）：
+            #     ^NDX 30569.4809 / QQQ 743.57 = 41.1118   生产锚点 41.111  ✓
+            #     ^GSPC 7805.4502 / SPY 778.01 = 10.0326   生产锚点 10.035  ✓
+            # 走的是 PHP 原路径，不是异常 —— 记在 outcome.formula 上由 CLI 展示，
+            # 不塞进 warnings（warnings 是给"发生了意外"用的）。
+            outcome.net_value = net_value
+            factor = self.calc_factor(pair_value, net_value,
+                                      self._calc_cny(middle_symbol, net_date))
+            outcome.formula = "pair/net"
         else:
-            outcome.warnings.append(
-                "取不到中间层净值尺度，按库里净值 %s 直接换算（可能与生产量级不同）"
-                % outcome.net_value
-            )
-            factor = self.calc_factor(pair_value, net_value, cny)
+            outcome.net_value = implied
+            factor = self._scale_converted(old_calibration, pair_old, pair_value,
+                                           net_value, cny, outcome, calibration_date)
 
         if factor is None:
             outcome.skipped = "校准值算不出来（净值为 0 或参数无效）"
@@ -257,6 +279,74 @@ class AutoCalibrator:
                     return outcome
             outcome.written = self._write(stock_id, net_date, factor)
         return outcome
+
+    def _scale_converted(self, old_calibration: Any, pair_old: Any, pair_value: Any,
+                         net_value: Any, cny: Any, outcome: Any,
+                         calibration_date: Any = None) -> Any:
+        """净值**不是**真实每份净值时用的旧退路：按配对值的变化比例缩放。
+
+        ## 为什么还有这条路
+
+        演示库的中间层净值曾经是归一化到 1.0 的（``seed_demo_data.MARKET_LAYERS``）。
+        那种数据下不能用 ``pair / net`` —— 会放大约 750 倍。这条路是当时靠
+        **测量**标定的权宜之计（PHP 没有对应的实现）：
+
+        ```text
+        cal_new = cal_old × pair_old / pair_new
+        ```
+
+        方向**反向**（配对涨 → ``cal_m`` 跌），因为估值对两者都近似线性正比
+        （``sql/_measure_exponent.py``，k≈0.94）。
+
+        ## 它的代价
+
+        这个式子把**净值的变化**丢掉了 —— 完整的换算应该是
+        ``cal_old × pair_new/pair_old × nav_old/nav_new``，这里只有 pair 那一项。
+        所以只要净值真的变了，它就会偏；实测 QQQ 偏出 4.7%。净值是真实量级时
+        调用方不会走这里（见 :meth:`calibrate_middle` 的判断）。
+        """
+        if (old_calibration not in (None, "") and pair_old not in (None, "")
+                and abs(float(pair_old)) > 0.0000005
+                and abs(float(pair_value)) > 0.0000005):
+            outcome.scale_converted = True
+            try:
+                return float(old_calibration) * float(pair_old) / float(pair_value)
+            except (TypeError, ValueError, ZeroDivisionError):
+                return None
+        if old_calibration not in (None, ""):
+            # 保守退路：不动校准值（实测放行）
+            outcome.warnings.append(
+                "取不到基准日（%s）的配对值，按「不改变校准值」处理"
+                % calibration_date)
+            return float(old_calibration)
+        outcome.warnings.append(
+            "取不到中间层净值尺度，按库里净值 %s 直接换算（可能与生产量级不同）"
+            % net_value
+        )
+        return self.calc_factor(pair_value, net_value, cny)
+
+    def _calc_cny(self, symbol: Any, date: Any) -> Any:
+        """``CalcFactor`` 要用的汇率；不涉及换算时返回 ``None``（等价于 1.0）。
+
+        对应 PHP ``fundpairref.php:14-43`` 里 ``$this->cny_ref`` 的构造：
+        **本符号不是 A 股时，配对标的若是美股/美股指数（``else`` 分支，:41），
+        ``cny_ref`` 就是 ``false``** —— ``CalcFactor`` 里那个 ``if ($this->cny_ref)``
+        不成立，直接 ``return $fPairNetValue / $fNetValue``，**不乘汇率**。
+
+        本项目 demo 的中间层全是美股 ETF（QQQ/SPY/AGG/…），走的正是这一支，
+        所以对它们必须传 1.0 —— 传真实汇率 6.69 会把校准值放大 6.69 倍。
+
+        注意这里**不能**图省事直接传 ``self._cny(date)``：那是"中间价是多少"，
+        而 ``CalcFactor`` 要的是"这个符号有没有汇率换算" —— 两个不同的问题。
+        """
+        try:
+            from core.stocksymbol import StockSymbol
+
+            if StockSymbol(symbol).is_symbol_a():
+                return self._cny(date)
+        except (ImportError, ValueError, AttributeError):
+            pass
+        return None
 
     def _calibration_value(self, stock_id: Any) -> Any:
         """该符号当前的校准值（``cal_m``）；没有记录返回 ``None``。
@@ -452,7 +542,9 @@ class AutoCalibrator:
     def _pair_symbol(self, middle_symbol: str) -> Any:
         """中间层跟踪的标的（``QQQ`` → ``^NDX``），对应 ``$this->pair_ref``。
 
-        三条路径，按可靠性排序：
+        **拿不到就返回 ``None``，调用方应当跳过而不是继续算。**
+
+        三条候选路径，按可靠性排序：
 
         1. ``fundpair`` 表（``id`` = 本体，``stock_id`` = 配对标的是）；
         2. :data:`MIDDLE_PAIR_FALLBACK` 内置映射；
@@ -462,7 +554,21 @@ class AutoCalibrator:
         （``SZ161130 -> QQQ``），**没有"ETF → 指数"**（QQQ 不在 ``id`` 侧）。
         少了这条兜底，自动校准会一直"没有配对标的是"而静默失效 ——
         这正是实测踩到的。
+
+        **为什么必须排除"自己配自己"**：第 3 条的 ``value`` 就是中间层本身，
+        反查 ``AGG`` 会得到 ``AGG``。那时 ``pair/net`` 恒等于 1，写进
+        ``calibrationhistory`` 是纯噪声。PHP 干脆不会走到这一步 ——
+        ``FundPairReference`` 只在 ``GetPairSymbol()`` 有值时才构造
+        ``pair_ref``（``fundpairref.php:13``），没有配对的符号根本不参与
+        ``DailyCalibration()``。
         """
+        candidate = self._pair_symbol_candidate(middle_symbol)
+        if candidate is None or str(candidate) == str(middle_symbol):
+            return None
+        return str(candidate)
+
+    def _pair_symbol_candidate(self, middle_symbol: str) -> Any:
+        """:meth:`_pair_symbol` 的原始候选（可能返回符号自身）。"""
         connection = self.connection
         if connection is not None:
             cursor = connection.cursor()
@@ -519,10 +625,18 @@ class AutoCalibrator:
 
         1. **净值表**（``netvaluehistory``）—— ``_getOfficialEstVal()`` 的首选；
         2. **行情表**（``stockhistory``）；
-        3. **指数实时点位**（新浪 ``gb_ndx`` / ``gb_inx``）—— 兜底。
+        3. **实时快照**（``realtimequote``）：**只有行情日期 == ``date`` 才算数**；
+        4. **指数实时点位**（新浪 ``gb_ndx`` / ``gb_inx``）—— 兜底。
 
-        第 3 条是必需的：demo 库里 ``^NDX`` / ``^GSPC`` 两个指数**都没有落库**
-        （点位是从新浪直接抓的、不落 ``stockhistory``），
+        第 3 级是 P0.4 之后加的：后台 daemon 会把 ``^NDX``/``^GSPC`` 的当天点位
+        抓进 ``realtimequote``，这正是 PHP ``$this->pair_ref->GetNetValue($strDate)``
+        **按日期**要拿的东西。
+
+        **为什么必须卡日期**：不卡就会拿"此刻"的点位去配"那天"的净值，口径混用。
+        实测这一项就让 QQQ 的校准值偏了 1.5%（拿到 30111 而不是 10-13 的 30569，
+        ``cal`` 从生产锚点 41.111 掉到 40.49）。
+
+        第 4 级保留是因为 P0.4 之前 demo 库两个指数**都没落库**，
         少了它自动校准就永远"配对标的没有值"。
         """
         pair_id = self.source.get_stock_id(pair_symbol)
@@ -543,7 +657,35 @@ class AutoCalibrator:
                     value = None
                 if value not in (None, ""):
                     return value
+
+        quote = self._stored_quote_on(pair_symbol, date)
+        if quote is not None:
+            return quote
         return self._fetch_pair_quote(pair_symbol)
+
+    def _stored_quote_on(self, symbol: str, date: Any) -> Any:
+        """``realtimequote`` 里**行情日期等于 ``date``** 的那个价格，否则 ``None``。
+
+        卡日期的原因见 :meth:`_pair_value` 第 3 级的说明。
+        """
+        if date is None:
+            return None
+        reader = getattr(self.source, "get_stored_quote", None)
+        if reader is None:
+            return None
+        try:
+            quote = reader(symbol)
+        except Exception:
+            return None
+        if quote is None:
+            return None
+        quote_date = getattr(quote, "date", None)
+        price = getattr(quote, "price", None)
+        if quote_date is None or price in (None, ""):
+            return None
+        if str(quote_date) != str(date):
+            return None
+        return price
 
     def _fetch_pair_quote(self, pair_symbol: str) -> Any:
         """兜底那一级"实时点位"：``pair_fetcher`` 优先，否则走新浪。

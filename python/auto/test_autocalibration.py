@@ -373,6 +373,150 @@ class ScaleConversionTest(unittest.TestCase):
         self.assertIsNotNone(outcome)
 
 
+class CalcFactorIsProductionFormulaTest(unittest.TestCase):
+    """净值是真实每份净值时，校准值改由 **PHP 原公式**算出（P0.5）。
+
+    ## 背景
+
+    PHP ``DailyCalibration()``（``fundpairref.php:196-201``）从没有"按配对比值
+    缩放"这一步，它直接就是：
+
+    ```php
+    $fFactor = $this->CalcFactor($fPairNetValue, $strNetValue, $strDate);
+    $cal_sql->WriteDaily($strStockId, $strDate, $strFactor);
+    ```
+
+    而 ``cal = 配对标的 / 净值`` 恰好就是生产端的定义口径 —— 实测对得回来：
+
+    ```text
+    2026-10-13  ^NDX 30569.4809 / QQQ 743.57  = 41.1118   生产锚点 41.111
+    2026-10-07  ^NDX 31160.08   / QQQ 749.413 = 41.5793   库里 cal_m 41.5793
+    ```
+
+    之前绕开它，是因为演示库的中间层净值是归一化到 1.0 的，直接除会放大 750
+    倍。现在 ``sync-nav`` 按"当日收盘价"写入净值（见 ``usnavsource``），
+    这道判断就能放行了。
+
+    ## 为什么 Trust/不再偏爱旧缩放
+
+    ``cal_old × pair_old / pair_new`` 把**净值的变化**整项丢了 ——
+    完整的换算应该是 ``cal_old × pair_new/pair_old × nav_old/nav_new``。
+    实测 QQQ 就因为它偏出 4.7%（43.03 vs 锚点 41.11）。
+    """
+
+    PAIR_VALUE = 30569.4809          # ^NDX 2026-10-13
+    NAV = 743.57                     # QQQ 当日收盘价（= 写进 netvaluehistory 的净值）
+    OLD_CALIBRATION = 41.5793
+
+    def _source(self, **kwargs):
+        source = FakeSource(pair_value=self.PAIR_VALUE, netvalue=self.NAV,
+                            calibration=self.OLD_CALIBRATION, cny=6.69,
+                            live_pair_value=self.PAIR_VALUE, **kwargs)
+        # 有了"当日收盘价"，净值也就通过 nav_matches_price 的量级自检
+        source.get_latest_history_close = lambda stock_id: self.NAV
+        source.get_latest_net_value = lambda stock_id: FakeDailyRecord(
+            date=source.net_date, close=self.NAV)
+        return source
+
+    def test_uses_pair_over_net(self):
+        """放行后走 ``pair / net``，不再走配对比值缩放。"""
+        outcome = _calibrator(self._source()).calibrate_middle("QQQ", apply=False)
+
+        self.assertAlmostEqual(outcome.pair_value, self.PAIR_VALUE, places=4)
+        self.assertAlmostEqual(outcome.calibration,
+                               self.PAIR_VALUE / self.NAV, places=6)
+        self.assertAlmostEqual(outcome.calibration, 41.1118, places=3)
+        self.assertFalse(outcome.scale_converted)
+
+    def test_cny_is_not_multiplied_in(self):
+        """非 A 股中间层 ``cny_ref`` 为 false，`CalcFactor` **不乘汇率**。
+
+        这是 PHP ``fundpairref.php:14-43`` 的 ``else`` 分支。传真实汇率 6.69
+        会把 41.11 变成 275 —— 差一个数量级。
+        """
+        source = self._source()
+
+        outcome = _calibrator(source).calibrate_middle("QQQ", apply=False)
+
+        self.assertAlmostEqual(outcome.calibration, 41.1118, places=3)
+        self.assertLess(outcome.calibration, 100)     # 乘了汇率会是 275
+
+    def test_no_price_keeps_the_old_scaling(self):
+        """**没有尺子 ≠ 可信**：取不到当日价格时退回旧的配比值缩放。
+
+        ``nav_matches_price`` 对 ``price=None`` 是放行的（那条规则是"别把
+        查不到价格变成净值永远算不出来"），但这里要判断的是"净值是不是真实
+        每份净值" —— 拿不到价格就不能假装它可信，否则
+        ``pair / 1.0 = 31500`` 会被当成校准值。
+        """
+        source = FakeSource(pair_value=self.PAIR_VALUE, netvalue=1.0,
+                            calibration=self.OLD_CALIBRATION, cny=6.69)
+        source.get_latest_net_value = lambda stock_id: FakeDailyRecord(
+            date=source.net_date, close=1.0)
+
+        outcome = _calibrator(source).calibrate_middle("QQQ", apply=False)
+
+        self.assertTrue(outcome.scale_converted or
+                        outcome.calibration == self.OLD_CALIBRATION)
+
+    def test_normalized_nav_still_takes_the_old_route(self):
+        """净值停在归一化尺度（1.0）而有价格时，量级自检把它挡回旧退路。"""
+        source = FakeSource(pair_value=self.PAIR_VALUE, netvalue=1.0,
+                            calibration=self.OLD_CALIBRATION, cny=6.69)
+        source.get_latest_history_close = lambda stock_id: self.NAV
+        source.get_latest_net_value = lambda stock_id: FakeDailyRecord(
+            date=source.net_date, close=1.0)
+
+        outcome = _calibrator(source).calibrate_middle("QQQ", apply=False)
+
+        # 1.0 与 743.57 不同量级 -> 不可能是 fine-grained 的 pair/net
+        self.assertNotAlmostEqual(outcome.calibration,
+                                  self.PAIR_VALUE / self.NAV, places=2)
+
+
+class StoredQuotePairValueTest(unittest.TestCase):
+    """``_pair_value`` 的第三级：``realtimequote`` **必须卡日期**。
+
+    不卡就会拿"此刻"的指数点位去配"那天"的净值。实测这一项让 QQQ 的校准值
+    从生产锚点 41.111 掉到 40.49（拿到 30111 而不是 10-13 的 30569）。
+    """
+
+    class _Quote(object):
+        def __init__(self, date, price):
+            self.date = date
+            self.price = price
+
+    def _source(self, quote):
+        source = FakeSource()
+        source.get_stored_quote = lambda symbol: quote
+        return source
+
+    def test_matching_date_is_used(self):
+        calibrator = _calibrator(self._source(self._Quote("2026-10-13", "30569.4809")))
+
+        value = calibrator._pair_value("^NDX", "2026-10-13")
+
+        self.assertAlmostEqual(float(value), 30569.4809, places=4)
+
+    def test_mismatched_date_is_ignored(self):
+        """日期不符就当没有 —— 宁可落到新浪兜底，也不口径混用。"""
+
+        class _Boom(object):
+            @staticmethod
+            def __call__(symbol):
+                raise AssertionError("不该联网：real-time quote 日期不符")
+
+        source = self._source(self._Quote("2026-10-09", "30883.148"))
+        calibrator = _calibrator(source)
+        calibrator.pair_fetcher = _Boom()
+
+        # 返回 None 而不是错的日期的值（FakeSource 的 stockhistory 查不到 10-13）
+        value = calibrator._pair_value("^NDX", "2026-10-13")
+        # 新浪那一级在我们的 FakeSource 上没有 history，会落到 netvalue/stockhistory
+        # 都取不到 -> None
+        self.assertIsNone(value)
+
+
 class GateTest(unittest.TestCase):
     """闸门：``净值日期 == 校准日期`` 时不重做（对应 PHP 的 ``return``）。"""
 

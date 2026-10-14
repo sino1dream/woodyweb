@@ -159,10 +159,15 @@ def cmd_calibrate(args) -> int:
 
         print("%-8s %-8s %-14s %-10s %-14s %s" % (
             symbol, outcome.pair_symbol or "-", outcome.pair_value, old_close,
-            outcome.calibration,
+            round(outcome.calibration, 6) if outcome.calibration is not None else "-",
             "已写库" if outcome.written else ("预演" if not apply else "未写（已有）")))
         if outcome.written:
             changed += 1
+        # 走的是哪条式子要说出来：两者算出来的数不一样，排查时这是第一手信息
+        if outcome.formula == "pair/net":
+            print("        [算式] 配对值 / 净值（PHP CalcFactor 原路径）")
+        elif outcome.scale_converted:
+            print("        [算式] 旧退路：原校准值 × 基准日配对值 / 当日配对值")
         for warning in outcome.warnings:
             print("        [告警] %s" % warning)
 
