@@ -515,7 +515,7 @@ class AutoCalibrator:
         pair_id = self.source.get_stock_id(pair_symbol)
         if pair_id is None:
             return None
-        for name in ("get_net_value_close", "get_history_close"):
+        for name in ("get_netvalue_close", "get_history_close"):
             reader = getattr(self.source, name, None)
             if reader is None:
                 continue
@@ -540,7 +540,7 @@ class AutoCalibrator:
         """
         pair_id = self.source.get_stock_id(pair_symbol)
         if pair_id is not None:
-            reader = getattr(self.source, "get_net_value_close", None)
+            reader = getattr(self.source, "get_netvalue_close", None)
             if reader is not None:
                 try:
                     value = reader(pair_id, date)
@@ -634,7 +634,7 @@ class AutoCalibrator:
         cny_id = self.source.get_stock_id("USCNY")
         if cny_id is None:
             return None
-        reader = getattr(self.source, "get_net_value_close", None)
+        reader = getattr(self.source, "get_netvalue_close", None)
         if reader is not None:
             try:
                 value = reader(cny_id, date)
@@ -748,18 +748,23 @@ class EstimateGuard:
     * ``est_value`` —— 中间层的实时价（``QQQ`` ≈ 757）；
     * ``cal_m`` —— 中间层的校准值。
 
-    ``fundestcalc._qdii_value()`` 里 ``ratio = est_value / (cny_ref / cal_m)``
-    对 ``cal_m`` 是**线性**的，所以 ``est_value × cal_m`` 这个乘积必须守恒。
-    单方面改 ``cal_m`` 会让估值按同比例炸掉。
+    ``fundestcalc._qdii_value()`` 里 ``ratio = est_value / est_quote_ref``，
+    而 ``est_quote_ref`` 取的是**中间层自己的历史报价**（与 ``est_value`` 同尺度），
+    所以这一项对 ``cal_m`` **不再敏感** —— 那是 2026-10-14 修掉尺度错位之后的
+    行为（修之前它用恒等式 ``cny_ref / cal_m`` 反推基准价，对 ``cal_m`` 线性，
+    单方面改 ``cal_m`` 会让估值按同比例炸掉）。
 
     实测过一次真实事故：自动校准按"生产口径"写出了 ``QQQ = 41.488229``
-    （演示库的归一化尺度是 ``0.008945``），结果
+    （演示库当时的归一化尺度是 ``0.008945``），结果
 
     ```text
     SZ161130 官方 EST = 20245.200164     （应为 4.59）
     ```
 
     这类错误**不会报错**，只会静默出一个荒谬的数字。守卫就是为它加的。
+    尺度错位修掉之后这道守卫依然要留：它守的是"候选校准值写进去之后，
+    整条估值管线给出的数还在净值量级"这个**端到端**不变量，
+    与内部用哪个公式取基准价无关。
 
     ## 判定方式
 

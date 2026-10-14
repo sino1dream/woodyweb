@@ -136,7 +136,7 @@ class FakeSource:
             return None
         return FakeDailyRecord(date=self.calibration_date, close=self.calibration)
 
-    def get_net_value_close(self, stock_id, date):
+    def get_netvalue_close(self, stock_id, date):
         # 汇率有自己的取数口；配对标的的**历史值**走 _pair_history
         if stock_id == self.connection.stock.get("USCNY"):
             return self.cny

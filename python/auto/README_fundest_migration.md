@@ -69,37 +69,65 @@ function StockUpdateEstResult($strStockId, $fNetValue, $strDate)
 
 ```text
 官方 EST = est_f
-         = (nv_f × cal_f / cny_ref) × (est_quote / est_quote_ref) × (cny / cny_ref)
+         = (1 - p) × nv + p × nv × (est / est_cal) × (cny / cny_cal)
 ```
 
 其中：
 
-* `nv_f` / `cal_f` —— 基金自己的单位净值与校准值；
-* `est_quote` / `est_quote_ref` —— 中间层报价的当前值与校准时的值；
-* `est_quote_ref × cal_m = cny_ref`（本项目实测出来的恒等式，见下）；
-* `cny` / `cny_ref` —— 当天与校准时的美元人民币中间价。
+* `nv` / `cal_f` —— 基金自己的单位净值与校准值；
+* `est` / `est_cal` —— 中间层报价的当前值与**建这份校准值那天**的值；
+* `cny` / `cny_cal` —— 当天与校准时的美元人民币中间价；
+* `p` —— 仓位（`AdjustPosition` 的 `fRatio`）。
 
-### 3.1 一条实测出来的恒等式
+### 3.1 公式怎么从 PHP 推出来（2026-10-14 重写）
 
-```text
-hedge_value = nv_f × cal_f / cny          （构建器给的口径）
-            = est_m × cal_m               （两者都等于中间层的人民币价值）
+这条式子不是猜的，是 `qdiiref.php` 三个函数叠起来的：
+
+```php
+AdjustFactor():                                    // 校准值重算（新净值到货时）
+    $strEst  = $est_ref 当日的值;                   // 净值优先，否则收盘价
+    $strCNY  = $cny_ref->GetClose(当天);
+    $this->fFactor = QdiiGetCalibration($strEst, $strCNY, $this->GetPrice());
+    //                = $strEst * $strCNY / 基金价        （qdiiref.php:3）
+
+GetQdiiValue($strEst, $strCNY):                     // 估值
+    $fVal = QdiiGetVal($strEst, $strCNY, $this->fFactor);   // = est * cny / cal_f
+    return $this->AdjustPosition($fVal);            // = p*fVal + (1-p)*nv_cal
 ```
 
-实测（`SZ161130`、`QQQ`）：
+把 `cal_f = est_cal × cny_cal / nv_cal` 代回 `QdiiGetVal`，汇率与标的各出现
+**一次**，就是上面那个式子。Python 侧 `calc_with_calibration()` 的式子是
 
 ```text
-hedge_value      = 21.74615 = 4.5452 × 32.079543 / 6.705
-est_m × cal_m    = 6.705    = 749.58 × 0.008945
+est_f = (1 - p) × netvalue + p × hedge_value × cny / calibration
 ```
 
-两者数值不等（差一个量纲因子），但**各自自洽**：基金那条完全由自己的净值与校准值
-算出，不需要中间层参与。
+两者相等要求 `hedge_value = nv × cal_f / cny × (est / est_cal) × (cny / cny_cal)`
+—— 这正是 `_qdii_value()` 的算法。**注意 `nv × cal_f` 除的是当前汇率 `cny`**，
+对应 `stockdata._attach_hedge_value()` 的 (A) 式：估值公式里 `hedge_value`
+后面还要乘一次 `cny`，先除掉汇率才不会被算两遍。
 
-**踩过的错**：一开始按 `est_value × cal_m` 拼中间层贡献，得到 **0.229** 这种离谱值；
-又试过用归一化的中间层净值（1.0）去比 749.58 的报价口径，同样错。**口径必须统一**。
+**生产端验算**（`sh513100cn.php`，2026-10-13，仓位 1.00）：
 
-### 3.2 中间层符号要用「杠杆替代」解析，不能只用 `est_symbol`
+```text
+参考 EST = est_now × cny_now / cal_f
+        = 30569.48 × 6.6925 / 100380.914 = 2.0379    页面 2.038   ✓
+官方 EST ≈ 当天净值（历史表里 2.056 / 2.072 / 2.063 / 2.041 逐日精确相等）
+```
+
+### 3.2 基准价 `est_cal` 必须取自真实数据，不能用恒等式反推
+
+`est_cal` 由 `_est_quote_ref()` 取：校准日当天的中间层值（净值优先）→ 校准日
+之前最近一条行情价 → 中间层最新日期的值 → 取不到按比例 1.0。
+
+**曾经的实现用恒等式 `est_quote_ref = cny_ref / cal_m` 反推**，那条恒等式
+（`est_m × cal_m = cny_ref`）只对**旧尺度**的中间层校准值成立 —— 演示库早期把
+QQQ 播成 `0.008945`（= 汇率/报价）。2026-10-13 按生产端口径重算后 QQQ 变成
+`41.58`（= 指数/净值），恒等式失效：基准价被算成 `6.69/41.58 = 0.16`，
+比值放大 **4648 倍**，`/qdii` 与 `/fund` 页官方 EST 显示成 9625（应约 2.05）。
+详见 pitfalls #61。
+
+### 3.3 中间层符号要用「杠杆替代」解析，不能只用 `est_symbol`
 
 真实库里 `SZ161130` 的 `est_symbol` 是 **`^NDX`（指数）**，而 `^NDX` 在
 `netvaluehistory` / `stockhistory` 里**都没有行** —— 指数点位是从新浪直接抓的、
@@ -115,7 +143,7 @@ if hedge_symbol and leverage_symbol:
 **踩过的错**：只用 `est_symbol` 会让日期取不到 → 官方 EST 静默算不出来，
 表现为"0 只写入"，很难查。
 
-### 3.3 汇率有三层兜底
+### 3.4 汇率有三层兜底
 
 `EstNetValue()` 里 `$cny_ref->GetClose($strDate)` 失败时还有第三步
 `$this->strOfficialCNY = $cny_ref->GetPrice();`（用最新实时汇率）。
@@ -296,13 +324,21 @@ SZ161130   4.545196   4.545196   4.545196   4.796    5.52%
 
 ```text
 官方 EST（中间层净值 1.0、中间层日期汇率 6.705） = 4.5452
-参考 EST（当日价 749.58、当前汇率 6.60）        = 4.4110
-实时 EST（实时价 780.00、当前汇率 6.60）        = 4.5808
+参考 EST（当日价 749.58、当前汇率 6.60）        = 4.4776
+实时 EST（实时价 780.00、当前汇率 6.60）        = 4.6501
 ```
+
+参考 / 实时相对净值分别是 **-1.49% / +2.31%**：汇率那一项与跌幅 1:1（-1.57%），
+实时价高出当日价 4.06% 再叠上来 —— 两个因子各算一次，这就是公式
+`est_f = (1-p) × nv + p × nv × (est/est_cal) × (cny/cny_cal)` 的样子。
+
+> ⚠️ 上面 ② 里"实测把 4.4110 算成 4.6139"是**当时**三个 bug 叠加的组合值。
+> 今天再看到 **4.4110** 这个数，含义完全不同 —— 它是"汇率被算两遍"
+> （`(cny/cny_cal)²`）的签名，见 §十。
 
 ## 九、测试
 
-`python/auto/test_fundest.py`（35 个），覆盖：
+`python/auto/test_fundest.py`（40 个），覆盖：
 
 * `GetHourMinute()` 与 20:55 闸门（含 20:54 可写 / 20:55 起拒写）；
 * 三个写入条件各自的判定；
@@ -311,11 +347,49 @@ SZ161130   4.545196   4.545196   4.545196   4.796    5.52%
 * 误差告警的阈值上下两侧（<1% 不告警、>1% 告警）；
 * `TIME` 列的 `timedelta` 规范化（`timedelta(seconds=2406)` → `00:40:06`）；
 * **三个 EST 的区分**（`ThreeEstTest`，8 个用例）：官方用净值/中间层日期汇率、
-  参考用当日价/当前汇率、实时用快照价，以及"汇率日期一致时参考 EST 为空"。
+  参考用当日价/当前汇率、实时用快照价，以及"汇率日期一致时参考 EST 为空"；
+* **生产尺度回归**（`ProductionScaleTest`，3 个用例，2026-10-14 新增）：
+  用演示库 SH513100 的真实尺度（`cal_f = 100390.448365`、`cal_m = 41.579312`）
+  钉住"官方 EST 留在净值量级"，并断言汇率相对变化**只出现一次**；
+* **接口名漂移护栏**（`InterfaceNameTest`，2 个用例，2026-10-14 新增）：
+  把 `fundestcalc.py` 里每个 `getattr(self.source, "名字")` 与两个真实现对一遍。
 
-全量：`auto` **460 个**、`web` **59 个**。
+全量：`auto` **1057 个**、`web` **670 个**。
 
-## 十、下一步
+## 十、2026-10-14 修的三件事（EST 放大 4648 倍）
+
+生产端口径统一（commit `64b8261a`）之后，`/qdii` 与 `/fund` 的 EST 表炸了：
+SH513100 官方 EST **9625.333**（生产 2.049）、SZ161130 **20386.593**（4.572）、
+SZ161125 **3550.039**（3.182）。三个缺陷叠在一起，逐个修：
+
+| # | 缺陷 | 症状 | 修法 |
+| --- | --- | --- | --- |
+| 1 | 基准价用恒等式 `cny_ref / cal_m` 反推 | 尺度错位，放大 4648 倍 | `_est_quote_ref()` 按"校准日 → 校准日之前 → 中间层最新日期"取真实报价 |
+| 2 | `_net_value()` 查 `get_net_value_close`（接口真名 `get_netvalue_close`） | **净值表从来没被读过**；校准时汇率恒 `None`，`cny/cny_cal` 被约成 1 | 改真名 + `InterfaceNameTest` 护栏 |
+| 3 | 贡献值除了 `cny_ref` 而非当前汇率 `cny` | 汇率被算两遍，人民币贬 1% 估值动 2% | 改除 `cny`（与 `_attach_hedge_value()` 的 (A) 式一致） |
+
+第 2 条是这次才发现的：`getattr` 取数写错名字**不报错**，只是静默走兜底；
+测试替身又照着错名定义了一份，所以 1052 个单测全绿而真实库全错。
+第 3 条同一个坑在 `_attach_hedge_value()` 里早就踩过并写进
+`README_name_and_forex.md` §2.4①，只是 EST 这条路径上又犯了一次。
+
+### 修完的实测（真实演示库，`auto/_scratch/_est_scale_verify.py`）
+
+```text
+符号        官方EST    参考EST    实时EST   | 官方(生产)  参考(生产)  实时(生产)
+SH513100    2.0793     2.0845     2.0845   | 2.0490      2.0380      2.0420
+SZ161130    4.6338     4.6447     4.6447   | 4.5720      4.5770      -
+SZ161125    3.1845     3.2203     3.2203   | 3.1820      3.1820      -
+```
+
+页面（`/qdii`、`/fund/qdiietf/SH513100`）同步恢复成 2.079 / 2.084 / 2.084。
+
+残留 1.2%～2.3% 的偏差来自**演示库数据陈旧**，不是公式：中间层 QQQ 的
+`stockhistory` 只到 10-01、`netvaluehistory` 到 10-07、`estquote` 快照是
+10-09 抓的，而生产端是 10-13/14 的活数据。补上历史回填与常驻抓取
+（P0.3 / P0.4）之后应当收敛。
+
+## 十一、下一步
 
 按 skill 第 1.4 节，实时 EST 还需叠加**期货**才算完整：
 

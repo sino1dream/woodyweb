@@ -128,6 +128,7 @@ class EstimateCalculator:
         ``cny_date``        汇率最新日期（对应 ``$cny_ref->GetDate()``）
         ``cny_mid``         ``mid_date`` 当天的中间价（可能为 ``None``）
         ``cny_current``     最新中间价（对应 ``$cny_ref->GetVal()`` 兜底）
+        ``est_quote_ref``   中间层报价的**校准基准值**（``est_cal``，三个 EST 共用的锚点）
         ==================  ==========================================================
 
         任一项缺失就返回 ``None``，调用方跳过。
@@ -173,6 +174,14 @@ class EstimateCalculator:
             "day_quote": self._fair_quote(est_symbol, mid_date),
             # 中间层净值（官方 EST 优先用，对应 $est_ref->GetNetValue()）
             "mid_net_value": self._net_value(est_id, mid_date),
+            # **中间层报价的基准值**（三个 EST 共用的校准锚点，见 :meth:`_est_quote_ref`）。
+            # 它必须与传进 ``_qdii_value()`` 的 ``est_value`` **同尺度** ——
+            # 曾经用恒等式 ``cny_ref / cal_m`` 反推，那条恒等式只对旧尺度的中间层
+            # 校准值成立；2026-10-13 按生产端口径重算后（QQQ 41.58）基准价被算成
+            # 0.16，比值放大 4648 倍，/qdii 与 /fund 页官方 EST 因此显示成 9625。
+            "est_quote_ref": self._est_quote_ref(est_symbol,
+                                                 self._calibration_date_of(stock_id),
+                                                 mid_date),
             "cny_date": cny_date,
             "cny_mid": cny_mid,
             "cny_current": cny_current,
@@ -207,7 +216,8 @@ class EstimateCalculator:
         est_value = self._official_est_value(ctx["est_symbol"], ctx["mid_date"], ctx["data"])
         if est_value is None:
             return None
-        value = self._qdii_value(ctx["calculator"], ctx["data"], est_value, rate)
+        value = self._qdii_value(ctx["calculator"], ctx["data"], est_value, rate,
+                                est_quote_ref=ctx["est_quote_ref"])
         if not value:
             return None
         return EstRecord(ctx["mid_date"], value, None)
@@ -261,7 +271,8 @@ class EstimateCalculator:
             quote = self._middle_day_quote(ctx["est_symbol"], ctx["mid_date"], ctx["data"])
         if quote is None:
             return None
-        value = self._qdii_value(ctx["calculator"], ctx["data"], quote, ctx["cny_current"])
+        value = self._qdii_value(ctx["calculator"], ctx["data"], quote, ctx["cny_current"],
+                                est_quote_ref=ctx["est_quote_ref"])
         if not value:
             return None
         return EstRecord(ctx["mid_date"], value, None)
@@ -326,7 +337,8 @@ class EstimateCalculator:
         quote = self._futures_realtime_quote(ctx) or ctx["realtime_quote"]
         if quote is None:
             return None
-        value = self._qdii_value(ctx["calculator"], ctx["data"], quote, ctx["cny_current"])
+        value = self._qdii_value(ctx["calculator"], ctx["data"], quote, ctx["cny_current"],
+                                est_quote_ref=ctx["est_quote_ref"])
         if not value:
             return None
         return EstRecord(ctx["mid_date"], value, None)
@@ -544,6 +556,11 @@ class EstimateCalculator:
         * 键 ``<中间层符号>``（如 ``QQQ``）是中间层那一行，**至少带 ``calibration``**，
           因为 ``_qdii_value()`` 要用它把中间层估值换算成贡献值。
 
+        另外还会放 ``CNY`` = **校准发生那天**的汇率（``cny_cal``）——
+        ``_qdii_value()`` 用它算汇率相对变化 ``cny / cny_cal``。缺了它就会
+        回落到"传进来的当前汇率"，汇率那一项被约掉，参考 EST 反而与官方 EST
+        同向变化（实测把 4.4776 算成 4.5452）。
+
         缺任何一项就返回空 dict 让调用方跳过，不抛异常。
         """
         stock_id = self.source.get_stock_id(symbol)
@@ -564,10 +581,10 @@ class EstimateCalculator:
             "netvalue": float(net_value),
             "calibration": float(calibration),
         }
-        # **校准时的汇率**（``cny_ref``）：``_qdii_value()`` 用它当缩放基准。
-        # 缺了它就会回落到"传进来的当前汇率"，于是算参考 EST 时
-        # ``est_quote_ref = cny/cny_ref`` 被约掉、参考 EST 反而与官方 EST 同向变化
-        # （实测把 4.4110 算成 4.6139）。
+        # **校准时的汇率**（``cny_cal``）：``_qdii_value()`` 用它算汇率相对变化
+        # ``cny / cny_cal``（贡献值那一项除的是**当前**汇率，见该方法 docstring）。
+        # 缺了它就会回落到"传进来的当前汇率"，汇率那一项被约掉，参考 EST 反而与
+        # 官方 EST 同向变化（实测把 4.4776 算成 4.5452）。
         calibration_cny = self._calibration_cny(stock_id, symbol)
         if calibration_cny is not None:
             config["CNY"] = float(calibration_cny)
@@ -581,6 +598,26 @@ class EstimateCalculator:
                 }
         return config
 
+    def _calibration_date_of(self, stock_id: Any) -> Any:
+        """基金**最近一条校准记录的日期**（``calibrationhistory`` 那天）。
+
+        取不到返回 ``None``（连 ``lastcalibration`` 兜底都没有日期信息）。
+        用途：中间层报价的基准日 —— 基金的 ``cal_f`` 是用那天的标的价算的，
+        所以"标的涨了多少"必须拿同一天的报价做分母（见 :meth:`_qdii_value`）。
+        """
+        if stock_id is None:
+            return None
+        reader = getattr(self.source, "get_calibration_now", None)
+        if reader is None:
+            return None
+        try:
+            record = reader(stock_id)
+        except Exception:
+            record = None
+        if record is None:
+            return None
+        return getattr(record, "date", None)
+
     def _calibration_cny(self, stock_id: Any, symbol: str) -> Any:
         """**校准发生那一刻**用的汇率（``cny_ref``）。
 
@@ -591,36 +628,36 @@ class EstimateCalculator:
         取数顺序：
 
         1. 校准日期（``get_calibration_now()`` 的 date）当天的 ``USCNY``；
-        2. 该日期之前最近一条 ``USCNY``（假期/时差兜底）；
-        3. 都没有则返回 ``None``，由调用方回落到"当前汇率"。
+        2. 该日期之前最近一条（假期/时差兜底；汇率只写 ``netvaluehistory``、
+           ``stockhistory`` 里没有行，所以这一级对汇率通常落空）；
+        3. 最新一条 ``USCNY``（与旧行为一致的兜底）。
+
+        三级都取不到才返回 ``None``，由调用方回落到"当前汇率"。
         """
         cny_id = self.source.get_stock_id("USCNY")
         if cny_id is None:
             return None
 
-        calibration_date = None
-        reader = getattr(self.source, "get_calibration_now", None)
-        if reader is not None:
-            try:
-                record = reader(stock_id)
-            except Exception:
-                record = None
-            if record is not None:
-                calibration_date = getattr(record, "date", None)
-
+        calibration_date = self._calibration_date_of(stock_id)
         if calibration_date is None:
             return None
 
         value = self._net_value(cny_id, calibration_date)
         if value is not None:
             return value
-        # 该日期没有汇率（周末/假期）-> 退到之前最近一条
+        # 该日期没有汇率（周末/假期）-> 退到之前最近一条。
+        # **取不到也要继续往下走**：这里曾经直接 `return fallback(...)`，
+        # 而汇率只写 netvaluehistory、stockhistory 里没有行，于是兜底永远
+        # 返回 None，最后那条"最新汇率"根本走不到 —— 校准时汇率因此恒为
+        # None，``cny/cny_cal`` 被约成 1，汇率相对变化整项消失。
         fallback = getattr(self.source, "get_prev_history_close", None)
         if fallback is not None:
             try:
-                return fallback(cny_id, calibration_date)
+                value = fallback(cny_id, calibration_date)
             except Exception:
-                return None
+                value = None
+            if value not in (None, ""):
+                return value
         # 最后退到"当前汇率"（与旧行为一致，作为兜底）
         return self._latest_net_value(cny_id)
 
@@ -736,10 +773,22 @@ class EstimateCalculator:
         return None
 
     def _net_value(self, stock_id: Any, date: Any) -> Any:
-        """取某日净值（对应 ``cny_ref->GetClose($date)`` 与中间层净值）。"""
+        """取某日净值（对应 ``cny_ref->GetClose($date)`` 与中间层净值）。
+
+        **净值表优先、行情表兜底** —— 与 PHP ``_getEstNetValue()`` /
+        ``_getEstPrice()`` 的顺序一致。
+
+        ⚠️ 接口方法名是 ``get_netvalue_close``（``netvalue`` 连写，见
+        ``core.stockdata.FundDataSource``）。本方法曾经查
+        ``get_net_value_close``（多个下划线），真实数据源上永远取不到，
+        于是**净值表从来没被读过**：中间层净值恒为 ``None``、
+        校准时汇率也恒为 ``None``（``cny/cny_cal`` 被约成 1）。
+        测试替身照着错名定义，所以一直没暴露 —— 现在替身与真实接口对齐，
+        并由 ``test_fundest.InterfaceNameTest`` 盯着这类漂移。
+        """
         if stock_id is None or date is None:
             return None
-        reader = getattr(self.source, "get_net_value_close", None)
+        reader = getattr(self.source, "get_netvalue_close", None)
         if reader is not None:
             try:
                 value = reader(stock_id, date)
@@ -768,34 +817,109 @@ class EstimateCalculator:
         # 注意不要在这里用归一化净值 —— 它与行情价差 ``cal_m`` 倍（实测 749 倍）。
         return self._middle_day_quote(est_symbol, date, data or {})
 
+    def _est_quote_ref(self, est_symbol: str, cal_date: Any, mid_date: Any) -> Any:
+        """中间层报价的**校准基准值**（``est_cal``）—— 基金 ``cal_f`` 建起来那天的中间层值。
+
+        三个 EST 共用它当分母（``ratio = est_value / est_quote_ref``），
+        所以它必须与 ``est_value`` **同尺度**：官方 EST 传中间层净值时就取净值，
+        传行情价时就取行情价。这里按 :meth:`_official_est_value` 的顺序
+        （净值优先、行情价兜底）取 —— 两者对这些 ETF 只差千分位
+        （净值 vs 收盘价，见生产端 ``netvalueclosecn.php``）。
+
+        取数顺序：
+
+        1. **校准日当天**的中间层值（净值优先，再行情价）；
+        2. 校准日之前最近一条行情价（PHP ``_getEstPrice()`` 的
+           "SH000869 bug fix" 兜底）；
+        3. **中间层最新日期**（``mid_date``）的值 —— 演示库里中间层行情常常
+           只到 ``mid_date`` 附近、校准日更早，这时退而求其次；
+        4. 都没有 -> ``None``，调用方按比例 1.0 处理（"标的没动"）。
+
+        **为什么不能用恒等式 ``est_quote_ref = cny_ref / cal_m`` 反推**（本类曾经的
+        实现）：那条恒等式只对**旧尺度**的中间层校准值成立 —— 演示库早期把 QQQ
+        的校准值播种成 ``0.008945``（= 汇率/报价），恰能满足
+        ``est_m × cal_m = cny_ref``。2026-10-13 按生产端口径重算后，QQQ 的校准值
+        变成 ``41.58``（= 指数/净值，与生产端 QQQ 41.111 同口径），恒等式失效：
+        基准价被算成 ``6.69/41.58 = 0.16``，比值放大 **4648 倍**，
+        ``/qdii`` 与 ``/fund`` 页的官方 EST 因此显示成 9625（实测，应约 2.05）。
+        """
+        est_id = self.source.get_stock_id(est_symbol)
+        if est_id is None:
+            return None
+        if cal_date is not None:
+            value = self._net_value(est_id, cal_date)
+            if value not in (None, ""):
+                return value
+            reader = getattr(self.source, "get_prev_history_close", None)
+            if reader is not None:
+                try:
+                    value = reader(est_id, cal_date)
+                except Exception:
+                    value = None
+                if value not in (None, ""):
+                    return value
+        if mid_date is not None:
+            value = self._net_value(est_id, mid_date)
+            if value not in (None, ""):
+                return value
+        return None
+
     def _qdii_value(self, calculator: PalmmicroFundCalculator, data: dict,
-                    est_value: Any, cny: Any) -> Any:
+                    est_value: Any, cny: Any, est_quote_ref: Any = None) -> Any:
         """对应 ``GetQdiiValue()``：``est * cny / 校准值``，再按仓位调整。
 
         用 ``fundcalc.calc_with_calibration`` 的静态路径（``source=None``），
         把这一天的中间层贡献值注入 ``data["hedge_value"]``。
 
-        ## 贡献值怎么算（这条恒等式是本项目实测出来的）
+        ## 公式（与 PHP 逐字对应）
 
-        ```text
-        hedge_value = nv_f × cal_f / cny          （构建器给的口径）
-                    = est_m × cal_m               （两者都等于中间层的人民币价值）
+        PHP ``qdiiref.php``：
+
+        ```php
+        GetQdiiValue($strEst, $strCNY):
+            $fVal = QdiiGetVal($strEst, $strCNY, $this->fFactor);   // est * cny / cal_f
+            return $this->AdjustPosition($fVal);                    // p*fVal + (1-p)*nv_cal
         ```
 
-        实测库里的值（见 ``_debug_middle_relation.py`` 的输出）：
-        ``SZ161130`` 的 ``hedge_value = 21.746 = 4.5452×32.079543/6.705``；
-        而 ``QQQ`` 的 ``est_m × cal_m = 749.58×0.008945 = 6.705``。
-        两者不相等（差一个 ``p_f``/量纲因子），但**各自是自洽的**：
-        基金那条直接由自己的净值与校准值算出，不需要中间层参与。
+        而 ``cal_f``（``fFactor``）是 ``AdjustFactor()`` 用**校准那天**的中间层值
+        与汇率算的（``QdiiGetCalibration($strEst, $strCNY, $this->GetPrice())``），
+        所以把 ``cal_f`` 代回去，汇率与标的各出现**一次**：
 
-        所以这里**不自己拼中间层口径**（试过 `est_value × cal_m`，
-        得到 0.229 这种离谱结果），而是复用构建器给的同一条式子，
-        用**中间层报价相对变化**做缩放：
+        ```text
+        est_f = (1 - p) * nv + p * nv * (est / est_cal) * (cny / cny_cal)
+        ```
 
-            est_f = (nv_f × cal_f / cny_ref) × (est_quote / est_quote_ref) × (cny / cny_ref)
+        Python 侧 ``calc_with_calibration`` 的式子是：
 
-        其中 ``est_quote_ref × cal_m = cny_ref``（就是 ``QQQ`` 那条恒等式），
-        所以 ``est_quote_ref = cny_ref / cal_m``，代入即得本函数的实现。
+        ```text
+        est_f = (1 - p) * netvalue + p * hedge_value * cny / calibration
+        ```
+
+        两者相等要求
+
+        ```text
+        hedge_value = nv * cal_f / cny * (est / est_cal) * (cny / cny_cal)
+        ```
+
+        —— 这正是本函数的算法。注意 ``nv * cal_f / cny`` 除的是**当前汇率**，
+        对应 ``stockdata._attach_hedge_value()`` 的 (A) 式：估值公式里
+        ``hedge_value`` 后面还要乘一次 ``cny``，先除掉汇率才不会被算两遍
+        （``README_name_and_forex.md`` §2.4①：不除的话估值放大 7 倍）。
+        本函数曾经的实现除的是 ``cny_ref``，于是汇率被算了两遍 ——
+        人民币升贬 1% 会让估值动 2%（实测参考 EST 4.4110 而非 4.4776）。
+
+        ## 三个 EST 的分界线
+
+        调用方决定用哪个口径的中间层值（``est_value``）与哪天的汇率（``cny``）：
+
+        * 官方 EST —— 中间层**净值**（取不到时当日行情价）+ 中间层日期那条汇率；
+        * 参考 EST —— 中间层**当日行情价** + 当前汇率；
+        * 实时 EST —— 中间层**实时快照价** + 当前汇率。
+
+        ``est_quote_ref``（``est_cal``）由 :meth:`_est_quote_ref` 算好传进来，
+        三个 EST 共用同一个锚点，差别只在分子。曾经这里写死
+        `self._middle_quote(...)`（实时快照优先），结果官方 EST 也被实时价影响、
+        不再等于基金净值（实测 4.5452 变 4.5833），而且三个 EST 恒等。
 
         **口径要一致**：``est_value`` 传进来的必须是**中间层报价**
         （如 QQQ 的 749.58），不能是它归一化后的净值（1.0）——
@@ -815,42 +939,41 @@ class EstimateCalculator:
         except (TypeError, ValueError):
             cal_m = 0.0
         if not cal_m:
+            # 中间层没有校准值：它自己不参与"配对估值"这条路
             return None
-        # 校准时的汇率（构建器已把 hedge_value 按它算好）
+        # 校准时用的汇率（cny_cal）：_build() 按校准日期写进 data["CNY"]
         try:
             cny_ref = float(data.get("CNY") or data.get("CNYest") or cny)
         except (TypeError, ValueError):
             cny_ref = float(cny)
 
-        contribution = float(data["hedge_value"]) if data.get("hedge_value") not in (None, "") else None
-        if contribution is None:
-            # 没有构建器的贡献值：退回直接按 own 口径算（``nv_f × cal_f / cny``）
-            try:
-                contribution = float(data["netvalue"]) * float(data["calibration"]) / cny_ref
-            except (TypeError, ValueError, ZeroDivisionError):
-                return None
-
-        # 中间层报价的基准值：est_quote_ref × cal_m = cny_ref
-        est_quote_ref = cny_ref / cal_m
-        if not est_quote_ref:
+        # 贡献值：nv * cal_f / **当前汇率**（见上面 (A) 式的说明）。
+        # ``_build()`` 不写 ``data["hedge_value"]``（那是页面构建器
+        # ``stockdata._attach_hedge_value()`` 的字段），所以这里自己算。
+        try:
+            contribution = (float(data["netvalue"]) * float(data["calibration"])
+                            / float(cny))
+        except (TypeError, ValueError, ZeroDivisionError, KeyError):
             return None
-        # **用调用方传进来的 est_value**，而不是在这里自己去取实时快照。
-        #
-        # 这是三个 EST 的分界线：调用方决定用哪个口径的中间层值 ——
-        #   * 官方 EST 传中间层**净值**（取不到时传当日行情价）；
-        #   * 参考 EST 传**当日行情价**；
-        #   * 实时 EST 传**实时快照价**。
-        # 曾经这里写死 `self._middle_quote(...)`（实时快照优先），
-        # 结果官方 EST 也被实时价影响、不再等于基金净值（实测 4.5452 变 4.5833），
-        # 而且三个 EST 恒等。
-        ratio = (float(est_value) / est_quote_ref) if est_quote_ref else 1.0
-        # 再用汇率相对变化缩放
+
+        # 标的相对变化：est / est_cal。取不到基准值按 1.0（= 标的没动），
+        # 这与 _middle_quote() "取不到按 1.0" 的约定一致，也远好过旧恒等式
+        # 在错误尺度下给出的 4648 倍放大。
+        if est_quote_ref in (None, "", 0):
+            ratio = 1.0
+        else:
+            try:
+                ratio = float(est_value) / float(est_quote_ref)
+            except (TypeError, ValueError, ZeroDivisionError):
+                ratio = 1.0
+        # 汇率相对变化（只出现一次，见上面从 PHP 推导的过程）
         fx_ratio = float(cny) / cny_ref if cny_ref else 1.0
 
         merged = dict(data)
         merged["hedge_value"] = contribution * ratio * fx_ratio
         merged["CNYest"] = float(cny)
         return PalmmicroFundCalculator.calc_with_calibration(merged)
+
     def _middle_quote(self, hedge_symbol: str, data: dict) -> Any:
         """中间层当前报价（与 ``est_quote_ref`` 同口径）。
 

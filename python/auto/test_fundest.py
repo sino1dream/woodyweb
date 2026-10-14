@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import datetime
+import os
 import unittest
 
 from calc.fundestcalc import (
@@ -318,7 +319,7 @@ class EstimateCalculatorTest(unittest.TestCase):
             dates = [d for (sid, d) in self.history if sid == stock_id]
             return max(dates) if dates else None
 
-        def get_net_value_close(self, stock_id, date):
+        def get_netvalue_close(self, stock_id, date):
             return self.netvalue.get((stock_id, date))
 
         def get_history_close(self, stock_id, date):
@@ -563,7 +564,7 @@ class ThreeEstTest(unittest.TestCase):
             record = self.get_latest_net_value(stock_id)
             return record.date if record else None
 
-        def get_net_value_close(self, stock_id, date):
+        def get_netvalue_close(self, stock_id, date):
             if stock_id == "8":
                 if str(date) == str(self.CAL_DATE):
                     # 校准时用的汇率（cny_ref）：``_build()`` 会来问这一天
@@ -639,23 +640,31 @@ class ThreeEstTest(unittest.TestCase):
         ## 预期值怎么来的（重要）
 
         不能"固定中间层价、只改汇率"来测方向：``cal_f`` 本身是按
-        ``cny_ref`` 标定出来的，那样会造出自相矛盾的输入。
+        ``cny_cal`` 标定出来的，那样会造出自相矛盾的输入。
 
-        正确算法（``cny_ref = 6.705``、``est_ref = 749.58``、基金净值 4.5452）：
+        正确算法（``cny_cal = 6.705``、``est_cal = 749.58``、基金净值 4.5452）：
 
         ```text
-        hedge  = (nv_f × cal_f / cny_ref) × (est / est_ref) × (cny / cny_ref)
-        est_f  = (1 - 0.95) × nv_f + 0.95 × hedge × cny / cal_f
+        contribution = nv_f × cal_f / cny        # 除的是**当前**汇率（(A) 式）
+        hedge        = contribution × (est / est_cal) × (cny / cny_cal)
+        est_f        = (1 - 0.95) × nv_f + 0.95 × hedge × cny / cal_f
+                     = (1 - 0.95) × nv_f + 0.95 × nv_f × (est / est_cal) × (cny / cny_cal)
         ```
 
         中间层价不变（749.58）、当前汇率从 6.705 降到 6.60 时：
 
         ```text
-        est_f = 4.4110  （相对净值 -2.95%）
+        est_f = 4.4776  （相对净值 -1.49%，与汇率跌幅 1:1）
         ```
 
+        **汇率只出现一次**正是关键：``_qdii_value()`` 曾经的实现把 contribution
+        除了 ``cny_cal``，汇率被算两遍，人民币贬 1.57% 会让估值涨 2.95%
+        （实测 4.4110）—— 而 QDII 基金的人民币净值只该随汇率动一次
+        （``README_name_and_forex.md`` §2.4① 记的是同一个坑，只是那边在
+        ``_attach_hedge_value()`` 里，这边在 EST 路径上又犯了一次）。
+
         再用**同一个**数据源调 `compute_official`：官方 EST 用的是**中间层日期
-        那条汇率**（``cny_on_mid_date = 6.705``），所以得到 4.5452 而不是 4.4110。
+        那条汇率**（``cny_on_mid_date = 6.705``），所以得到 4.5452 而不是 4.4776。
         这正是两者分界的地方。
         """
 
@@ -667,7 +676,7 @@ class ThreeEstTest(unittest.TestCase):
         official = calculator.compute_official("SZ161130")
 
         self.assertIsNotNone(fair)
-        self.assertAlmostEqual(fair.value, 4.4110, places=3)
+        self.assertAlmostEqual(fair.value, 4.4776, places=3)
         self.assertIsNotNone(official)
         self.assertAlmostEqual(official.value, self.Source.NAV, places=6)
         # 参考 EST ≠ 官方 EST —— 差别正来自"当前汇率"那一条
@@ -707,9 +716,12 @@ class ThreeEstTest(unittest.TestCase):
 
         ```text
         官方 EST（中间层净值 1.0、中间层日期汇率 6.705） = 4.5452
-        参考 EST（当日价 749.58、当前汇率 6.60）        = 4.4110
-        实时 EST（实时价 780.00、当前汇率 6.60）        = 4.5808
+        参考 EST（当日价 749.58、当前汇率 6.60）        = 4.4776
+        实时 EST（实时价 780.00、当前汇率 6.60）        = 4.6501
         ```
+
+        参考 / 实时相对净值分别是 -1.49% / +2.31%：汇率那一项与跌幅 1:1
+        （-1.57%），实时价高出当日价 4.06% 再叠上来 —— 两个因子各算一次。
         """
 
         calculator = self._calculator(
@@ -725,8 +737,8 @@ class ThreeEstTest(unittest.TestCase):
         self.assertIsNotNone(fair)
         self.assertIsNotNone(realtime)
         self.assertAlmostEqual(official.value, self.Source.NAV, places=6)
-        self.assertAlmostEqual(fair.value, 4.4110, places=3)
-        self.assertAlmostEqual(realtime.value, 4.5808, places=3)
+        self.assertAlmostEqual(fair.value, 4.4776, places=3)
+        self.assertAlmostEqual(realtime.value, 4.6501, places=3)
         # 三者互不相同
         self.assertNotAlmostEqual(fair.value, realtime.value, places=3)
         self.assertNotAlmostEqual(official.value, fair.value, places=3)
@@ -745,6 +757,193 @@ class ThreeEstTest(unittest.TestCase):
 
         calculator = self._calculator(NoSnapshot())
         self.assertIsNone(calculator.compute_realtime("SZ161130"))
+
+
+class ProductionScaleTest(unittest.TestCase):
+    """**生产尺度**下的回归：中间层校准值 41.58 不再把 EST 放大 4648 倍。
+
+    ## 这个用例为什么必须存在
+
+    ``ThreeEstTest`` 用的假数据源是**旧种子尺度**：基金校准值 32.08、
+    中间层校准值 0.008945（= 汇率/报价）。``_qdii_value()`` 曾经的实现用恒等式
+    ``est_quote_ref = cny_ref / cal_m`` 反推中间层基准价，恰好只在这个尺度上成立。
+
+    2026-10-13 按生产端口径重算校准值后（见 ``_calibration_recount.py``）：
+
+    * 基金（SH513100）: ``cal_f = 100390.448365``
+      （= ^NDX 30883.148 × 6.7035 / 2.0622，口径二，生产端验算过）；
+    * 中间层（QQQ）: ``cal_m = 41.579312``（= ^NDX / QQQ 净值，口径一）。
+
+    恒等式把基准价算成 ``6.7035 / 41.579 = 0.161``（应约 742），比值放大
+    **4648 倍**，``/qdii`` 与 ``/fund`` 页官方 EST 显示成 9625（应约 2.05）。
+    页面不报错、只是数字离谱 —— 所以要有用例把这个尺度钉住。
+
+    数据全部取自演示库实测（``auto/_scratch/_est_scale_probe.py`` 的输出）。
+    """
+
+    class Source(ThreeEstTest.Source):
+        """演示库 SH513100 的真实尺度；仓位按生产端该页的 1.00。"""
+
+        CAL_FUND = 100390.448365      # = ^NDX 30883.148 * 6.7035 / 2.0622
+        CAL_MIDDLE = 41.579312        # = ^NDX / QQQ 净值
+        NAV = 2.0622
+        CAL_DATE = "2026-10-09"
+        CAL_CNY = 6.7035
+        #: 中间层在校准日**之前最近一条**行情价（QQQ 2026-10-01 收盘价）。
+        #: 校准日 10-09 当天 QQQ 在 stockhistory 里没有行（只到 10-01）。
+        CAL_PREV_QUOTE = 742.03
+
+        def __init__(self, **kwargs):
+            kwargs.setdefault("mid_date", "2026-10-07")
+            kwargs.setdefault("mid_net_value", 749.41308)   # QQQ 10-07 净值
+            kwargs.setdefault("day_quote", 742.03)
+            kwargs.setdefault("realtime_quote", 749.58)
+            kwargs.setdefault("cny_date", "2026-10-12")
+            kwargs.setdefault("cny_current", 6.6925)
+            # 10-07 没有汇率报价 -> 官方 EST 退到最新汇率（与演示库一致）
+            kwargs.setdefault("cny_on_mid_date", None)
+            kwargs.setdefault("nav_date", "2026-10-08")
+            kwargs.setdefault("cny_on_cal_date", 6.7035)
+            super().__init__(**kwargs)
+
+        def get_position(self, stock_id):
+            # 生产端 SH513100 页面：「仓位估算值使用 1.00」
+            return 1.0
+
+        def get_netvalue_close(self, stock_id, date):
+            # 中间层 QQQ 在 mid_date 上有净值行（父类只伺候 USCNY）
+            if stock_id == "4" and str(date) == str(self._mid_date):
+                return self._mid_net_value
+            return super().get_netvalue_close(stock_id, date)
+
+        def get_history_close(self, stock_id, date):
+            # QQQ 的 stockhistory 只到 10-01，mid_date(10-07) 与校准日(10-09) 都没行
+            return None
+
+        def get_prev_history_close(self, stock_id, date):
+            return self.CAL_PREV_QUOTE if stock_id == "4" else None
+
+    def _calculator(self, source=None):
+        source = source or self.Source()
+        return EstimateCalculator(source, FundEstStore(source.connection),
+                                  now_provider=lambda: "2026-10-14 04:00:00")
+
+    def test_official_est_stays_at_nav_scale(self):
+        """官方 EST 必须留在净值量级（≈2.08），而不是 9625。"""
+        calculator = self._calculator()
+        source = calculator.source
+
+        record = calculator.compute_official("SZ161130")
+
+        self.assertIsNotNone(record)
+        # 独立复算（PHP 式子）：nv * (est / est_cal) * (cny / cny_cal)
+        #   est      = QQQ 10-07 净值 749.41308
+        #   est_cal  = QQQ 10-01 收盘价 742.03（校准日 10-09 当天没有行，退昨收）
+        #   cny      = 6.6925（10-07 没有汇率报价，退最新）
+        #   cny_cal  = 6.7035（10-09）
+        expected = (source.NAV
+                    * (749.41308 / source.CAL_PREV_QUOTE)
+                    * (6.6925 / source.CAL_CNY))
+        self.assertAlmostEqual(record.value, expected, places=6)
+        # 兜底护栏：旧恒等式在这里会给出约 9625（放大 4648 倍）
+        self.assertLess(record.value, 10.0 * source.NAV)
+        self.assertGreater(record.value, 0.1 * source.NAV)
+
+    def test_fair_est_also_stays_at_nav_scale(self):
+        """参考 / 实时 EST 同样不能爆炸（它们与官方 EST 只差分子）。"""
+        calculator = self._calculator()
+
+        for name in ("compute_fair", "compute_realtime"):
+            record = getattr(calculator, name)("SZ161130")
+            self.assertIsNotNone(record, name)
+            self.assertLess(record.value, 10.0 * self.Source.NAV, name)
+            self.assertGreater(record.value, 0.1 * self.Source.NAV, name)
+
+    def test_fx_move_scales_the_est_one_to_one(self):
+        """汇率相对变化在估值里**只出现一次**。
+
+        仓位 1.00 时 ``est_f = nv * (est / est_cal) * (cny / cny_cal)``，
+        所以只改汇率时，估值应当**按同一个比例**动。曾经的实现把贡献值除了
+        ``cny_cal``，汇率被算两遍，贬 1.38% 会让估值动 2.72%。
+        """
+        high = self._calculator(self.Source(cny_current=6.6925)).compute_fair("SZ161130")
+        low = self._calculator(self.Source(cny_current=6.60)).compute_fair("SZ161130")
+
+        self.assertIsNotNone(high)
+        self.assertIsNotNone(low)
+        # 估值比例 == 汇率比例（1:1），不是它的平方
+        self.assertAlmostEqual(low.value / high.value, 6.60 / 6.6925, places=9)
+        self.assertNotAlmostEqual(low.value / high.value, (6.60 / 6.6925) ** 2, places=6)
+
+
+class InterfaceNameTest(unittest.TestCase):
+    """数据源方法名漂移的护栏。
+
+    ## 为什么需要它
+
+    ``EstimateCalculator`` 全靠 ``getattr(self.source, "名字")`` 取数，名字写错
+    不会报错，只会**静默走兜底分支**。本项目真踩过：
+
+    ``_net_value()`` 查的是 ``get_net_value_close``（多一个下划线），而接口里的
+    方法是 ``get_netvalue_close``（``netvalue`` 连写）。真实数据源上永远取不到，
+    于是**净值表从来没被读过** —— 中间层净值恒 ``None``、校准时汇率恒 ``None``
+    （``cny/cny_cal`` 被约成 1，汇率相对变化整项消失）。测试替身照着错名定义，
+    所以单测全绿，问题只在连真实库时才现形。
+
+    这个用例把 ``fundestcalc`` 里出现过的每个 ``getattr`` 名字与
+    ``MemoryFundDataSource`` / ``FundDataSource`` 对一遍，写错名字立刻红。
+    """
+
+    #: fundestcalc.py 的路径（相对 python/auto）
+    MODULE = "calc/fundestcalc.py"
+
+    #: 只供测试注入的钩子，两个真实现上都没有（``quote_time_provider`` 的替代）。
+    OPTIONAL_HOOKS = {"get_quote_time"}
+
+    def test_every_getattr_name_resolves_on_a_real_source(self):
+        """每个 ``getattr`` 名字至少要在一个真实现上存在。
+
+        ``getattr`` 取数的写法允许"可选方法"（某个实现没有就静默走兜底），
+        但**两边都没有**的名字一定是写错了。本项目真踩过：
+        ``_net_value()`` 查 ``get_net_value_close``（多一个下划线），两个实现上
+        都不存在，于是**净值表从来没被读过** —— 中间层净值恒 ``None``、
+        校准时汇率恒 ``None``（``cny/cny_cal`` 被约成 1）。而单测全绿，
+        因为测试替身照着错名定义了一份。
+        """
+        import re
+
+        from core import stockdata
+
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), self.MODULE)
+        with open(path, encoding="utf-8") as handle:
+            source = handle.read()
+        names = set(re.findall(r'getattr\(self\.source,\s*"([a-z_]+)"', source))
+        self.assertTrue(names, "没抓到任何 getattr 名字，正则或路径过期了")
+
+        for name in sorted(names - self.OPTIONAL_HOOKS):
+            on_memory = hasattr(stockdata.MemoryFundDataSource, name)
+            on_mysql = hasattr(stockdata.MySqlFundDataSource, name)
+            self.assertTrue(on_memory or on_mysql,
+                            "方法名 %r 在两个真实现上都不存在（fundestcalc 在按它取数，"
+                            "大概率是写错了名字）" % name)
+
+    def test_netvalue_close_is_the_interface_spelling(self):
+        """接口真名是 ``get_netvalue_close``；``getattr`` 里不允许再出现错名。"""
+        import re
+
+        from core import stockdata
+
+        self.assertTrue(hasattr(stockdata.FundDataSource, "get_netvalue_close"))
+        self.assertFalse(hasattr(stockdata.FundDataSource, "get_net_value_close"))
+
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), self.MODULE)
+        with open(path, encoding="utf-8") as handle:
+            source = handle.read()
+        # 只查 **getattr 调用**里的名字：docstring 里提一句错名是为了记录历史，
+        # 不算违规；真违规的是还在按错名取数。
+        looked_up = set(re.findall(r'getattr\(self\.source,\s*"([a-z_]+)"', source))
+        self.assertNotIn("get_net_value_close", looked_up)
+        self.assertIn("get_netvalue_close", looked_up)
 
 
 if __name__ == "__main__":

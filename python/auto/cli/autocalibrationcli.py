@@ -247,7 +247,7 @@ def cmd_sync_nav(args) -> int:
 def _nav_exists(source, symbol: str, date: Any) -> bool:
     """该符号在该日期是否已有净值。
 
-    **直接查库**，不走数据源的 ``get_net_value_close`` —— 那条路的返回值语义
+    **直接查库**，不走数据源的 ``get_netvalue_close`` —— 那条路的返回值语义
     随实现而变（实测在这里没生效，导致重复 INSERT 报 1062 却把判断显示成"要写"）。
     """
     stock_id = source.get_stock_id(symbol)
