@@ -15,7 +15,8 @@
 | P0.2 | 备份并写入 `stock` + `fundpair` | ✅ `69aa649e`，本文 §二 |
 | P0.3 | 历史数据回填（`quotecli` → `stockhistory`，`navcli` → `netvaluehistory`） | ✅ `344d5383`，本文 §三 |
 | P0.4 | 实时链路（`quoteupdatercli --daemon` → `realtimequote` + 盘口 + `estquote`） | ✅ `05b6f2c3`，本文 §五 |
-| P0.5–0.7 | 校准链路 + `fundest` + 期货实时 EST | 待做，两个已定位的坑见 §四.3 |
+| P0.5 | 校准链路跑通（中间层净值 → 闸门 → `calibrationhistory`） | ✅ `a2e84b05`，本文 §四.3 |
+| P0.6–0.7 | `fundest` 官方 EST 落库 + 期货实时 EST | 待做 |
 | P0.8 | 一键重跑 `dbtools/bootstrap_fund_data.py`（默认 dry-run） | 待做 |
 
 P0.5a（修 fundestcalc 中间层基准价尺度错位，EST 放大 4648 倍）已单独提交
@@ -179,7 +180,7 @@ EST 日期同样是 2025-09-29 —— 属同一处上游陈旧，不是我们的
 
 ---
 
-## 四、残留偏差归因 + P0.5 待办（探针 `_p0_3_residual_probe.py`实测）
+## 四、残留偏差归因 + P0.5 的结果（探针 `_p0_3_residual_probe.py` 实测）
 
 ### 4.1 残留有多大、由什么构成
 
