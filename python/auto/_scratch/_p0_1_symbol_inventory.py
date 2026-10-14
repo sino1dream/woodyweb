@@ -1,4 +1,4 @@
-"""P0.1 符号清单：从 PHP 权威映射生成基金 + est 符号全集，并与演示库对照。
+"""P0.1 符号清单：基金 + est 符号全集，并与演示库对照。
 
 回答三个问题（P0.2 的直接输入）：
 
@@ -8,9 +8,11 @@
    用 QQQ 而不是 ^NDX 取数，见 ``stockdata.py:279-284``）；
 3. 演示库里缺哪些 ``stock`` 行、缺哪些 ``fundpair`` 行。
 
-口径全部来自代码里已有的映射（``core/stocksymbol.py`` 的数组 +
-``calc/fundcalc.py`` 的 ``qdii_est_symbol()`` 族），它们与 PHP
-``qdiiref.php:19-37`` 的 ``QdiiGetEstArray()`` 逐条对照过。
+口径全部来自 ``core.symbolinventory``（单一事实源：``core/stocksymbol.py``
+的数组 + ``calc/fundcalc.py`` 的 ``qdii_est_symbol()`` 族，与 PHP
+``qdiiref.php:19-37`` 的 ``QdiiGetEstArray()`` 逐条对照过）。
+**写入脚本 ``dbtools/seed_p0_symbols.py`` 引的是同一个模块** ——
+两边不会漂移。
 
 用法：``python -B auto/_scratch/_p0_1_symbol_inventory.py``（只读，不写库）。
 """
@@ -23,20 +25,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 import pymysql  # noqa: E402
 import pymysql.cursors  # noqa: E402
 
-from calc.fundcalc import (  # noqa: E402
-    qdii_eu_est_symbol,
-    qdii_hk_est_symbol,
-    qdii_jp_est_symbol,
-    qdii_est_symbol,
-)
-from core.stockdata import get_leverage_hedge_symbol, load_mysql_env, mysql_config_from_env  # noqa: E402
+from core.stockdata import load_mysql_env, mysql_config_from_env  # noqa: E402
 from core.stocksymbol import (  # noqa: E402
-    get_china_internet_symbol_array,
-    get_hk_mix_symbol_array,
-    get_lof_mix_symbol_array,
-    get_msci_us50_symbol_array,
-    get_qdii_gold_symbol_array,
-    get_qdii_oil_symbol_array,
     in_array_qdii,
     in_array_qdii_eu,
     in_array_qdii_hk,
@@ -48,13 +38,7 @@ from core.stocksymbol import (  # noqa: E402
     qdii_jp_get_symbol_array,
     qdii_mix_get_symbol_array,
 )
-
-
-def est_of(symbol):
-    """与 ``_est_symbol()`` 同顺序：映射 -> 杠杆替代。"""
-    est = (qdii_est_symbol(symbol) or qdii_hk_est_symbol(symbol)
-           or qdii_jp_est_symbol(symbol) or qdii_eu_est_symbol(symbol))
-    return get_leverage_hedge_symbol(symbol) or est
+from core.symbolinventory import est_symbol_of, fund_symbols  # noqa: E402
 
 
 def category_of(symbol):
@@ -118,7 +102,7 @@ def main():
         for symbol in symbols:
             total += 1
             row = by_symbol.get(symbol)
-            est = est_of(symbol)
+            est = est_symbol_of(symbol)
             # 实际取数用的符号（杠杆替代后的）
             est_row = by_symbol.get(est) if est else None
             pair_id = pair_of.get(str(row["id"])) if row else None
@@ -147,7 +131,7 @@ def main():
     est_symbols = {}
     for _, symbols in groups:
         for symbol in symbols:
-            est = est_of(symbol)
+            est = est_symbol_of(symbol)
             if est:
                 est_symbols.setdefault(est, []).append(symbol)
     for est in sorted(est_symbols):
@@ -183,7 +167,7 @@ def main():
     missing_est = [e for e in est_symbols if e not in by_symbol]
     # fundpair 缺口按**全部有 est 的基金**算：P0.2 会先补 stock 行，
     # 那时这些基金就都有 id 了，配对行要一次性补齐。
-    need_pair = [(s, est_of(s)) for s in all_funds if est_of(s)]
+    need_pair = [(s, est_symbol_of(s)) for s in all_funds if est_symbol_of(s)]
     print("基金总数           ：%d 只（%s）" % (
         len(all_funds), " + ".join("%s %d" % (label, len(syms)) for label, syms in groups)))
     print("缺 stock 行的基金   ：%d 只" % len(missing_funds))
