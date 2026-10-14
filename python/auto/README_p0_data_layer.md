@@ -17,7 +17,7 @@
 | P0.4 | 实时链路（`quoteupdatercli --daemon` → `realtimequote` + 盘口 + `estquote`） | ✅ `05b6f2c3`，本文 §五 |
 | P0.5 | 校准链路跑通（中间层净值 → 闸门 → `calibrationhistory`） | ✅ `a2e84b05`，本文 §四.3 |
 | P0.6–0.7 | `fundest` 官方 EST 落库 + 期货实时 EST | ✅ `ee6dcee2`，本文 §六 |
-| P0.8 | 一键重跑 `dbtools/bootstrap_fund_data.py`（默认 dry-run） | 待做 |
+| P0.8 | 一键重跑 `dbtools/bootstrap_fund_data.py`（默认 dry-run） | ✅ 本文 §七 |
 
 P0.5a（修 fundestcalc 中间层基准价尺度错位，EST 放大 4648 倍）已单独提交
 `c5f44b69`，见 `README_fundest_migration.md` §十。
@@ -235,7 +235,7 @@ nav(最新日)/nav(校准日) 的真实信号；从 §4.1 表看，去掉失真�
 唯一现成的填充通道是 `autocalibrationcli sync-nav`（派生净值），而这个坑②
 刚好堵在它上面。
 
-净值换口径（见 ②）之后这条通道通了。**已按 §七 的安全约定备份后写入**
+净值换口径（见 ②）之后这条通道通了。**已按 §八 的安全约定备份后写入**
 （备份 `dbtools/_snapshots/navcalib_before_20261014_p05.sql`）：
 
 ```text
@@ -628,7 +628,60 @@ est = 30039.8261（^NDX 实时）  cny = 6.6917  nav = 2.399 ← 场内价，不
 
 ---
 
-## 七、P0.3 及以后要遵守的约定
+## 七、P0.8：一键重跑 `dbtools/bootstrap_fund_data.py`（2026-10-15 完成）
+
+前面七步各自都能单独跑，但换机器 / 重建演示库时要按**依赖顺序**连续执行九条
+命令 —— 顺序记错一次就会得到一份"看起来齐了、其实少一层"的数据。所以串成一个
+脚本，**默认 dry-run**：
+
+```text
+python -B dbtools/bootstrap_fund_data.py                  # 体检 + 打印计划
+python -B dbtools/bootstrap_fund_data.py --apply          # 备份 + 真跑
+python -B dbtools/bootstrap_fund_data.py --apply --only archive,fundest
+python -B dbtools/bootstrap_fund_data.py --apply --from calib
+```
+
+### 7.1 九步与它们的依赖关系
+
+| # | 步骤 | 命令 | 为什么在这个位置 |
+| --- | --- | --- | --- |
+| 1 | `symbols` | `seed_p0_symbols.py --apply` | 抓取层**跳过库里没有的符号**，不先写符号后面全是空转 |
+| 2 | `forex` | `forexcli --backfill` | 估值要汇率 |
+| 3 | `nav` | `navcli` | 基金净值，是基金层校准值的分母 |
+| 4 | `quotes` | `quotecli --all-qdii` | 行情历史，也是中间层"当日收盘价"的来源 |
+| 5 | `middle-nav` | `autocalibrationcli --sync-nav --apply` | 推进中间层净值日期，闸门才开得了 |
+| 6 | `archive` | `quotecli --archive-snapshot` | daemon 只写快照，**历史要单独归档**；不归档锚点推不动（§6.4） |
+| 7 | `calib` | `autocalibrationcli --apply` | 中间层 `cal_m` |
+| 8 | `fund-calib` | `autocalibrationcli --funds --apply` | 基金层 `cal_f` |
+| 9 | `fundest` | `fundestcli` | 官方 EST，要前面全部就位 |
+
+第 6 步之前还要一次 `quoteupdatercli --once` 才有快照可归档 —— **脚本不代跑
+长驻进程**（`--daemon` 是另一件事），只在 dry-run 里提示。
+
+### 7.2 两条安全约定（与 `seed_p0_symbols.py` 同一套）
+
+* **默认 dry-run**：只做体检（查库，不联网）并打印要跑的命令；`--apply` 才执行；
+* `--apply` 前 `mysqldump` 全库到 `dbtools/_snapshots/`；找不到 mysqldump 就拒绝
+  执行，除非显式 `--skip-backup`。
+
+每步一个子进程，失败默认**停下**（`--keep-going` 继续），子命令的输出**透传**
+（排查要看的就是它们自己打的那张表）。
+
+### 7.3 单测钉的是顺序，不是命令
+
+`auto/test_bootstrap.py`（14 例）断言的几件事：符号在最前、EST 在最后、
+归档在校准之前、行情在中间层净值之前；每个步骤指向的脚本真实存在；会写库的
+步骤**显式**带 `--apply`；`--only` 按声明顺序而不是参数顺序。
+
+两个实现细节：`dbtools` **不是包**（`test_layout` 钉住它没有 `__init__.py`，
+加了就会和 `auto/sql` 抢包名），所以测试按文件路径加载；加载期间要把
+`sys.stdout` 换成没有 `buffer` 属性的对象 —— 否则脚本那个 UTF-8 包装器被回收时
+会关掉真正的 stdout buffer，后面 import `cli.*` 的用例会报
+`I/O operation on closed file`（`test_layout.test_every_module_imports` 同源）。
+
+---
+
+## 八、P0.3 及以后要遵守的约定
 
 * 动演示库数据前先 `mysqldump` 全库到 `python/dbtools/_snapshots/`
   （已 gitignore，先例 `calib_before_20261012.sql` / `calib_before_20261013.sql`）；
