@@ -23,7 +23,9 @@ from updater.autocalibration import (
     MIDDLE_PAIR_FALLBACK,
     AutoCalibrator,
     CalibrationOutcome,
+    nav_matches_price,
 )
+from source.usnavsource import FALLBACK_BASE_NAV, DerivedMiddleNavSource
 
 
 class FakeCursor:
@@ -589,6 +591,60 @@ class GuardToleranceTest(unittest.TestCase):
         # 汇率与行情的正常日内变动就有 1% 量级，容差不该收到 1%
         self.assertGreaterEqual(GUARD_TOLERANCE, 0.02)
         self.assertLessEqual(GUARD_TOLERANCE, 0.10)
+
+
+class NavMagnitudeGuardTest(unittest.TestCase):
+    """``nav_matches_price`` —— 派生净值的量级自检（P0.5 的第一道护栏）。
+
+    背景（README_p0_data_layer.md §四.3 坑②）：``_implied_middle_nav`` 的
+    恒等式 ``净值 = 汇率 / cal_m`` **只在种子尺度成立**。生产尺度下
+    （QQQ 的 cal_m = 41.5793）它给出 6.69/41.58 = 0.161，差 4648 倍 ——
+    而 ``usnavsource`` 与 ``autocalibrationcli --set-nav`` 都会把它写进
+    ``netvaluehistory``。价格是尺度无关的尺子（ETF 净值与价格同量级），
+    先用它挡一道，把这类事故挡在写库之前。
+    """
+
+    def test_matching_nav_passes(self):
+        # QQQ：派生净值 749.58 vs 当日价 743.57（差 0.8%）
+        self.assertTrue(nav_matches_price(749.58, 743.57))
+
+    def test_off_scale_nav_is_rejected(self):
+        # 生产尺度下恒等式算出的 0.161，与价格差 4600 倍
+        self.assertFalse(nav_matches_price(0.161, 743.57))
+        # 反方向（放大 4600 倍）同样要挡
+        self.assertFalse(nav_matches_price(743.57 * 4600, 743.57))
+
+    def test_no_price_means_do_not_block(self):
+        """没有尺子就不拦 —— 免得把"查不到价格"变成"净值永远算不出来"。"""
+        for price in (None, "", 0, "abc"):
+            self.assertTrue(nav_matches_price(0.161, price))
+
+    def test_tolerance_band(self):
+        self.assertTrue(nav_matches_price(743.57 * 1.2, 743.57))
+        self.assertFalse(nav_matches_price(743.57 * 2.0, 743.57))
+        self.assertFalse(nav_matches_price(743.57 * 0.5, 743.57))
+
+    def test_derived_source_falls_back_and_warns(self):
+        """生产尺度 + 有价格：恒等式的值被挡下，退回常量表并记 warning。"""
+        source = FakeSource(calibration=41.5793, cny=6.69)
+        source.get_latest_history_close = lambda stock_id: 743.57
+
+        nav_source = DerivedMiddleNavSource(source)
+        value = nav_source._implied_nav("QQQ")
+
+        self.assertEqual(value, FALLBACK_BASE_NAV["QQQ"])   # 749.58，量级对
+        self.assertTrue(any("不同量级" in w for w in nav_source.warnings))
+
+    def test_seed_scale_still_uses_the_identity(self):
+        """种子尺度（cal_m = 0.008945）下恒等式是对的，不该被挡。"""
+        source = FakeSource(calibration=0.008945, cny=6.705)
+        source.get_latest_history_close = lambda stock_id: 743.57
+
+        nav_source = DerivedMiddleNavSource(source)
+        value = nav_source._implied_nav("QQQ")
+
+        self.assertAlmostEqual(float(value), 749.58, delta=0.5)
+        self.assertEqual(nav_source.warnings, [])
 
 
 if __name__ == "__main__":

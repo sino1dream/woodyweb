@@ -367,6 +367,7 @@ class AutoCalibrator:
         # 归一化尺度下的 cal_m 承担全部尺度：真实净值 = 汇率 / cal_m
         return rate / value
 
+
     def calibrate_many(self, symbols: Any, apply: bool = True) -> list:
         """批量校准中间层符号。"""
         return [self.calibrate_middle(symbol, apply=apply) for symbol in symbols]
@@ -706,6 +707,41 @@ class AutoCalibrator:
 
         return _datetime.datetime.now().strftime("%H:%M:%S")
 
+
+#: 派生净值与当日价格之间允许的偏离（ETF 净值与价格只差千分位；放宽到 ±25%
+#: 是为了容纳分红除息与"净值是收盘后、价格是盘中"的时间差）。
+NAV_PRICE_TOLERANCE = 0.25
+
+
+def nav_matches_price(nav: Any, price: Any) -> bool:
+    """派生出来的净值是否与**当日价格**同量级。
+
+    ## 为什么需要它（P0.5 的第一个护栏）
+
+    :meth:`AutoCalibrator._implied_middle_nav` 用的恒等式
+    ``净值 = 汇率 / cal_m`` **只在种子尺度成立**（cal_m = 0.008945 →
+    6.705/0.008945 = 749.58，与 QQQ 真实净值吻合）。2026-10-13 按生产端口径
+    重算后 QQQ 的 cal_m 已是 **41.5793**（= 指数 / 净值），同一个式子给出
+    ``6.69 / 41.58 = 0.161`` —— 差 4648 倍。而 ``usnavsource`` 与
+    ``autocalibrationcli --set-nav`` 都会把这个值**写进
+    ``netvaluehistory```**，重新制造 pitfalls #60/#61 那一类事故
+    （净值优先的取数会直接把它当真）。
+
+    价格是**尺度无关**的锚：ETF 的净值与价格总是同一量级（QQQ 749.58 vs
+    743.57），所以拿它当尺子，恒等式算错了立刻能看出来。
+
+    ``price`` 取不到时返回 ``True`` —— 没有尺子就不要拦，交给调用方兜底，
+    免得把"查不到价格"变成"净值永远算不出来"。
+    """
+    try:
+        nav_value = float(nav)
+        price_value = float(price)
+    except (TypeError, ValueError):
+        return True
+    if abs(price_value) <= 0.0000005 or abs(nav_value) <= 0.0000005:
+        return True
+    ratio = nav_value / price_value
+    return abs(ratio - 1.0) <= NAV_PRICE_TOLERANCE
 
 def build_auto_calibrator(source: Any, use_guard: bool = True) -> AutoCalibrator:
     """按数据源创建自动校准器。"""

@@ -332,6 +332,22 @@ def cmd_set_nav(args) -> int:
             print("未指定 --value，按「汇率 %s / 原校准值 %s」反推净值 = %s" % (
                 cny, latest_calibration.close, round(value, 6)))
 
+        # **量级自检**：`汇率 / cal_m` 只在种子尺度成立（0.008945 → 749.58）。
+        # 生产尺度下（QQQ 的 cal_m = 41.5793）同一式子给出 0.161，差 4648 倍 ——
+        # 直接写进 netvaluehistory 会重演 pitfalls #60/#61 那一类事故。
+        # 拿当日价格当尺子（ETF 净值与价格同量级），不合规就拒绝写。
+        # 显式 --value 也一并过检：手工输错一位小数点同样是灾难。
+        from updater.autocalibration import nav_matches_price
+
+        reference = _latest_price(symbol, source, stock_id)
+        if not nav_matches_price(value, reference):
+            ratio = float(value) / float(reference) if reference else 0.0
+            print("拒绝写入：净值 %s 与当日价格 %s 不同量级（比值 %.4g，应为 1 附近）。"
+                  % (value, reference, ratio))
+            print("要么用 --value 显式给一个与价格同量级的净值，要么先修")
+            print("autocalibration._implied_middle_nav（见 README_p0_data_layer.md §四.3）。")
+            return 1
+
         if not args.apply:
             print("预演：将写入 %s %s 净值=%s（加 --apply 真写）" % (symbol, date, value))
             return 0
@@ -355,6 +371,30 @@ def _latest_cny(source):
         return 1.0
     value = source.get_latest_net_value_close(cny_id)
     return value if value not in (None, "") else 1.0
+
+
+def _latest_price(symbol, source, stock_id):
+    """该符号的最新价格（当量级自检的尺子）；取不到返回 ``None``。
+
+    优先实时快照（``realtimequote``），再退行情收盘价（``stockhistory``）。
+    返回 ``None`` 时 :func:`nav_matches_price` 会放行 —— 没有尺子就不拦，
+    免得把"查不到价格"变成"净值永远写不进去"。
+    """
+    reader = getattr(source, "get_stored_quote", None)
+    if reader is not None:
+        try:
+            quote = reader(symbol)
+        except Exception:
+            quote = None
+        if quote is not None and getattr(quote, "price", None):
+            return quote.price
+    reader = getattr(source, "get_latest_history_close", None)
+    if reader is None:
+        return None
+    try:
+        return reader(stock_id)
+    except Exception:
+        return None
 
 
 def cmd_api(args) -> int:

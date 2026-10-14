@@ -104,6 +104,10 @@ class DerivedMiddleNavSource:
     def __init__(self, source: Any = None, base_nav: Any = None):
         self.source = source
         self._base_nav_override = base_nav or {}
+        #: 派生过程中被"量级自检"挡下的记录（只读，给运维看）。
+        #: 挡下后用常量表兜底，值是对的，但**说明恒等式在当前尺度不成立**，
+        #: 必须修 `_implied_middle_nav`（见 README_p0_data_layer.md §四.3）。
+        self.warnings: list = []
 
     def describe(self):
         return {
@@ -142,7 +146,8 @@ class DerivedMiddleNavSource:
         if not price_date:
             return None
 
-        base_nav = self._implied_nav(middle_symbol)
+        # 把价格传进去当量级自检的尺子（见 _implied_nav 的说明）
+        base_nav = self._implied_nav(middle_symbol, price=price)
         if base_nav in (None, "") or abs(float(base_nav)) <= 0.0000005:
             return None
 
@@ -150,21 +155,44 @@ class DerivedMiddleNavSource:
                          nav=float(base_nav), base_date=self._base_date_of(middle_symbol),
                          base_nav=float(base_nav), price=price)
 
-    def _implied_nav(self, middle_symbol: str) -> Any:
-        """``汇率 / 校准值`` —— 该部署尺度下中间层的每份净值。"""
+    def _implied_nav(self, middle_symbol: str, price: Any = None) -> Any:
+        """``汇率 / 校准值`` —— 该部署尺度下中间层的每份净值。
+
+        ## 量级自检（P0.5 的第一道护栏）
+
+        那条恒等式**只在种子尺度成立**（cal_m = 0.008945 → 749.58）。
+        按生产端口径重算后 QQQ 的 cal_m 是 41.5793，同一式子给出
+        ``6.69 / 41.58 = 0.161`` —— 差 4648 倍，而它会被
+        ``autocalibrationcli sync-nav --apply`` 直接写进 ``netvaluehistory``。
+
+        所以这里拿**当日价格**当尺子过一遍（ETF 净值与价格同量级）：
+        不匹配就**退回常量表**（真实量级）并记一条 warning，
+        绝不把错量级的值交出去。``price`` 没传就自己取一次。
+        """
+        fallback = FALLBACK_BASE_NAV.get(middle_symbol)
         if self.source is None:
-            return FALLBACK_BASE_NAV.get(middle_symbol)
+            return fallback
         try:
-            from updater.autocalibration import AutoCalibrator
+            # 惰性导入：autocalibration 反过来也会用到本模块（避免循环 import）
+            from updater.autocalibration import AutoCalibrator, nav_matches_price
         except ImportError:
-            return FALLBACK_BASE_NAV.get(middle_symbol)
+            return fallback
         stock_id = self.source.get_stock_id(middle_symbol)
         if stock_id is None:
-            return FALLBACK_BASE_NAV.get(middle_symbol)
+            return fallback
         calibrator = AutoCalibrator(self.source)
         implied = calibrator._implied_middle_nav(stock_id, self._cny())
         if implied in (None, "") or abs(float(implied)) <= 0.0000005:
-            return FALLBACK_BASE_NAV.get(middle_symbol)
+            return fallback
+
+        if price is None:
+            price, _date = self._latest_price(middle_symbol)
+        if not nav_matches_price(implied, price):
+            self.warnings.append(
+                "%s：恒等式算出的净值 %s 与当日价格 %s 不同量级（尺度假设不成立），"
+                "已退回常量表 %s —— 需修 _implied_middle_nav，见 README §四.3"
+                % (middle_symbol, implied, price, fallback))
+            return fallback
         return implied
 
     # -- 取数 -------------------------------------------------------------
@@ -213,18 +241,11 @@ class DerivedMiddleNavSource:
         if override is not None:
             return override, self._base_date_of(middle_symbol)
 
+        # 走 _implied_nav 而不是再抄一遍恒等式：那里带量级自检（见其说明）
         if self.source is not None:
-            try:
-                from updater.autocalibration import AutoCalibrator
-            except ImportError:
-                AutoCalibrator = None
-            if AutoCalibrator is not None:
-                calibrator = AutoCalibrator(self.source)
-                stock_id = self.source.get_stock_id(middle_symbol)
-                cny = self._cny()
-                implied = calibrator._implied_middle_nav(stock_id, cny)
-                if implied not in (None, "") and abs(float(implied)) > 0.0000005:
-                    return implied, self._base_date_of(middle_symbol)
+            implied = self._implied_nav(middle_symbol)
+            if implied not in (None, "") and abs(float(implied)) > 0.0000005:
+                return implied, self._base_date_of(middle_symbol)
 
         return FALLBACK_BASE_NAV.get(middle_symbol), self._base_date_of(middle_symbol)
 
