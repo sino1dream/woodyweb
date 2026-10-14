@@ -14,7 +14,7 @@
 | P0.1 | 符号清单：基金 + est 符号全集，与生产端页面核对 | ✅ `bfe86469`，本文 §一 |
 | P0.2 | 备份并写入 `stock` + `fundpair` | ✅ `69aa649e`，本文 §二 |
 | P0.3 | 历史数据回填（`quotecli` → `stockhistory`，`navcli` → `netvaluehistory`） | ✅ `344d5383`，本文 §三 |
-| P0.4 | 实时链路（`quoteupdatercli --daemon` → `realtimequote` + 盘口 + `estquote`） | ✅ 本文 §五 |
+| P0.4 | 实时链路（`quoteupdatercli --daemon` → `realtimequote` + 盘口 + `estquote`） | ✅ `05b6f2c3`，本文 §五 |
 | P0.5–0.7 | 校准链路 + `fundest` + 期货实时 EST | 待做，两个已定位的坑见 §四.3 |
 | P0.8 | 一键重跑 `dbtools/bootstrap_fund_data.py`（默认 dry-run） | 待做 |
 
