@@ -163,5 +163,6 @@ python -B auto/_php_qdiicolumn_compare.py --selftest
 
 * **`FundPairReference` 整体迁移**后，`build_leverage_references()` 可以直接删掉，
   改成 `new FundPairReference($symbol)`；调用方（`_build_trading_column`）不用动；
-* PHP 的 `_callbackFundListHedge()`（`_qdiigroup.php:41`）还没迁 —— 那是
-  `EchoFundListParagraph()` 那一列的回调，与本模块同层级但不同一张表。
+* ~~PHP 的 `_callbackFundListHedge()`（`_qdiigroup.php:41`）还没迁~~ ——
+  **已迁**（`web/services/qdii_fund_list.py` 的 `build_hedge_callback`，
+  末列"对冲值"，带真实 PHP 逐例对照，见 `README_qdii_fund_list.md`）。

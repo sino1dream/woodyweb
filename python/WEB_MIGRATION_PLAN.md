@@ -275,9 +275,14 @@ Flask 路由
 
    **仍存在的关键石 / 后续 checkpoint**：CK4 Holdings 分支（含
    `HoldingsReference`，441 行/24 方法 —— 注意演示库 21 个符号里**一个 QdiiMix
-   都没有**，迁完在演示环境看不到变化）；CK5 交易块 + 链接（账号可演示）；
-   CK6 order book 写 snapshot。 **仍未迁**：`_mystock.php` 个股详情大页的 AH/AB/ADR 对比、A 股带配对溢价的 trading、
-   配对 SMA、`EchoAhPairSmaParagraph`接线、Holdings 分支；三个整页外壳（登录、`GetGroupSql()`、`StockEditTransactionForm`/`StockMergeTransactionForm\`）随账号体系暂缓。
+   都没有**，迁完在演示环境看不到变化）；CK5 交易块 + 链接（账号可演示）。
+   **更新（2026-10-15）**：~~CK6 order book 写 snapshot~~ 已完成
+   （`4e2ec161`：`realtimequote.orderbook` 列 + quotestore 编解码 + daemon 写入 +
+   `refquote.apply_order_book` 回填，页面不联网也有五档）；~~A 股带配对溢价的
+   trading~~ 已补（`/stock/<symbol>` 第 4 分支接上 `trading_service.get_table`，
+   见 `README_stock_detail_migration.md` §6.4）。**仍未迁**：`_mystock.php`
+   的 Holdings 分支；三个整页外壳（登录、`GetGroupSql()`、
+   `StockEditTransactionForm`/`StockMergeTransactionForm`）随账号体系暂缓。
 5. `php/layout.php`、`php/menu.php`、`php/stocklink.php`：站点布局和导航。
 
 第 1、2、3 步已经落地：

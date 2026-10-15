@@ -86,6 +86,21 @@
         {% endif %}
       {% endfor %}
 
+      {# A 股五档交易表（php/ui/tradingparagraph.php，_mystock.php:150
+         只给 A 股摆：if ($ref->IsSymbolA())）。与 /fund 详情页是同一张表、
+         同一个服务（trading_service.get_table），差别只在这一页没有 QDII
+         换算价那一列。盘口来自 realtimequote 快照的 orderbook 列
+         （后台抓取进程每 60 秒写一次），不是 A 股或没有挂单量时整段不出现。 #}
+      {% if detail.trading %}
+        <h2>五档交易</h2>
+        <p class="table-note">{{ detail.trading.title }}</p>
+        {{ data_table(detail.trading, "trading-table") }}
+        <p class="table-note">
+          盘口来自后台抓取进程写入的快照（每 60 秒一次）。
+          想看此刻的挂单，<a href="{{ url_for('stock.stock_detail_page', symbol=symbol, live=1) }}">点此联网刷新</a>。
+        </p>
+      {% endif %}
+
       {# 均线（_mystock.php:152-165）。
 
          四个槽位互斥：有 ah_ref 时摆 ah_pair + fund_pair（adr 还在则追加一张

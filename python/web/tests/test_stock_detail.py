@@ -42,14 +42,22 @@ class FakeRef:
 
     只实现 ``StockDetailService`` 会用到的那几个方法。真实引用对象是
     ``refobj.MysqlReference``，它要连库，这里用不着。
+
+    ``symbol_a`` 对应 PHP 的 ``IsSymbolA()`` —— 五档交易表只给 A 股摆
+    （``_mystock.php:150``）。默认 ``True``：测试里用的 SZ/SH 符号本来就是
+    A 股；要验"非 A 股不摆"时显式传 ``False``。
     """
 
-    def __init__(self, symbol: str, pair_symbol: str = None):
+    def __init__(self, symbol: str, pair_symbol: str = None, symbol_a: bool = True):
         self._symbol = symbol
         self._pair = FakeRef(pair_symbol) if pair_symbol else None
+        self._symbol_a = symbol_a
 
     def get_symbol(self):
         return self._symbol
+
+    def is_symbol_a(self):
+        return self._symbol_a
 
     def get_pair_ref(self):
         return self._pair
@@ -89,6 +97,38 @@ class FakeSmaService:
     def fund_pair_table(self, ref, memo=False, callback2=False):
         self.calls.append(("fund_pair_table", ref, memo))
         return self._table("fund_pair", memo)
+
+
+class FakeTradingService:
+    """``TradingService`` 替身：记下收到的参数，返回一张形态逼真的假五档表。
+
+    表的形状照 ``trading_service._table()`` 的返回值抄（``id`` / ``title`` /
+    ``columns`` / ``rows``，每行带 ``cells`` / ``hrefs`` / ``href``）——
+    ``_data_table.html`` 会逐行取这几个键，缺一个就是 UndefinedError
+    而不是留空白。数值本身不重要，这里验的是"接没接上、参数怎么传的"。
+
+    ``table=None`` 表示"服务层判没有挂载量，整段不摆"（对应 PHP
+    ``_checkTradingQuantity()`` 为真时 ``_echoTradingParagraph`` 直接 return）。
+    """
+
+    #: 哨兵：区分"没传 table 参数"与"显式传了 None"
+    _UNSET = object()
+
+    def __init__(self, symbol: str = "SZ162411", table=_UNSET):
+        self.calls = []
+        self.table = {
+            "id": "trading",
+            "title": "%s当前5档交易价格" % symbol,
+            "columns": [{"text": "交易", "width": 50}, {"text": "价格"}, {"text": "数量"}],
+            "rows": [
+                {"cells": ["涨停", "5.451", ""], "hrefs": {}, "href": ""},
+                {"cells": ["买1", "4.955", "1200"], "hrefs": {}, "href": ""},
+            ],
+        } if table is self._UNSET else table
+
+    def get_table(self, ref, ah_ref=None, adr_ref=None):
+        self.calls.append((ref, ah_ref, adr_ref))
+        return self.table
 
 
 class FakeHistoryService:
@@ -353,6 +393,56 @@ class StockDetailServiceTest(unittest.TestCase):
             {"ah_pair": None, "fund_pair": None, "adr_extra": None, "plain": None},
         )
 
+    # -- A 股五档交易表（_mystock.php:150）---------------------------------
+    def test_trading_table_shown_for_symbol_a(self):
+        """A 股：``EchoTradingParagraph($ref, $ah_ref, $adr_ref)`` 接上了。"""
+        trading = FakeTradingService()
+        detail = self._detail(trading_service=trading)
+        self.assertIs(detail["trading"], trading.table)
+        # 参数必须原样传：(ref, ah_ref, adr_ref) —— 后两个决定要不要多两列溢价
+        ref, ah_ref, adr_ref = trading.calls[0]
+        self.assertIs(ref, self.ref)
+        self.assertIsNone(ah_ref)
+        self.assertIsNone(adr_ref)
+
+    def test_trading_table_forwards_pair_refs(self):
+        """有 ah / adr 时它们要传进 ``get_table``（PHP 据此加两列）。"""
+        ah_ref = FakeRef("SH600000", pair_symbol="00700")
+        adr_ref = FakeRef("HWM", pair_symbol="00700")
+        self.pair_result = (None, ah_ref, adr_ref)
+        trading = FakeTradingService()
+        self._detail(trading_service=trading)
+        _ref, seen_ah, seen_adr = trading.calls[0]
+        self.assertIs(seen_ah, ah_ref)
+        self.assertIs(seen_adr, adr_ref)
+
+    def test_trading_table_hidden_for_non_a(self):
+        """非 A 股不摆（PHP 的 ``IsSymbolA()`` 守卫），服务根本不该被调用。"""
+        self.ref = FakeRef("^NDX", symbol_a=False)
+        trading = FakeTradingService()
+        detail = self._detail(trading_service=trading)
+        self.assertIsNone(detail["trading"])
+        self.assertEqual(trading.calls, [])
+
+    def test_trading_table_none_without_service(self):
+        """没注入交易服务时是 ``None``，不抛。"""
+        detail = self._detail()
+        self.assertIsNone(detail["trading"])
+
+    def test_trading_table_none_when_no_quantity(self):
+        """服务层判"没有挂单量"返回 ``None`` 时照原样透出（整段不摆）。"""
+        detail = self._detail(trading_service=FakeTradingService(table=None))
+        self.assertIsNone(detail["trading"])
+
+    def test_trading_table_swallows_service_exception(self):
+        """服务抛异常不该让整页 500 —— 退化成不摆这张表。"""
+        class BoomTradingService(FakeTradingService):
+            def get_table(self, ref, ah_ref=None, adr_ref=None):
+                raise RuntimeError("boom")
+
+        detail = self._detail(trading_service=BoomTradingService())
+        self.assertIsNone(detail["trading"])
+
     # -- 尾部三段 ---------------------------------------------------------
     def test_tail_sections_delegate_to_detail_sections(self):
         """``_mystock.php:167-169`` 三段：有行的出现，没行的隐藏。"""
@@ -453,21 +543,63 @@ class StockDetailRouteTest(unittest.TestCase):
     def setUp(self):
         from web.app import create_app
 
-        self.refs = [FakeRef("SZ162411")]
+        #: SH501225 —— 演示库里**不在** ``fundpair`` 表的 A 股符号，所以路由
+        #: 的"第 2 分支优先"会落空、真的走到第 4 分支（CK3 要验的那条路）。
+        #: 用 SZ162411 会走到第 2 分支（它在 fundpair 里），那张页没有五档表。
+        self.refs = [FakeRef("SH501225")]
         self.app = create_app(
             {"TESTING": True},
             reference_refs_builder=lambda symbols: self.refs,
             sma_service_factory=lambda: FakeSmaService(),
             history_service_factory=lambda: FakeHistoryService(),
+            trading_service_factory=lambda: FakeTradingService("SH501225"),
         )
         self.client = self.app.test_client()
 
     def test_page_renders(self):
-        response = self.client.get("/stock/SZ162411")
+        response = self.client.get("/stock/SH501225")
         self.assertEqual(response.status_code, 200)
         html = response.get_data(as_text=True)
-        self.assertIn("SZ162411", html)
+        self.assertIn("SH501225", html)
         self.assertIn("stockhistory-table", html)
+
+    def test_trading_table_rendered_for_symbol_a(self):
+        """A 股详情页摆五档交易表（``_mystock.php:150``）。
+
+        表头标题、行内容、CSS 类都验 —— 少任何一样都说明模板那段没接上
+        （CK2b 就是这么漏掉 ``first_cell_is_html`` 的，见 pitfalls #59）。
+        """
+        html = self.client.get("/stock/SH501225").get_data(as_text=True)
+        self.assertIn("五档交易", html)
+        self.assertIn('class="data-table trading-table"', html)
+        self.assertIn("SH501225当前5档交易价格", html)
+        self.assertIn("买1", html)
+
+    def test_live_refresh_only_when_requested(self):
+        """``?live=1`` 才联网补盘口；默认一次都不联网。
+
+        ``apply_network`` 在路由函数体内 ``from ref.refquote import`` ——
+        调用时才取模块属性，所以补丁打在模块上就能被看到（与
+        ``routes/fund.py`` 的同款路径）。
+        """
+        import ref.refquote
+
+        seen = []
+        original = ref.refquote.apply_network
+
+        def _fake_apply_network(ref, network=None):
+            seen.append(ref)
+            return True
+
+        ref.refquote.apply_network = _fake_apply_network
+        try:
+            self.client.get("/stock/SH501225")
+            self.assertEqual(seen, [])
+            self.client.get("/stock/SH501225?live=1")
+            self.assertEqual(len(seen), 1)
+            self.assertIs(seen[0], self.refs[0])
+        finally:
+            ref.refquote.apply_network = original
 
     def test_no_ref_does_not_500(self):
         """引用对象建不出来时仍返回 200 —— 旧链接不该因为暂时没行情就 404。"""
@@ -477,7 +609,7 @@ class StockDetailRouteTest(unittest.TestCase):
         self.assertIn("取不到该符号的行情数据", response.get_data(as_text=True))
 
     def test_back_links_present(self):
-        html = self.client.get("/stock/SZ162411").get_data(as_text=True)
+        html = self.client.get("/stock/SH501225").get_data(as_text=True)
         self.assertIn('href="/stock"', html)
         self.assertIn("返回股票列表", html)
 

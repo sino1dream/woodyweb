@@ -22,6 +22,9 @@
 
 from __future__ import annotations
 
+import os
+from typing import Any
+
 from flask import Blueprint, current_app, jsonify, render_template, request, url_for
 
 from web.bootstrap import install_paths
@@ -70,6 +73,44 @@ def _get_sma_service():
 def _get_history_service():
     factory = current_app.extensions.get("history_service_factory")
     return None if factory is None else factory()
+
+
+def _get_trading_service():
+    """五档交易表服务；``/fund`` 与 ``/stock`` 共用同一个工厂。"""
+    factory = current_app.extensions.get("trading_service_factory")
+    return None if factory is None else factory()
+
+
+def _wants_live_refresh() -> bool:
+    """本请求是否**额外联网补一次**五档盘口。
+
+    与 ``routes/fund.py`` 的同名函数同一套路（那边是基金页的五档表）：
+
+    * 默认不联网 —— 盘口来自 ``realtimequote`` 快照的 ``orderbook`` 列，
+      由后台抓取进程每 60 秒写一次（见 ``auto/sql/quotestore.py``）；
+    * ``?live=1`` 或 ``PALMMICRO_TRADING_LIVE_QUOTES=1`` 才显式联网一次。
+
+    为什么这一页也要有：PHP 的 ``new StockReference()`` 每次请求都同步抓新浪，
+    盘口永远是"此刻"的；本版读库，没有这个开关就等于永远比 PHP 慢一轮。
+    """
+    if request.args.get("live") in ("1", "true", "yes"):
+        return True
+    return os.getenv("PALMMICRO_TRADING_LIVE_QUOTES", "0") == "1"
+
+
+def _fill_order_book(ref: Any) -> bool:
+    """给引用对象**联网**补一次五档；返回是否补到。
+
+    用 ``apply_network`` 而不是先读库再抓：这里要的就是"此刻的挂单"。
+    快照里已经有盘口时也会覆盖 —— 用户显式要求了，就按联网的算
+    （与 ``routes/fund.py:_fill_order_book`` 同义，那边注释更全）。
+    """
+    try:
+        from ref.refquote import NetworkQuoteSource, apply_network
+
+        return apply_network(ref, NetworkQuoteSource())
+    except Exception:
+        return False
 
 
 def _get_fundest_service():
@@ -229,10 +270,18 @@ def stock_detail_page(symbol: str):
     if not refs:
         return render_template("stock_detail.html", detail=None, symbol=symbol)
 
+    #: ``?live=1`` 时才联网补盘口；默认读快照（见 :func:`_wants_live_refresh`）。
+    #: 必须在 ``get_detail`` 之前 —— 服务层读的是引用对象上已有的五档。
+    if _wants_live_refresh():
+        _fill_order_book(refs[0])
+
     detail = service.get_detail(
         symbol,
         ref=refs[0],
         sma_service=_get_sma_service(),
         history_service=_get_history_service(),
+        #: ``_mystock.php:150`` 的 A 股五档交易表；服务层自己带
+        #: ``IsSymbolA`` 与"没有挂单量"两道守卫，这里不用预判。
+        trading_service=_get_trading_service(),
     )
     return render_template("stock_detail.html", detail=detail, symbol=symbol)

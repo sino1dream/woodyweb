@@ -75,12 +75,18 @@
 **这不是 bug**：PHP 那边同样靠 ``if ($ah_ref)`` 守卫，没数据就整段不输出。
 等库里有了配对记录，这几段会自己冒出来，本模块不用改。
 
-## 刻意不做的一段
+## A 股五档交易表（曾记为"刻意不做"，本轮补上）
 
-``EchoTradingParagraph($ref, $ah_ref, $adr_ref)``（A 股带配对溢价的交易块）
-**没做**：``trading_service`` 目前只有 ``fund_table``（基金版），没有 A 股
-generic 版本；而且演示库的 ``stock`` 表里一个非基金 A 股都没有，做了也验证不了。
-留作 CK3 的后续缺口。
+``EchoTradingParagraph($ref, $ah_ref, $adr_ref)``（``_mystock.php:150``）当时
+留在缺口里，两个理由都已过期：
+
+1. ``trading_service.get_table()``（generic 版）早就写好，
+   ``test_trading.py`` 有二十多例盯着它 —— 缺的只是**接线**；
+2. "演示库里没有非基金 A 股"也过期了：P0.1 符号入库后 ``stock`` 表里有
+   **52 只** A 股符号走这一分支（恒生科技 ETF / H 股 ETF 那一大批，
+   它们不在 qdii 分组里所以详情页落在 ``/stock``），且快照表里带着真实五档。
+
+本轮接上，守卫照 PHP 的 ``IsSymbolA()`` —— 外汇 / 指数 / 外盘期货不摆。
 
 数据源与服务都由调用方注入，本模块不直接连库 —— 与
 ``routes/fund.py`` 里 ``_build_*`` 的套路一致，测试里可以整个顶掉。
@@ -173,6 +179,27 @@ def _number_format(value: Any, digits: int = 4) -> str:
     except (TypeError, ValueError):
         return ""
     return "{:,.{d}f}".format(number, d=int(digits))
+
+
+def _is_symbol_a(ref: Any) -> bool:
+    """鸭子类型版 ``IsSymbolA()``（``php/stock/stocksymbol.php:600``）。
+
+    ``StockReference`` 继承 ``StockSymbol``，方法直接在引用对象上；
+    两个名字都探（snake_case 主名 + camelCase 别名，见 AGENTS.md 命名约定）。
+    探测不到时返回 ``False`` —— 与 PHP"不是 A 股"同效果：不摆那张表。
+
+    注意返回值是**数字串或 False**（PHP 原样），所以必须 ``bool()`` 一下：
+    ``'600000'`` 是真值，``False`` 是假值，直接 ``if`` 也用得对，
+    但显式转换能让"这个方法返回什么"在调用处一目了然。
+    """
+    for name in ("is_symbol_a", "IsSymbolA"):
+        method = getattr(ref, name, None)
+        if callable(method):
+            try:
+                return bool(method())
+            except Exception:
+                return False
+    return False
 
 
 class StockDetailService:
@@ -312,11 +339,12 @@ class StockDetailService:
         ref: Any = None,
         sma_service: Any = None,
         history_service: Any = None,
+        trading_service: Any = None,
     ) -> dict[str, Any] | None:
         """组装一页；**引用对象建不出来时返回 ``None``** 让上层 404/整段跳过。
 
-        ``ref`` / ``sma_service`` / ``history_service`` 都可以由调用方注入
-        （路由层从 ``current_app.extensions`` 取，测试里整个顶掉）。
+        ``ref`` / ``sma_service`` / ``history_service`` / ``trading_service``
+        都可以由调用方注入（路由层从 ``current_app.extensions`` 取，测试里整个顶掉）。
         """
         if ref is None:
             ref = self._build_ref(symbol)
@@ -333,6 +361,9 @@ class StockDetailService:
             "ab": self._pair_table(ab_ref, "ab"),
             "ah": self._pair_table(ah_ref, "ah"),
             "adr": self._pair_table(adr_ref, "adr"),
+            #: ``_mystock.php:150`` —— 摆在三张对比表之后、均线之前。
+            #: 非 A 股、或没有挂单量时是 ``None``，模板据此整段不渲染。
+            "trading": self._trading_table(ref, ah_ref, adr_ref, trading_service),
             "sma": self._sma_sections(symbol, ref, ah_ref, adr_ref, sma_service),
             #: ``_mystock.php:167-169`` —— 三个分支走完都会落到这里，
             #: 与 ``/fund/<symbol>`` 共用同一批构建器。
@@ -380,6 +411,30 @@ class StockDetailService:
                 source=self.source,
             )
         except Exception:
+            return None
+
+    def _trading_table(self, ref: Any, ah_ref: Any, adr_ref: Any, service: Any) -> Any:
+        """``_mystock.php:150`` ``if ($ref->IsSymbolA()) EchoTradingParagraph(...)``。
+
+        两道守卫叠在一起：
+
+        1. **``IsSymbolA()``** —— PHP 只给 A 股摆这张表：外汇（``fx_*``）、
+           指数（``^NDX``）、外盘期货（``hf_*``）都不摆；
+        2. 服务层自己的 ``_checkTradingQuantity``（没有挂单量就整段不摆）——
+           在 ``trading_service._table`` 里，这里不重复判。
+
+        ``ah_ref`` / ``adr_ref`` 原样传下去：PHP 那边它们决定要不要多两列
+        "相对 H 股 / ADR 的溢价"。演示库三张配对表是空的，这两个参数恒为
+        ``None``，列数退化成基础三列（交易 / 价格 / 数量）。
+        """
+        if service is None:
+            return None
+        if not _is_symbol_a(ref):
+            return None
+        try:
+            return service.get_table(ref, ah_ref, adr_ref)
+        except Exception:
+            # 与其它段落一致：一张装饰性的盘口表不该让整页 500
             return None
 
     def _sma_sections(

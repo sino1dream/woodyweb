@@ -90,7 +90,7 @@
 | `web/services/stock_detail_service.py`（新） | `_mystock.php:144-170` else 分支的段落组装 |
 | `web/routes/stock.py`（改） | 加 `/stock/<symbol>`；列表页链接按符号类型分流 |
 | `web/templates/stock_detail.html`（新） | 详情页模板 |
-| `web/tests/test_stock_detail.py`（新） | 21 例（服务层分支 + `_callbackCnhSma` + 路由接线） |
+| `web/tests/test_stock_detail.py`（新） | 47 例（服务层分支 + `_callbackCnhSma` + 路由接线 + A 股五档表） |
 
 **没有新建 Blueprint**：`routes/stock.py` 原本就有 `/stock` 列表页（对应
 `php/ui/stockparagraph.php`），详情页直接挂在同一个 `stock_bp` 下，与
@@ -118,11 +118,42 @@ PHP 是一串三分支，返回四个互斥的槽位而不是压成一个键，�
 `sma_table` 里 `memo is False` 的严格判断保留 —— 多张均线表并排时只有第一张
 带标题。这条被单测钉住，且变异测试确认断言有牙。
 
-### 6.4 刻意不做的一段
+### 6.4 A 股五档交易表（曾记为"刻意不做"，后补上）
 
-`EchoTradingParagraph($ref, $ah_ref, $adr_ref)`（A 股带配对溢价的交易块）
-**没做**：`trading_service` 目前只有 `fund_table`（基金版）；而且演示库的
-`stock` 表里一个非基金 A 股都没有，做了也验证不了。留作后续缺口。
+``EchoTradingParagraph($ref, $ah_ref, $adr_ref)``（``_mystock.php:150``）CK3 当时
+留在缺口里，理由有两条，后来都被现实推翻：
+
+| 当时的理由 | 实际 |
+|---|---|
+| ``trading_service`` 只有 ``fund_table``，没有 generic 版 | ``get_table()`` 早就写好（``9042ac02`` 第三轮），``test_trading.py`` 二十多例盯着 —— 缺的只是**接线** |
+| 演示库 ``stock`` 表里没有非基金 A 股，做了也验证不了 | P0.1 符号入库后有 **52 只** A 股走这一分支（恒生科技 / H 股 ETF 那一大批），快照表里带着真实五档 |
+
+补上的内容（服务 + 路由 + 模板 + 测试）：
+
+| 文件 | 改动 |
+|---|---|
+| `web/services/stock_detail_service.py` | `get_detail` 加 `trading` 槽位与 `_trading_table()`；鸭子类型 `_is_symbol_a()` |
+| `web/routes/stock.py` | `_get_trading_service()` / `_wants_live_refresh()` / `_fill_order_book()` |
+| `web/templates/stock_detail.html` | 三张对比表之后、均线之前渲染 `detail.trading` |
+| `web/tests/test_stock_detail.py` | +8 例（6 服务 + 2 路由） |
+
+**两道守卫叠在一起**：``IsSymbolA()``（PHP 原样，外汇/指数/外盘期货不摆）+
+服务层自己的 ``_checkTradingQuantity``（没有挂载量整段不摆）。第二道在
+``trading_service._table`` 里，本模块不重复判。
+
+**实测**（本地服务 + 演示库）：
+
+```
+/stock/SH501225  →  五档交易 12 行（涨停 4.138 / 卖5 3.768×800 …）
+                      与 realtimequote.orderbook 逐档一致；涨停价 = 3.762×1.1
+/stock/^NDX      →  不摆（非 A 股，与 PHP 一致）
+/stock/SH513010  →  不摆（在 fundpair 表里，走第 2 分支，PHP 同样没有这段）
+```
+
+**路由测试选符号的教训**：第一版用 ``SZ162411``，页面渲染出来却找不到
+"五档交易" —— 它在 ``fundpair`` 表里，路由的"第 2 分支优先"直接把它接走了，
+``get_detail`` 根本没被调用。改用 ``SH501225``（A 股且不在 fundpair）才真的
+走到第 4 分支。**符号选错时测试不会报错，只会安静地测不到想测的那条路。**
 
 ### 6.5 关于"页面一片空白"
 
