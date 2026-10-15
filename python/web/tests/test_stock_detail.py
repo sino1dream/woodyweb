@@ -948,10 +948,12 @@ class FakeHoldingsDetailService:
     转义"这条断言就永远成立，等于没测。
     """
 
-    def __init__(self):
+    def __init__(self, netvaluehistory="default"):
         self.fundest = RecordingFundEst()
         self.sma = FakeSmaService()
         self.calls = []
+        #: ``"default"`` 用标准的假段落；``None`` 模拟"没有净值记录"
+        self.netvaluehistory = netvaluehistory
 
     def get_fund_pair_detail(self, symbol, **kwargs):
         self.calls.append(("fundpair", symbol))
@@ -966,12 +968,49 @@ class FakeHoldingsDetailService:
             "ref": ref,
             "est": self.fundest.get_table([ref]),
             "est_note": sds.StockDetailService._holdings_est_note(ref),
+            #: ``EchoNetValueHistoryParagraph($ref, false, 0, 1)``
+            #: （fundestparagraph.php:171）—— 估值表之后、均线之前。
+            #: 形状照 ``HistoryService.net_value_paragraph()`` 的返回值，
+            #: 含一行"日期/净值/涨幅"（SH513050 不是 QDII 也不是 LofMix，
+            #: PHP 走 else 支，只有这三列）。
+            "netvaluehistory": (
+                _fake_net_value_paragraph() if self.netvaluehistory == "default"
+                else self.netvaluehistory
+            ),
             "sma": {"plain": self.sma.sma_table(None)},
         }
 
     def get_detail(self, symbol, **kwargs):
         self.calls.append(("generic", symbol))
         return None
+
+
+def _fake_net_value_paragraph():
+    """``HistoryService.net_value_paragraph()`` 返回值的离线替身。
+
+    数字取生产端 ``holdingscn.php?symbol=SH513050`` 那一格：
+    2026-10-13 / 1.0115 / -0.24%。
+    """
+    from sql.historytable import TableRow
+
+    row = TableRow()
+    row.add("2026-10-13")
+    row.add("1.0115")
+    row.add("-0.24%")
+    return {
+        "kind": "netvaluehistory",
+        "symbol": "SH513050",
+        "title": "净值记录",
+        "columns": [
+            {"text": "日期", "color": "", "width": 100},
+            {"text": "净值", "color": "olive", "width": 90},
+            {"text": "涨幅", "color": "", "width": 70},
+        ],
+        "rows": [row],
+        "total": 2,
+        "start": 0,
+        "num": 1,
+    }
 
 
 class HoldingsRouteTest(unittest.TestCase):
@@ -1019,6 +1058,43 @@ class HoldingsRouteTest(unittest.TestCase):
         html = self.client.get("/stock/SH513050").get_data(as_text=True)
         self.assertIn('<a href="/woody/res/fundpositioncn.php?symbol=SH513050">', html)
         self.assertNotIn("&lt;a href", html)
+
+    def test_net_value_history_renders_between_est_and_sma(self):
+        """净值记录段落的位置：估值表之后、均线之前。
+
+        PHP 把它放在 ``EchoHoldingsEstParagraph()`` 末尾
+        （``fundestparagraph.php:171``），而 ``EchoSmaParagraph`` 是
+        ``_mystock.php`` 里下一个调用 —— 生产端那一页的表格顺序就是
+        estimationtable → netvaluehistorytable → adrtable。
+        """
+        html = self.client.get("/stock/SH513050").get_data(as_text=True)
+        est = html.find("est-table")
+        net = html.find("netvaluehistory-table")
+        sma = html.find("sma-table")
+        self.assertGreater(est, 0)
+        self.assertGreater(net, est, "净值记录应排在估值表之后")
+        self.assertGreater(sma, net, "净值记录应排在均线之前")
+
+    def test_net_value_history_omitted_when_no_data(self):
+        """PHP: ``if (($iTotal = $ref->CountNetValue()) == 0) return;``
+
+        没有净值记录时**整段不出现**（连表头都没有），不是摆一个空表。
+        """
+        service = FakeHoldingsDetailService(netvaluehistory=None)
+        from web.app import create_app
+
+        app = create_app(
+            {"TESTING": True},
+            reference_refs_builder=lambda symbols: [FakeRef("SH513050")],
+            sma_service_factory=lambda: FakeSmaService(),
+            history_service_factory=lambda: FakeHistoryService(),
+            stock_detail_service_factory=lambda: service,
+        )
+        html = app.test_client().get("/stock/SH513050").get_data(as_text=True)
+        self.assertNotIn("netvaluehistory-table", html)
+        self.assertNotIn("查看全部净值记录", html)
+        # 但估值表照旧在
+        self.assertIn('class="data-table est-table"', html)
 
 
 if __name__ == "__main__":

@@ -384,5 +384,329 @@ class HistoryRouteTest(unittest.TestCase):
         self.assertEqual(len(data["rows"][0]["cells"]), 4)
 
 
+class FakeCnyRef:
+    """汇率引用替身：只有一个符号（``_net_value_refs`` 只要这个）。"""
+
+    def __init__(self, symbol):
+        self._symbol = symbol
+
+    def get_symbol(self):
+        return self._symbol
+
+
+class FakeHoldingStockRef:
+    """成分股引用替身：只有一个 stock_id。"""
+
+    def __init__(self, stock_id):
+        self._stock_id = stock_id
+
+    def get_stock_id(self):
+        return self._stock_id
+
+
+class FakeHoldingsRef:
+    """持仓型引用替身。
+
+    ``_net_value_refs`` 靠 ``get_proportion_array`` 认它（duck-typing），
+    ``qdii_mix_position`` 还要 ``get_holdings_ratio_array`` 与
+    ``get_holdings_ref_array``。
+    """
+
+    def __init__(self, cny_symbol="USCNY", proportions=None, ratios=None, refs=None):
+        self._cny = FakeCnyRef(cny_symbol)
+        self.proportions = proportions
+        self.ratios = ratios if ratios is not None else {}
+        self.refs = refs if refs is not None else []
+
+    def get_cny_ref(self):
+        return self._cny
+
+    def get_proportion_array(self, date, prev_date):
+        return self.proportions
+
+    def get_holdings_ratio_array(self):
+        return self.ratios
+
+    def get_holdings_ref_array(self):
+        return self.refs
+
+
+def _qdii_get_stock_position(proportion, prev, net_value, cny_prev, cny, f_input=None):
+    from web.services.history_service import qdii_get_stock_position
+    if f_input is None:
+        return qdii_get_stock_position(proportion, prev, net_value, cny_prev, cny)
+    return qdii_get_stock_position(proportion, prev, net_value, cny_prev, cny, f_input)
+
+
+class QdiiGetStockPositionTest(unittest.TestCase):
+    """``_QdiiGetStockPosition()``（netvaluehistoryparagraph.php:5）。
+
+    这组数特意凑成"仓位 = 0.95"：prev=100 / net=95 → 净值涨跌 -5%，
+    cny 从 7.0 到 6.63 → 汇率 -5.2857%，两者一除正是 0.9459 → "0.95"。
+    """
+
+    def test_normal_case_rounds_to_two_decimals(self):
+        value = _qdii_get_stock_position(1.0, 100.0, 95.0, 7.0, 6.63)
+        self.assertEqual(value, "0.95")
+
+    def test_keeps_trailing_zeros(self):
+        """PHP 直接 ``number_format($fVal, 2)`` —— 不削尾零。
+
+        ``format_number_display`` 那套会把它变成 "1"，这里必须区分：
+        下一行还要拿它和 ``number_format(GetPosition(), 2)`` 做**字符串**相等比较。
+        """
+        # 让 percent / est_percent 正好等于 1：两边涨跌相同
+        value = _qdii_get_stock_position(1.0, 100.0, 95.0, 7.0, 6.65)
+        self.assertEqual(value, "1.00")
+
+    def test_small_move_is_skipped(self):
+        """净值涨跌不超过 ``fInput``（默认 4%）就不算 —— 噪声比信号大。"""
+        self.assertIsNone(_qdii_get_stock_position(1.0, 100.0, 98.0, 7.0, 6.63))
+
+    def test_custom_threshold(self):
+        self.assertIsNotNone(_qdii_get_stock_position(1.0, 100.0, 98.0, 7.0, 6.63, 1.0))
+
+    def test_zero_proportion_does_not_raise(self):
+        """PHP 这里是裸除法，proportion 为 0 会 DivisionByZeroError fatal。
+
+        Python 侧返回 None（页面留空）—— 记在 README 的 known deviation 里。
+        """
+        self.assertIsNone(_qdii_get_stock_position(0.0, 100.0, 95.0, 7.0, 6.63))
+
+    def test_zero_result_is_dropped(self):
+        """``$fVal > MIN_FLOAT_VAL`` 不成立时 PHP 返回 false。"""
+        # 汇率没动 → est_percent = 0 → 被 MIN_FLOAT_VAL 挡掉
+        self.assertIsNone(_qdii_get_stock_position(1.0, 100.0, 95.0, 7.0, 7.0))
+
+    def test_negative_result_is_dropped(self):
+        """仓位不可能是负数，PHP 同样直接 false。"""
+        self.assertIsNone(_qdii_get_stock_position(1.0, 95.0, 100.0, 7.0, 6.63))
+
+
+class QdiiMixPositionTest(unittest.TestCase):
+    """``_QdiiMixGetPosition()``（netvaluehistoryparagraph.php:23）。"""
+
+    def _ref(self, proportions, ratios, refs):
+        return FakeHoldingsRef(proportions=proportions, ratios=ratios, refs=refs)
+
+    def test_weighted_total(self):
+        """Σ[成分股涨跌 × 持仓比例 / 100] = 0.02×40% + 0.05×60% = 0.038。"""
+        ref = self._ref(
+            proportions=[0.02, 0.05],
+            ratios={"11": 40.0, "12": 60.0},
+            refs=[FakeHoldingStockRef("11"), FakeHoldingStockRef("12")],
+        )
+        from web.services.history_service import qdii_mix_position
+
+        value = qdii_mix_position(ref, "2026-10-14", "2026-10-13", 100.0, 95.0, 7.0, 6.63)
+        self.assertEqual(value, "0.05")
+
+    def test_missing_proportion_returns_none(self):
+        """``GetProportionArray()`` 有一只成分股缺数据就整段 false。"""
+        ref = self._ref(proportions=None, ratios={"11": 100.0}, refs=[FakeHoldingStockRef("11")])
+        from web.services.history_service import qdii_mix_position
+
+        self.assertIsNone(
+            qdii_mix_position(ref, "2026-10-14", "2026-10-13", 100.0, 95.0, 7.0, 6.63)
+        )
+
+    def test_pairs_by_stock_id_not_index(self):
+        """刻意偏离 PHP 的一处：按 stock_id 回查比例，不靠 foreach 下标。
+
+        ``_build_holding_refs`` 在"成分股符号查不到"时会跳过那只
+        （PHP 不跳），于是 ``holdings_refs`` 比 ``holdings_ratio`` 短，
+        按下标配对会把 A 股的比例安到港股头上。这里钉住"少了也对"。
+
+        数字挑过：按 stock_id 得 "0.09"，按下标会得 "0.05"。
+        """
+        ref = self._ref(
+            proportions=[0.5],                   # 只剩一只的比例
+            ratios={"11": 10.0, "12": 90.0},     # 比例表还是两条
+            refs=[FakeHoldingStockRef("12")],    # 但引用只剩 12 那只
+        )
+        from web.services.history_service import qdii_mix_position
+
+        # total = 0.5 × 0.9 = 0.45（若按下标会取到 10%，得 0.05）
+        value = qdii_mix_position(ref, "2026-10-14", "2026-10-13", 100.0, 95.0, 7.0, 6.63)
+        self.assertEqual(value, "0.09")
+
+    def test_int_and_str_keys_both_work(self):
+        """CK4 踩过的坑：比例表的键是 int，``get_stock_id()`` 给 str。"""
+        ref = self._ref(
+            proportions=[0.05],
+            ratios={11: 60.0},                   # int 键
+            refs=[FakeHoldingStockRef("11")],    # str id
+        )
+        from web.services.history_service import qdii_mix_position
+
+        self.assertIsNotNone(
+            qdii_mix_position(ref, "2026-10-14", "2026-10-13", 100.0, 95.0, 7.0, 6.63)
+        )
+
+
+class NetValueRefsTest(unittest.TestCase):
+    """``EchoNetValueHistoryParagraph()`` 的三支选路（``:157-172``）。"""
+
+    def _service(self):
+        return HistoryService(make_source(), FakeConnection(TABLES))
+
+    def test_plain_symbol_gets_no_columns(self):
+        """既不是 QDII 也不是 LofMix：只有日期/净值/涨幅三列。
+
+        ``SH513050`` 正是这一类 —— 它在 ``holdings`` 表里有数据（所以走 CK4
+        分支），但不在 ``QdiiGetSymbolArray()`` 也不在 ``GetLofMixSymbolArray()``。
+        生产端那一页的净值记录表就是三列。
+        """
+        self.assertEqual(self._service()._net_value_refs("SH513050"), (None, None, None))
+
+    def test_qdii_symbol_gets_cny_and_est(self):
+        cny, est, holdings = self._service()._net_value_refs("SZ161130")
+        self.assertEqual(cny, "USCNY")
+        self.assertEqual(est, "^NDX")
+        self.assertIsNone(holdings)
+
+    def test_qdii_hk_symbol_uses_hkcny(self):
+        cny, est, _holdings = self._service()._net_value_refs("SZ161124")
+        self.assertEqual(cny, "HKCNY")
+        self.assertEqual(est, "^HSI")
+
+    def test_qdii_jp_and_eu_regions(self):
+        service = self._service()
+        self.assertEqual(service._net_value_refs("SH513800")[0], "JPCNY")
+        self.assertEqual(service._net_value_refs("SH513080")[0], "EUCNY")
+
+    def test_lof_mix_symbol_gets_cny_but_no_est(self):
+        """第 2 支：``$est_ref = false``，仓位改走 ``_QdiiMixGetPosition``。"""
+        ref = FakeHoldingsRef(cny_symbol="USCNY")
+        cny, est, holdings = self._service()._net_value_refs("SZ161129", ref)
+        self.assertEqual(cny, "USCNY")
+        self.assertIsNone(est)
+        self.assertIs(holdings, ref, "传进来的持仓引用应该被复用，不该重建")
+
+    def test_lof_mix_symbol_without_holdings_has_no_cny(self):
+        """持仓引用建不出来（或没有成分股）时 ``uscny_ref`` 是 None。
+
+        PHP 那边 ``new CnyReference('USCNY')`` 那行是**注释掉的**
+        （``holdingsref.php:49``），所以同样退化成三列。
+        """
+        cny, est, _holdings = self._service()._net_value_refs("SZ161129")
+        self.assertEqual((cny, est), (None, None))
+
+    def test_qdii_wins_over_lof_mix(self):
+        """4 只符号同时在这两个数组里，PHP 先问 ``in_arrayQdii``。
+
+        （生产端 2026-10-12 把那 8 只加进了 QDII 数组，本地 PHP 仓库还没有；
+        Python 跟生产端，所以这里也走 QDII 支。）证据是汇率列来自
+        ``QDII_REGIONS['us']`` 而不是持仓引用 —— 这个数据源没有持仓数据，
+        走 LofMix 支会连汇率列都没有。
+        """
+        cny, est, _holdings = self._service()._net_value_refs("SZ160216")
+        self.assertEqual(cny, "USCNY")
+        # 持仓型 QDII 查不到中间层符号，est 是 None —— 于是仓位改走
+        # _QdiiMixGetPosition（下面一条测试钉这个）
+        self.assertIsNone(est)
+
+    def test_qdii_without_est_still_passes_holdings_ref(self):
+        """QDII 支里 ``est_ref`` 为 false 时，PHP 用**传进来的 $ref** 反算仓位。
+
+        ``EchoNetValueItem()`` 的 ``else if ($cny_ref)`` 支不管前面走的是
+        哪一支，都用同一个 ``$ref`` 调 ``_QdiiMixGetPosition()``。
+        """
+        holdings = FakeHoldingsRef(cny_symbol="USCNY")
+        cny, est, passed = self._service()._net_value_refs("SZ160216", holdings)
+        self.assertEqual(cny, "USCNY")
+        self.assertIsNone(est)
+        self.assertIs(passed, holdings)
+
+
+class NetValueParagraphTest(unittest.TestCase):
+    """``EchoNetValueHistoryParagraph()``（netvaluehistoryparagraph.php:138）。"""
+
+    def _service(self, tables=None):
+        return HistoryService(make_source(), FakeConnection(tables if tables is not None else TABLES))
+
+    def test_no_net_value_returns_none(self):
+        """PHP: ``if (($iTotal = $ref->CountNetValue()) == 0) return;``"""
+        tables = dict(TABLES)
+        tables["netvaluehistory"] = []
+        self.assertIsNone(self._service(tables).net_value_paragraph("SZ161130", num=1))
+
+    def test_unknown_symbol_returns_none(self):
+        self.assertIsNone(self._service().net_value_paragraph("NOPE", num=1))
+
+    def test_num_one_returns_latest_row_only(self):
+        """CK4 传的是 ``false, 0, 1`` —— 只摆最新一天。"""
+        table = self._service().net_value_paragraph("SZ161130", num=1)
+        self.assertEqual(table["total"], 2)
+        self.assertEqual(len(table["rows"]), 1)
+        self.assertEqual(table["rows"][0].cells[0], "2026-10-01")
+
+    def test_num_zero_returns_all_rows(self):
+        table = self._service().net_value_paragraph("SZ161130", num=0)
+        self.assertEqual(len(table["rows"]), 2)
+
+    def test_plain_symbol_has_three_columns(self):
+        """SH513050 走 else 支：日期/净值/涨幅，没有汇率也没有仓位。"""
+        tables = dict(TABLES)
+        tables["netvaluehistory"] = [
+            {"id": 1, "stock_id": "20", "date": "2026-10-13", "close": 1.0115},
+            {"id": 2, "stock_id": "20", "date": "2026-10-12", "close": 1.0139},
+        ]
+        source = MemoryFundDataSource(
+            stocks={"SH513050": "20", "USCNY": "8"},
+            names={"SH513050": "中概互联网ETF易方达"},
+        )
+        service = HistoryService(source, FakeConnection(tables))
+        table = service.net_value_paragraph("SH513050", num=1)
+        self.assertEqual([c["text"] for c in table["columns"]], ["日期", "净值", "涨幅"])
+        # 生产端那一格是 "1.0115" —— NETVALUE_PRECISION(4)，不是默认的 3 位
+        self.assertEqual(table["rows"][0].cells[1][0], "1.0115")
+        self.assertEqual(table["rows"][0].cells[2], "-0.24%")
+
+    def _position_tables(self):
+        """SZ161130（QDII，est=^NDX）的两天数据，凑成"反算仓位 = 0.95"。
+
+        净值 100 → 95（-5%），USCNY 7.0 → 6.63（-5.2857%），
+        ^NDX 两天都是 100（比例 1.0）→ -5 / -5.2857 = 0.9459 → "0.95"。
+        """
+        return {
+            "netvaluehistory": [
+                {"id": 1, "stock_id": "1", "date": "2026-10-01", "close": 95.0},
+                {"id": 2, "stock_id": "1", "date": "2026-09-29", "close": 100.0},
+                {"id": 10, "stock_id": "8", "date": "2026-10-01", "close": 6.63},
+                {"id": 11, "stock_id": "8", "date": "2026-09-29", "close": 7.0},
+                {"id": 20, "stock_id": "30", "date": "2026-10-01", "close": 100.0},
+                {"id": 21, "stock_id": "30", "date": "2026-09-29", "close": 100.0},
+            ],
+        }
+
+    def _position_source(self, position):
+        return MemoryFundDataSource(
+            stocks={"SZ161130": "1", "^NDX": "30", "USCNY": "8"},
+            names={"SZ161130": "易方达纳斯达克100LOF", "USCNY": "美元人民币"},
+            profiles={
+                "SZ161130": FundProfile(
+                    symbol="SZ161130", stock_id="1", position=position,
+                    official_date="2026-09-29", cny_est=6.705, is_lof=True,
+                    est_symbol="^NDX",
+                ),
+            },
+            positions={"1": position},
+        )
+
+    def test_position_row_is_marked_when_it_matches(self):
+        """反算出的仓位与库里登记值一致时整行标黄（``EchoMatchTableColumn``）。"""
+        service = HistoryService(self._position_source(0.95), FakeConnection(self._position_tables()))
+        row = service.net_value_paragraph("SZ161130", num=1)["rows"][0]
+        self.assertEqual(row.cells[-1], "0.95")
+        self.assertTrue(row.match, "反算值 0.95 与登记仓位 0.95 一致，应该标黄")
+
+    def test_position_row_not_marked_when_it_differs(self):
+        service = HistoryService(self._position_source(0.5), FakeConnection(self._position_tables()))
+        row = service.net_value_paragraph("SZ161130", num=1)["rows"][0]
+        self.assertEqual(row.cells[-1], "0.95")
+        self.assertFalse(row.match, "登记仓位是 0.50，不该标黄")
+
+
 if __name__ == "__main__":
     unittest.main()

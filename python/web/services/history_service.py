@@ -17,6 +17,12 @@ PHP 里这些页面各自独立、各自算数；这里把"取某张表的某几
 ``HistoryService.get_table()``，列定义与单位换算集中在 :data:`HISTORY_KINDS`，
 取数与显示口径复用 ``historytable.py``。
 
+**净值记录还有第二种形态**：CK4 的持仓分支会在估值表之后摆一段
+``net_value_paragraph()``（``EchoNetValueHistoryParagraph($ref, false, 0, 1)``，
+只一行）。它和 ``get_table("netvaluehistory")`` 是**同一个 PHP 函数**的两种
+参数 —— 列选型、行算法全部共用，差别只在行数和"没有数据时整段不出现"。
+见 :meth:`HistoryService.net_value_paragraph`。
+
 **与 PHP 的关键差异**：PHP 直接 ``echo`` HTML；这里返回 ``(列, 行)`` 数据结构，
 由模板渲染。颜色不再是 ``<font color>``，而是随单元格一起返回颜色名，
 模板映射成 CSS 类。
@@ -53,9 +59,128 @@ from sql.historytable import (  # noqa: E402
     use_same_day_net_value,
 )
 from core.stockdata import FundDataSource, MySqlFundDataSource  # noqa: E402
-from core.stocksymbol import in_array_hk_mix, in_array_qdii, in_array_qdii_mix  # noqa: E402
+from core.stocksymbol import (  # noqa: E402
+    in_array_hk_mix,
+    in_array_lof_mix,
+    in_array_qdii,
+    in_array_qdii_eu,
+    in_array_qdii_hk,
+    in_array_qdii_jp,
+    in_array_qdii_mix,
+)
+from ref.holdingsref import StockGetHoldingsReference, ratio_of  # noqa: E402
+from ref.refobj import QDII_REGIONS, QdiiReference  # noqa: E402
 from ui.uicolumn import POS_NETVALUE_DIFF  # noqa: E402
 from web.db import get_db  # noqa: E402
+
+
+# ---------------------------------------------------------------------------
+# 仓位反算（对应 php/ui/netvaluehistoryparagraph.php 顶部两个函数）
+# ---------------------------------------------------------------------------
+def _php_number_format(value: Any, precision: int = 2) -> str:
+    """PHP ``number_format($fVal, $precision)``：定点、**不削尾零**、不去负零。
+
+    与 :func:`format_number_display` 是两套格式，别混用：
+
+    * ``format_number_display`` 走 ``StockGetPriceDisplay()``
+      （``php/stock.php:91``），末尾会 ``rtrim('0')`` 再把 ``-0`` 归成 ``0``；
+    * ``_QdiiGetStockPosition()`` 直接 ``return number_format($fVal, 2)``
+      （``netvaluehistoryparagraph.php:16``），所以**仓位那一格**保留
+      ``"1.00"`` 这样的原样，``-0.00`` 也原样出。
+    """
+    try:
+        return "%.*f" % (precision, float(value))
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def qdii_get_stock_position(
+    proportion: Any,
+    prev: Any,
+    net_value: Any,
+    cny_prev: Any,
+    cny: Any,
+    f_input: Any = POS_NETVALUE_DIFF,
+) -> Any:
+    """``_QdiiGetStockPosition()``（``netvaluehistoryparagraph.php:5``）。
+
+    PHP 原文注释给出了推导::
+
+        (est * cny / estPrev * cnyPrev - 1) * position = (nv / nvPrev - 1)
+
+    即**净值涨幅 = 仓位 × 标的涨幅**（标的涨幅里含汇率变动）。把汇率按标的
+    涨幅归一后算汇率自身的变动，两者一除就是仓位。波动小于 ``f_input``
+    （默认 4%）时不算 —— 噪声比信号大。
+
+    ``proportion`` 是"标的（已换汇）的涨跌比例"，两条路给它的方式不同：
+
+    * QDII（有 est 标的）：``est / estPrev``；
+    * 持仓型 LOF（无 est 标的）：各成分股按持仓比例加权后的合计
+      （见 :func:`qdii_mix_position`）。
+    """
+    percent = percentage_change(prev, net_value)
+    if percent is None or abs(percent) <= f_input:
+        return None
+
+    # PHP: StockGetPercentage($fCnyPrev / $fEstProportion, $fCny)
+    # proportion 为 0 时 PHP 是裸除法 —— PHP 8 下直接 DivisionByZeroError
+    # fatal。这里返回 None（页面留空），记在 known deviation 里。
+    try:
+        divisor = float(cny_prev) / float(proportion)
+    except (TypeError, ValueError, ZeroDivisionError):
+        return None
+
+    est_percent = percentage_change(divisor, cny)
+    if est_percent is None or abs(est_percent) <= MIN_FLOAT_VAL:
+        return None
+    value = percent / est_percent
+    if value <= MIN_FLOAT_VAL:
+        return None
+    return _php_number_format(value, 2)
+
+
+def qdii_mix_position(
+    holdings_ref: Any,
+    date: Any,
+    prev_date: Any,
+    prev: Any,
+    net_value: Any,
+    cny_prev: Any,
+    cny: Any,
+    f_input: Any = POS_NETVALUE_DIFF,
+) -> Any:
+    """``_QdiiMixGetPosition()``（``netvaluehistoryparagraph.php:23``）。
+
+    持仓型基金没有单一 est 标的，改用**各成分股按持仓比例加权**的涨跌
+    当 ``proportion``：::
+
+        Σ[第 i 只成分股的涨跌 × 第 i 只的持仓比例 / 100]
+
+    单个成分股的两日涨跌由 ``GetProportionArray()`` 给（里面已按 A/H/美股
+    分别还原汇率），**任一只缺数据整段返回 false** —— 那时仓位格留空。
+
+    与 PHP 的一处刻意差别：PHP 用 ``foreach`` 的下标把 ``arHoldingsRatio``
+    和 ``arProportion`` 配对（``:29-32``）。Python 侧
+    :meth:`HoldingsReference._build_holding_refs` 在"成分股符号查不到"时会
+    **跳过**那只（PHP 不跳，照样建一个引用），两个列表于是错位。
+    所以这里按 ``stock_id`` 回查比例（用 :func:`ref.holdingsref.ratio_of`，
+    它同时治 int/str 键不一致）：正常数据下结果与 PHP 完全相同，
+    错位时也不会把 A 股的比例安到港股头上。
+    """
+    proportions = holdings_ref.get_proportion_array(date, prev_date)
+    if not proportions:
+        return None
+
+    ratios = holdings_ref.get_holdings_ratio_array()
+    refs = holdings_ref.get_holdings_ref_array()
+    total = 0.0
+    for index, ref in enumerate(refs):
+        if index >= len(proportions):
+            #: PHP 这里会 Notice 后按 null 继续（贡献 0）；截断是等价且不吵的
+            break
+        ratio = ratio_of(ratios, ref.get_stock_id())
+        total += proportions[index] * ratio / 100.0
+    return qdii_get_stock_position(total, prev, net_value, cny_prev, cny, f_input)
 
 
 class HistoryNotFoundError(LookupError):
@@ -249,6 +374,69 @@ class HistoryService:
             "other_kinds": [k for k in HISTORY_KINDS if k != kind],
         }
 
+    # -- 净值记录段落（``EchoNetValueHistoryParagraph``） -------------------
+    def net_value_paragraph(
+        self, symbol: str, ref: Any = None, start: int = 0, num: int = 1
+    ) -> dict[str, Any] | None:
+        """``EchoNetValueHistoryParagraph()``（``netvaluehistoryparagraph.php:138``）。
+
+        CK4 持仓分支在估值表之后调它（``fundestparagraph.php:171``）::
+
+            EchoNetValueHistoryParagraph($ref, false, 0, 1);
+
+        即 **csv 关、从第 0 行起、只要 1 行** —— 页面上只摆最新一天的净值。
+        独立页 ``netvaluehistorycn.php`` 用的是同一函数、``TABLE_COMMON_DISPLAY``
+        行数，那一页依赖账号体系（``SymbolAccount``），在本轮范围之外，
+        所以这里只实现段落本身。
+
+        与 :meth:`get_table` 的 ``netvaluehistory`` 是**同一个 PHP 函数**的两种
+        参数：列选型、行算法全部共用（``_net_value_refs`` /
+        ``_row_netvaluehistory``），差别只在行数和"没有数据时整段不出现"。
+
+        ``ref`` 是调用方手里的引用（CK4 传 ``HoldingsReference``）。
+        PHP 在 LofMix 支会重新构造一个覆盖它，这里只有传进来的不是持仓引用时
+        才重建（见 :meth:`_net_value_refs`）。
+
+        **没有净值记录时返回 ``None``**（PHP ``if (($iTotal =
+        $ref->CountNetValue()) == 0) return;``）—— 连表头都不要，
+        不是摆一个空表。
+        """
+        stock_id = self.source.get_stock_id(symbol)
+        if stock_id is None:
+            return None
+
+        netvalue = NetValueHistorySql(self.connection)
+        total = netvalue.count(stock_id)
+        if total == 0:
+            return None
+
+        cny_symbol, est_symbol, holdings_ref = self._net_value_refs(symbol, ref)
+        position = self.source.get_position(stock_id)
+
+        rows = []
+        for record in netvalue.get_all(stock_id, start, num):
+            date = str(record["date"])
+            prev_date = netvalue.get_date_prev(stock_id, date)
+            rows.append(
+                self._row_netvaluehistory(symbol, netvalue, record, prev_date,
+                                          cny_symbol, est_symbol, position, holdings_ref)
+            )
+
+        #: PHP 的 ``IsTableCommonDisplay($iStart, $iNum)`` 为真时
+        #: （``table.php:6``：``iStart == 0 && iNum <= 10``）链接走
+        #: ``GetNetValueHistoryLink()``、菜单链接为空。CK4 传的 (0, 1) 恒为真，
+        #: 所以只实现这一支；分页那一支（``StockGetMenuLink``）依赖账号体系。
+        return {
+            "kind": "netvaluehistory",
+            "symbol": symbol,
+            "title": HISTORY_KINDS["netvaluehistory"]["title"],
+            "columns": _columns_netvaluehistory(cny_symbol, est_symbol),
+            "rows": rows,
+            "total": total,
+            "start": start,
+            "num": num,
+        }
+
     # -- 历史价格 ---------------------------------------------------------
     def _build_stockhistory(self, symbol: str, stock_id: Any, start: int, num: int):
         table = StockHistorySql(self.connection)
@@ -383,12 +571,7 @@ class HistoryService:
     # -- 净值记录 ---------------------------------------------------------
     def _build_netvaluehistory(self, symbol: str, stock_id: Any, start: int, num: int):
         netvalue = NetValueHistorySql(self.connection)
-        cny_symbol = self._cny_symbol(symbol)
-        est_symbol = self._est_symbol(symbol)
-        # 混合型（无 est_symbol）才走"按持仓比例反算"那条路径
-        cny_ref_available = bool(cny_symbol)
-        if not cny_ref_available:
-            est_symbol = None
+        cny_symbol, est_symbol, holdings_ref = self._net_value_refs(symbol)
 
         rows = []
         total = netvalue.count(stock_id)
@@ -400,20 +583,104 @@ class HistoryService:
             date = str(record["date"])
             prev_date = netvalue.get_date_prev(stock_id, date)
             rows.append(
-                self._row_netvaluehistory(netvalue, record, prev_date, cny_symbol, est_symbol, position)
+                self._row_netvaluehistory(symbol, netvalue, record, prev_date,
+                                          cny_symbol, est_symbol, position, holdings_ref)
             )
         return _columns_netvaluehistory(cny_symbol, est_symbol), rows, total
 
+    # -- 净值记录段落的引用选型（``EchoNetValueHistoryParagraph``） ----------
+    def _net_value_refs(self, symbol: str, ref: Any = None):
+        """``EchoNetValueHistoryParagraph()`` 的三支选路（``:157-172``）。
+
+        PHP 按"这个符号属于哪一类"决定摆几列，**与估值走哪条路是两套判据**：
+
+        1. QDII 家族（``StockGetQdiiReference``：``in_arrayQdii/Hk/Jp/Eu``）
+           → 汇率列 + 中间层净值列 + 仓位列。``cny`` 与 ``est`` **各自独立**
+           取：没有 est 标的的 QDII（``README_p0_data_layer.md`` §1.3 那 8 只）
+           照样有汇率列，只是没有中间层净值列；
+        2. ``in_arrayLofMix``（14 只持仓型 LOF）→ 汇率列 + 仓位列，
+           **没有**中间层净值列（``$est_ref = false``），仓位改走
+           :func:`qdii_mix_position`；
+        3. 其它 → 只有日期/净值/涨幅三列。
+
+        返回 ``(cny_symbol, est_symbol, holdings_ref)``。``holdings_ref`` 只在
+        第 2 支用得到。
+
+        **为什么不真去建 ``QdiiReference``**：这里只需要两个符号（列头文字 +
+        ``netvaluehistory`` 查值），而建引用会连库算 EST，失败时还会把列整个
+        吞掉。PHP 那边 ``GetCnyRef()`` 返回的就是 ``SetForex($strCny)`` 建的
+        ``CnyReference``，``$strCny`` 是四个子类硬编码的
+        ``USCNY``/``HKCNY``/``JPCNY``/``EUCNY``（``qdiiref.php:239/256/271/286``），
+        查表即可；``GetEstRef()`` 来自 ``QdiiGetEstSymbol()``。
+        """
+        region = self._qdii_region(symbol)
+        if region is not None:
+            cny_symbol = QDII_REGIONS[region][0]
+            est_symbol = QdiiReference._est_symbol_of(symbol, region)
+            #: ``$est_ref`` 可能为 false —— ``QdiiGetEstSymbol()`` 查不到中间层
+            #: 符号时（持仓型 QDII 正是如此，``qdiiref.php:241`` 那个 if 不进）
+            #: PHP 的 ``est_ref`` 保持默认的 false。这时
+            #: ``EchoNetValueItem()`` 走 ``else if ($cny_ref)`` 支，用
+            #: **传进来的 ``$ref``** 调 ``_QdiiMixGetPosition()``。
+            #: CK4 传的 ``$ref`` 就是 HoldingsReference，所以 holdings_ref
+            #: 在这一支也要往下传（第一版漏了，仓位格会整个空掉）。
+            holdings = ref if _is_holdings_ref(ref) else None
+            return cny_symbol, est_symbol, holdings
+
+        if in_array_lof_mix(symbol):
+            #: PHP: $ref = new HoldingsReference($strSymbol) —— **重新构造一个**，
+            #: 不用传进来的那个。CK4 传进来的本来就是 HoldingsReference，
+            #: 重复构造只是多一次同样的查询，所以这里复用（见下方 _is_holdings_ref）。
+            holdings = ref if _is_holdings_ref(ref) else self._build_holdings_ref(symbol)
+            if holdings is None:
+                return None, None, None
+            return _symbol_of(holdings.get_cny_ref()), None, holdings
+
+        return None, None, None
+
+    @staticmethod
+    def _qdii_region(symbol: str):
+        """``StockGetQdiiReference()`` 的分派顺序（``php/stock.php:306``）。
+
+        顺序照抄 PHP：先 ``in_arrayQdii``，再 Hk/Jp/Eu。**不能**换成
+        :func:`build_qdii_reference` 里那个"先试 hk/jp/eu 再归 us"的顺序 ——
+        两边对"同时在两个数组里"的符号会给出不同地区。
+        """
+        if in_array_qdii(symbol):
+            return "us"
+        if in_array_qdii_hk(symbol):
+            return "hk"
+        if in_array_qdii_jp(symbol):
+            return "jp"
+        if in_array_qdii_eu(symbol):
+            return "eu"
+        return None
+
+    def _build_holdings_ref(self, symbol: str) -> Any:
+        """建持仓引用；建不出来返回 ``None``（那一节不显示，而不是整页 500）。"""
+        try:
+            return StockGetHoldingsReference(symbol, source=self.source)
+        except Exception:
+            return None
+
     def _row_netvaluehistory(
-        self, netvalue: NetValueHistorySql, record: Any, prev_date: Any,
-        cny_symbol: Any, est_symbol: Any, position: Any,
+        self, symbol: str, netvalue: NetValueHistorySql, record: Any, prev_date: Any,
+        cny_symbol: Any, est_symbol: Any, position: Any, holdings_ref: Any = None,
     ) -> TableRow:
+        """``EchoNetValueItem()``（``netvaluehistoryparagraph.php:62``）的一行。
+
+        ``holdings_ref`` 只在"持仓型 LOF"那条路上用得到（``_QdiiMixGetPosition``
+        要读持仓明细反算仓位），其余两路是 ``None``。
+        """
         date = str(record["date"])
         net_value = record["close"]
 
         row = TableRow()
         row.add(date)
-        row.add(format_price_display(net_value))
+        # PHP: $ref->GetNetValueDisplay() —— 有净值历史时精度取
+        # NETVALUE_PRECISION(4)，否则退回引用自己的精度。
+        # 生产端 SH513050 那一格是 "1.0115"，四位；用默认的 3 位会成 "1.012"。
+        row.add(format_price_display(net_value, precision=4))
         prev_net = netvalue.get_close(record["stock_id"], prev_date) if prev_date else None
         row.add(format_percentage_display(prev_net, net_value))
 
@@ -426,6 +693,9 @@ class HistoryService:
         row.add(format_price_display(cny) if cny is not None else "")
         row.add(format_percentage_display(cny_prev, cny) if cny is not None else "")
 
+        #: PHP 的 ``$strOrgPos``：库里记的仓位，用来判断"反算值和登记值是否吻合"
+        #: （吻合就把整行标黄，见 ``EchoMatchTableColumn``）。
+        org_pos = _php_number_format(position, 2)
         if est_symbol:
             est_id = self.source.get_stock_id(est_symbol)
             est = netvalue.get_close(est_id, date) if est_id else None
@@ -437,12 +707,18 @@ class HistoryService:
                 # 汇率成分剥掉，剩下的比例才是真实仓位。
                 estimated = self._estimate_position(est, est_prev, prev_net, net_value, cny_prev, cny)
                 row.add(estimated if estimated is not None else "")
+                if estimated is not None and estimated == org_pos:
+                    row.match = True
             else:
                 row.add("")
                 row.add("")
         else:
             # 混合型：用持仓比例加权，见 PHP _QdiiMixGetPosition()
-            row.add(self._mixed_position(record["stock_id"], date, prev_date, prev_net, net_value, cny_prev, cny) or "")
+            estimated = self._mixed_position(symbol, holdings_ref, date, prev_date,
+                                             prev_net, net_value, cny_prev, cny)
+            row.add(estimated if estimated is not None else "")
+            if estimated is not None and estimated == org_pos:
+                row.match = True
         return row
 
     def _estimate_position(self, est: Any, est_prev: Any, prev_net: Any, net_value: Any,
@@ -458,40 +734,26 @@ class HistoryService:
 
         只在净值涨跌超过 ``fInput``（默认 4%）时才算 —— 波动小时反算噪声太大。
         """
-        if est_prev is None or prev_net is None:
+        if est_prev is None:
             return None
-        percent = percentage_change(prev_net, net_value)
-        if percent is None or abs(percent) <= POS_NETVALUE_DIFF:
-            return None
-
-        # PHP: StockGetPercentage($fCnyPrev / $fEstProportion, $fCny)，
-        # 其中 $fEstProportion = $fEst / $fEstPrev。
-        # 也就是把汇率按标的涨幅归一后再算汇率自身的变动。
         try:
             proportion = float(est) / float(est_prev)
         except (TypeError, ValueError, ZeroDivisionError):
             return None
-        if abs(proportion) <= MIN_FLOAT_VAL:
-            return None
-        if cny_prev is None or cny is None:
-            return None
-        est_percent = percentage_change(float(cny_prev) / proportion, cny)
-        if est_percent is None or abs(est_percent) <= MIN_FLOAT_VAL:
-            return None
-        value = percent / est_percent
-        if value <= MIN_FLOAT_VAL:
-            return None
-        return format_number_display(value, 2)
+        return qdii_get_stock_position(proportion, prev_net, net_value, cny_prev, cny)
 
-    def _mixed_position(self, stock_id: Any, date: Any, prev_date: Any, prev_net: Any,
-                        net_value: Any, cny_prev: Any, cny: Any) -> Any:
+    def _mixed_position(self, symbol: str, holdings_ref: Any, date: Any, prev_date: Any,
+                        prev_net: Any, net_value: Any, cny_prev: Any, cny: Any) -> Any:
         """对应 PHP ``_QdiiMixGetPosition()``：按持仓比例加权后反算仓位。
 
-        需要 ``holdings`` 表（持仓明细）。**当前迁移范围内 holdings 为空**，
-        所以这里只在数据齐备时才计算，否则返回 ``None`` 让页面留空 ——
-        不编造一个看起来合理的仓位。
+        需要 ``holdings`` 表（持仓明细）。**CK4 之前演示库里 holdings 是空的**，
+        所以这里一度直接返回 ``None``；``4d681a0f`` 迁完 ``HoldingsReference``
+        并从生产端搬了 ``SH513050`` 的真实样本后才真算。
         """
-        return None
+        if holdings_ref is None:
+            return None
+        return qdii_mix_position(holdings_ref, date, prev_date, prev_net, net_value,
+                                 cny_prev, cny)
 
     # -- 净值价格比较 -----------------------------------------------------
     def _build_netvalueclose(self, symbol: str, stock_id: Any, start: int, num: int):
@@ -647,6 +909,31 @@ class HistoryService:
         目的是把"每克多少美元"换算成"每克多少人民币"。
         """
         return "USCNY"
+
+
+def _symbol_of(ref: Any) -> Any:
+    """从引用对象取符号；``None`` 或取不到都回 ``None``。"""
+    if ref is None:
+        return None
+    getter = getattr(ref, "get_symbol", None)
+    if getter is None:
+        getter = getattr(ref, "GetSymbol", None)
+    if getter is None:
+        return None
+    try:
+        return getter()
+    except Exception:
+        return None
+
+
+def _is_holdings_ref(ref: Any) -> bool:
+    """ Duck-typing 判断是不是持仓型引用（有 ``get_proportion_array``）。
+
+    ``EchoNetValueHistoryParagraph()`` 的 LofMix 支会 ``new
+    HoldingsReference($strSymbol)`` 覆盖传进来的 ``$ref``；CK4 传进来的本来
+    就是持仓引用，重复构造只是多一次同样的查询，所以这里认了就复用。
+    """
+    return getattr(ref, "get_proportion_array", None) is not None
 
 
 def _php_val_is_false(value: Any) -> bool:

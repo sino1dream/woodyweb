@@ -300,10 +300,13 @@ Flask 路由
    （`4e2ec161`：`realtimequote.orderbook` 列 + quotestore 编解码 + daemon 写入 +
    `refquote.apply_order_book` 回填，页面不联网也有五档）；~~A 股带配对溢价的
    trading~~ 已补（`/stock/<symbol>` 第 4 分支接上 `trading_service.get_table`，
-   见 `README_stock_detail_migration.md` §6.4）；~~CK4 Holdings 分支~~ 已补（见上）。
-   **仍未迁**：`EchoNetValueHistoryParagraph`（181 行）；
-   ~~`EchoFundHistoryParagraph`~~ **2026-10-15 复核：已迁**（`cfc6e702`，
-   `detail_sections.build_fund_history`），CK4 只是没在 Holdings 分支上接它；
+   见 `README_stock_detail_migration.md` §6.4）；~~CK4 Holdings 分支~~ 已补（见上）；
+   ~~`EchoNetValueHistoryParagraph`~~ **2026-10-15 已迁**（CK4-E：
+   `history_service.net_value_paragraph()` + `qdii_get_stock_position()` /
+   `qdii_mix_position()`，接在估值表之后、均线之前，见
+   `README_holdings_migration.md` §10）；`EchoFundHistoryParagraph` 也已迁
+   （`cfc6e702`，`detail_sections.build_fund_history`），CK4 只是没在 Holdings
+   分支上接它；
    三个整页外壳（登录、`GetGroupSql()`、
    `StockEditTransactionForm`/`StockMergeTransactionForm`）随账号体系暂缓。
 5. `php/layout.php`、`php/menu.php`、`php/stocklink.php`：站点布局和导航。

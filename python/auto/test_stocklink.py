@@ -38,6 +38,7 @@ from ref.stocklink import (  # noqa: E402
     get_holdings_link,
     get_my_stock_group_link,
     get_my_stock_link,
+    get_net_value_history_link,
     get_on_click_link,
     get_overnight_cnh_link,
     get_php_link,
@@ -396,6 +397,31 @@ class HoldingsLinkTest(unittest.TestCase):
         self.assertIn("/woody/res/holdings.php?", get_holdings_link("SH513050", chinese=False))
         self.assertIn(
             "/woody/res/fundposition.php?", get_fund_position_link("SH513050", chinese=False)
+        )
+
+
+class NetValueHistoryLinkTest(unittest.TestCase):
+    """净值记录链接（``php/stocklink.php:169``）。
+
+    ``EchoNetValueHistoryParagraph()`` 表头上方摆的就是它
+    （``$strLink = GetNetValueHistoryLink($strSymbol)``）。
+    """
+
+    def test_default_display(self):
+        self.assertEqual(
+            '<a href="/woody/res/netvaluehistorycn.php?symbol=SH513050">净值记录</a>',
+            get_net_value_history_link("SH513050"),
+        )
+
+    def test_custom_display(self):
+        self.assertEqual(
+            '<a href="/woody/res/netvaluehistorycn.php?symbol=SH513050">净值记录全部</a>',
+            get_net_value_history_link("SH513050", display="净值记录全部"),
+        )
+
+    def test_english_pages_drop_cn(self):
+        self.assertIn(
+            "/woody/res/netvaluehistory.php?", get_net_value_history_link("SH513050", chinese=False)
         )
 
 

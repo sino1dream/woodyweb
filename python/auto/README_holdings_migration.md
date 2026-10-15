@@ -164,10 +164,11 @@ EST 日期取**更早**的那个市场日期（`pick_est_date`，`:97-101`）：
 
 | PHP | 状态 |
 |---|---|
-| `EchoNetValueHistoryParagraph`（181 行，净值历史段落） | ❌ 未迁，CK4 只取它的"持仓更新日"那句说明 |
+| ~~`EchoNetValueHistoryParagraph`（181 行，净值历史段落）~~ | ✅ **2026-10-15 已迁**，见 §11 |
 | ~~`EchoFundHistoryParagraph`（`:141`）~~ | ✅ **2026-10-15 复核：已迁**，见 `web/services/detail_sections.build_fund_history`（`cfc6e702`），CK4 只是没在 Holdings 分支上接它 |
-| `GetProportionArray` 的调用方 `netvaluehistoryparagraph.php:25` | ❌ 方法已迁，调用方没接 |
+| ~~`GetProportionArray` 的调用方 `netvaluehistoryparagraph.php:25`~~ | ✅ **2026-10-15 已接**，见 §11.3 |
 | `StockGetHoldingsReference` 之外的三个 stocklink 用法 | 方法已加（`get_holdings_link` 等），只接了 Holdings 分支 |
+| `netvaluehistorycn.php` 整页（分页 + CSV + 折线图） | ❌ 依赖账号体系（`SymbolAccount`），本轮范围外；段落本身已迁，见 §11 |
 
 ## 9. 下游接线：QDII 的持仓口径（CK4 收尾，已接）
 
@@ -234,11 +235,129 @@ PHP 的 `else` 是 `new FundPairReference(...)`，本版仍是 `EstReference`。
 对照特意比了两样：数值**和**"传给 `_estNetValue` 的日期"。只比数值看不出
 档位错 —— 三档恰好给出同一个数时（净值 1.0 与行情价 1.0）是分不出来的。
 
-## 10. 跑法
+## 10. 净值记录段落（CK4-E，已迁）
+
+`EchoNetValueHistoryParagraph()`（`php/ui/netvaluehistoryparagraph.php`，181 行）
+原来是 §8 表里唯一未迁的段落。它在 `EchoHoldingsEstParagraph()` **末尾**被调用
+（`fundestparagraph.php:171`）：
+
+```php
+_echoFundEstParagraph($arColumn, $bFair, $arRef, $str);   // 估值表 + 说明
+EchoNetValueHistoryParagraph($ref, false, 0, 1);          // ← 净值记录，只一行
+```
+
+所以 `/stock/<symbol>` 持仓分支的完整顺序是**估值表 → 净值记录 → 均线**
+（`_mystock.php:139-141`），与生产端 `holdingscn.php?symbol=SH513050` 的表格顺序
+一致（`estimationtable` → `netvaluehistorytable` → `adrtable`）。
+
+### 10.1 迁了什么
+
+| PHP | Python |
+|---|---|
+| `EchoNetValueHistoryParagraph()`（`:138`） | `HistoryService.net_value_paragraph()` |
+| `EchoNetValueItem()`（`:62`） | `HistoryService._row_netvaluehistory()` |
+| `_QdiiGetStockPosition()`（`:5`） | `qdii_get_stock_position()`（模块级纯函数） |
+| `_QdiiMixGetPosition()`（`:23`） | `qdii_mix_position()`（模块级纯函数） |
+| `GetNetValueTableColumn()`（`:39`） | `_columns_netvaluehistory()`（CK5 已有） |
+| `_adjustAdminPositionDisplay()`（`:57`） | ❌ 管理员确认链接，账号体系范围外 |
+| `_echoNetValueData()`（`:118`） | `_build_netvaluehistory()` / `net_value_paragraph()` 里的循环 |
+
+`num=1` 照抄 PHP（只摆最新一天）—— 持仓型基金的估值本身就以"最新净值"为基准，
+摆一整页历史没有信息量。
+
+### 10.2 列组成的判据：三支选路
+
+这是本段落的骨架，选错一支页面就少/多几列且不报错。PHP 按"符号属于哪一类"判：
+
+```php
+if ($fund_ref = StockGetQdiiReference($strSymbol)) {   // QDII 家族
+    $cny_ref = $fund_ref->GetCnyRef();                 // USCNY / HKCNY / JPCNY / EUCNY
+    $est_ref = $fund_ref->GetEstRef();                 // 可能为 false
+}
+else if (in_arrayLofMix($strSymbol)) {                 // 14 只持仓型 LOF
+    $ref = new HoldingsReference($strSymbol);          // 注意：重新构造，覆盖 $ref
+    $cny_ref = $ref->GetCnyRef();                      // uscny_ref，没成分股时是 false
+    $est_ref = false;
+}
+else { $cny_ref = false; $est_ref = false; }           // 三列
+```
+
+Python 侧对应 `HistoryService._net_value_refs()`，返回
+`(cny_symbol, est_symbol, holdings_ref)`。两点值得记：
+
+* **不真去建 `QdiiReference`**：这里只要两个符号（列头文字 + `netvaluehistory`
+  查值），而建引用会连库算 EST、失败时还会把列整个吞掉。PHP 的 `GetCnyRef()`
+  返回的就是 `SetForex($strCny)` 建的 `CnyReference`，`$strCny` 是四个子类
+  硬编码的常量，查表即可。
+* **`uscny_ref` 默认是 `None`**：PHP 里 `new CnyReference('USCNY')` 那行是
+  **注释掉的**（`holdingsref.php:49`），只有出现第一只美股成分股时才建。
+  所以没有持仓数据的 LofMix 符号照样退化成三列。
+
+### 10.3 `_QdiiMixGetPosition`：持仓型怎么反算仓位
+
+配对型基金有单一 est 标的，仓位 = 净值涨幅 ÷ 标的涨幅；持仓型没有，改用
+**各成分股按持仓比例加权**：
+
+```
+加权涨幅 = Σ[第 i 只成分股的两日涨跌 × 第 i 只的持仓比例 / 100]
+仓位     = 净值涨幅 ÷ (cnyPrev / 加权涨幅 换算出的汇率涨幅)
+```
+
+单个成分股的两日涨跌由 `HoldingsReference.get_proportion_array()` 给
+（里面已按 A/H/美股分别还原汇率），**任一只缺数据整段返回 false**。
+
+**这一处是 CK4 之前唯一的桩**：`_mixed_position()` 直接 `return None`，
+因为当时演示库 `holdings` 表是空的。`4d681a0f` 迁完 `HoldingsReference` 并
+从生产端搬了 `SH513050` 的真实样本后才真算。
+
+### 10.4 与 PHP 的一处刻意偏差：配对方式
+
+PHP 用 `foreach` 的下标把 `arHoldingsRatio` 和 `arProportion` 配对
+（`:29-32`）。Python 侧 `_build_holding_refs()` 在"成分股符号查不到"时会
+**跳过**那只（PHP 不跳，照样建一个引用），两个列表于是错位 —— 按下标配对会把
+A 股的比例安到港股头上，而且不报错。所以 `qdii_mix_position()` 按
+`stock_id` 回查比例（用 `ref.holdingsref.ratio_of()`，它同时治 int/str 键
+不一致，即 CK4-B 那个致命坑）。**正常数据下结果与 PHP 完全相同**，
+错位时也不会安错比例；`test_history.QdiiMixPositionTest.test_pairs_by_stock_id_not_index`
+专门钉了这一点（按 stock_id 得 "0.09"，按下标会得 "0.05"）。
+
+### 10.5 另一个坑：QDII 支也要往下传 holdings_ref
+
+`est_ref` 为 false 时（持仓型 QDII 查不到中间层符号），`EchoNetValueItem()` 走
+`else if ($cny_ref)` 支，用**传进来的 `$ref`** 调 `_QdiiMixGetPosition()` ——
+不管前面走的是 QDII 支还是 LofMix 支。第一版只在 LofMix 支传了
+`holdings_ref`，QDII 支漏了，那些符号的仓位格会整个空掉。
+`test_history.NetValueRefsTest.test_qdii_without_est_still_passes_holdings_ref`
+钉住它。
+
+### 10.6 顺带修掉的一处精度
+
+净值列原先用 `format_price_display(net_value)`（默认 3 位），PHP 用的是
+`GetNetValueDisplay()` → `NETVALUE_PRECISION`（4 位）。生产端 `SH513050`
+那一格是 `1.0115`，3 位会显示成 `1.012`。已改成 `precision=4`。
+
+### 10.7 验证
+
+* **PHP 逐例对照 16/16**（`_php_netvaluehistory_check.php` +
+  `_ck4_netvalue_compare.py`）：4 组列组成 + 8 组仓位反算 + 4 组持仓加权。
+  含两个四舍五入边界（算出来正好 0.125 与 0.625）—— PHP 的 `number_format`
+  与 Python 的 `%` 在此可能分叉，实测都是 half-up，一致。
+  列文字有一处刻意差异已归一化后再比：PHP 中间层那列是 `^NDX净值`
+  （符号作前缀），Python 改成 `标的净值` 以避免与基金自己的「净值」列同名。
+* **单测**：`test_history.py` +26（`QdiiGetStockPositionTest` 7、
+  `QdiiMixPositionTest` 4、`NetValueRefsTest` 8、`NetValueParagraphTest` 7），
+  `test_stock_detail.py` +3（段落位置、无数据时不出现、替身形状），
+  `test_stocklink.py` +3（`get_net_value_history_link`）。
+* **页面实测**（`_ck4_netvalue_state.py` + 起服务抓页）：
+  列 `['日期','净值','涨幅']`、行 `['2026-10-13','1.0115','-0.24%']`，
+  与生产端逐格一致；表格顺序 估值 → 净值记录 → 均线也对上了。
+
+## 11. 跑法
 
 ```bash
 # 单测
 cd python/auto && D:/python/python.exe -B -m unittest test_holdingsref test_holdingstable -v
+cd python/web  && D:/python/python.exe -B -m unittest tests.test_history tests.test_stock_detail -v
 
 # PHP 逐例对照（人造输入）
 cd python && D:/python/python.exe -B auto/_scratch/_php_holdings_compare.py
@@ -246,8 +365,12 @@ cd python && D:/python/python.exe -B auto/_scratch/_php_holdings_compare.py
 # PHP 逐例对照（真实 36 只）
 cd python && D:/python/python.exe -B auto/_scratch/_ck4_real_check.py
 
+# PHP 逐例对照（净值记录段落的选档与列组成）
+cd python && D:/python/python.exe -B auto/_scratch/_ck4_netvalue_compare.py
+
 # 页面实测（需先起 web 服务）
 cd python && D:/python/python.exe -B auto/_scratch/_ck4_sample.py --apply
 curl -s "http://127.0.0.1:5000/stock/SH513050" -o /tmp/local_SH513050.html
 cd python && D:/python/python.exe -B auto/_scratch/_ck4_compare.py
+cd python && D:/python/python.exe -B auto/_scratch/_ck4_netvalue_state.py
 ```

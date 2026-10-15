@@ -12,9 +12,10 @@
 4      **else**（本模块）                            ``/stock/<symbol>``
 =====  ==========================================  ==================
 
-本模块现在装**两个**分支：
+本模块现在装**三个**分支：
 
 * :meth:`StockDetailService.get_fund_pair_detail` —— 第 2 分支（CK2b）
+* :meth:`StockDetailService.get_holdings_detail` —— 第 3 分支（CK4，含 CK4-E 的净值记录段落）
 * :meth:`StockDetailService.get_detail` —— 第 4 分支（CK3）
 
 两者共用同一个 ``/stock/<symbol>`` 路由，由路由层按"有没有 ``fundpair``
@@ -387,14 +388,12 @@ class StockDetailService:
         加权涨幅（见 :mod:`ref.holdingsref`）。判断走哪条分支的依据是
         ``holdings`` 表有没有这只基金的持仓明细行。
 
-        ## 刻意没做的一段
+        ## 净值记录段落在估值表之后
 
         ``EchoHoldingsEstParagraph()`` 末尾还调了
         ``EchoNetValueHistoryParagraph($ref, false, 0, 1)``
-        （``fundestparagraph.php:171``）—— 那是"净值 + 汇率 + 仓位"的历史表，
-        ``php/ui/netvaluehistoryparagraph.php`` 181 行，**是一个独立段落**
-        （QDII 详情页也在用），不在本分支的范围里。见模块 docstring 的
-        known deviation。
+        （``fundestparagraph.php:171``）—— "净值 + 汇率 + 仓位"的历史表，
+        只摆**最新一天**。PHP 页面上的顺序是：估值表 → 净值记录 → 均线。
         """
         if holdings_ref is None:
             holdings_ref = self._build_holdings_ref(symbol)
@@ -411,12 +410,30 @@ class StockDetailService:
             "est": self._fund_est_table(fundest_service, holdings_ref),
             #: 表头下方那句说明（仓位 + 持仓更新日期）
             "est_note": self._holdings_est_note(holdings_ref),
+            #: ``EchoNetValueHistoryParagraph($holdings_ref, false, 0, 1)``。
+            #: 没有净值记录时 PHP 整段不出现（``CountNetValue() == 0`` 就 return），
+            #: 所以这里可能是 ``None``，模板要判空。
+            "netvaluehistory": self._net_value_paragraph(symbol, holdings_ref, history_service),
             #: ``EchoSmaParagraph($ref)`` —— 通用引用，不是持仓引用
             "sma": self._sma_sections(symbol, ref, None, None, sma_service),
             "stockhistory": build_stock_history(history_service, symbol),
             "netvalueclose": build_netvalue_close(history_service, symbol),
             "shares": build_shares(history_service, symbol),
         }
+
+    @staticmethod
+    def _net_value_paragraph(symbol: str, holdings_ref: Any, history_service: Any) -> Any:
+        """``EchoNetValueHistoryParagraph($ref, false, 0, 1)``。
+
+        ``num=1`` 照抄 PHP（``fundestparagraph.php:171``）—— 持仓型基金的估值
+        本身就以"最新净值"为基准，摆一整页历史没有信息量。
+        """
+        if history_service is None:
+            return None
+        try:
+            return history_service.net_value_paragraph(symbol, holdings_ref, num=1)
+        except Exception:
+            return None
 
     def _build_holdings_ref(self, symbol: str) -> Any:
         """``StockGetHoldingsReference($strSymbol)``；不是持仓型返回 ``None``。

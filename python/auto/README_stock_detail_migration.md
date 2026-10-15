@@ -79,6 +79,11 @@
   ≤1e-12），页面实测与生产端逐格比对（官方 EST 1.026 vs 1.025、
   参考 EST 1.011 vs 1.006，差额归因见 `README_holdings_migration.md` §6.3）。
   详见 **`README_holdings_migration.md`**。
+- **CK4-E（已完成 2026-10-15）**：`EchoNetValueHistoryParagraph`（净值记录段落）
+  —— `EchoHoldingsEstParagraph` 末尾那段，接在估值表之后、均线之前，
+  含 `_QdiiGetStockPosition` / `_QdiiMixGetPosition` 两个仓位反算式
+  （后者 CK4 之前一直是返回 `None` 的桩）。PHP 逐例对照 16/16。
+  详见 `README_holdings_migration.md` §10。
 - **CK5（交易块 + 链接，账号可演示）**：`_echoMyStockTransactions` 复用演示数据 + `_getMyStockLinks` / `GetMyStockLinks`。
 - **CK6（长期）**：order book（五档盘口）写入 snapshot 表，彻底解决 tradingparagraph 历史问题。
 

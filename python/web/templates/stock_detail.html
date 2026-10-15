@@ -91,6 +91,23 @@
         <p class="table-note">{{ detail.est_note | safe }}</p>
         {{ data_table(detail.est, "est-table", first_cell_is_html=True) }}
       {% endif %}
+
+      {# ---- 净值记录（EchoNetValueHistoryParagraph，fundestparagraph.php:171）----
+
+           PHP 把它放在 EchoHoldingsEstParagraph 的**末尾**，所以这一页的顺序是
+           估值表 → 净值记录 → 均线，与生产端 holdingscn.php 的表格顺序一致。
+
+           两个"没有"：
+           * num=1 —— 只摆最新一天（PHP 传的 false, 0, 1）；
+           * 没有净值记录时整段不出现（PHP CountNetValue()==0 直接 return，
+             连表头都没有），所以这里要判空。 #}
+      {% if detail.netvaluehistory %}
+        <h2>{{ detail.netvaluehistory.title }}</h2>
+        {{ history_table(detail.netvaluehistory, "history-table netvaluehistory-table") }}
+        <p class="table-note">
+          <a href="{{ url_for('history.history_page', kind='netvaluehistory', symbol=symbol) }}">查看全部净值记录</a>
+        </p>
+      {% endif %}
     {% else %}
       {# ---- 第 4 分支：else（CK3） ---- #}
 

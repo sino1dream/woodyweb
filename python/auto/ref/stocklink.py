@@ -83,6 +83,11 @@ EXHAUSTIVE_HOLDINGS_DISPLAY = "穷举持仓比例"
 #: ``GetOvernightCnhLink()`` 用的页面名（``php/stocklink.php:115``）。
 OVERNIGHT_CNH_PAGE = "overnightcnh"
 
+#: ``GetNetValueHistoryLink()`` 用的页面名与显示文字
+#: （``php/stocklink.php:167-171``）。
+NETVALUE_HISTORY_PAGE = "netvaluehistory"
+NETVALUE_HISTORY_DISPLAY = "净值记录"
+
 #: PHP ``define('OVERNIGHT_CNH_DISPLAY', '义工群对冲计算器')``
 #: （``php/stocklink.php:18``）。
 OVERNIGHT_CNH_DISPLAY = "义工群对冲计算器"
@@ -223,6 +228,26 @@ def get_exhaustive_holdings_link(symbol: Any, chinese: bool = True) -> str:
     """
     return get_stock_symbol_link(
         EXHAUSTIVE_HOLDINGS_PAGE, symbol, EXHAUSTIVE_HOLDINGS_DISPLAY, chinese
+    )
+
+
+def get_net_value_history_link(
+    symbol: Any, display: Any = None, chinese: bool = True
+) -> str:
+    """对应 ``GetNetValueHistoryLink()``（``php/stocklink.php:169``）::
+
+        $strDisplay = $strExtraQuery ? $strExtraDisplay : NETVALUE_HISTORY_DISPLAY;
+        return GetStockSymbolLink('netvaluehistory', $strSymbol, $strDisplay, $strExtraQuery);
+
+    净值记录页：某基金的历史单位净值（含汇率与仓位反算）。
+
+    ``EchoNetValueHistoryParagraph()`` 只走 ``$strExtraQuery`` 为假的那一半
+    （``fundestparagraph.php:171`` 传的是 ``false, 0, 1``），所以这里不实现
+    额外查询串那一支。
+    """
+    return get_stock_symbol_link(
+        NETVALUE_HISTORY_PAGE, symbol,
+        display if display else NETVALUE_HISTORY_DISPLAY, chinese
     )
 
 
@@ -419,6 +444,7 @@ GetGroupStockLink = get_group_stock_link
 GetMyStockLink = get_my_stock_link
 GetStockLink = get_stock_link
 GetOvernightCnhLink = get_overnight_cnh_link
+GetNetValueHistoryLink = get_net_value_history_link
 StockGetTransactionLink = get_transaction_link
 GetOnClickLink = get_on_click_link
 GetDeleteLink = get_delete_link
