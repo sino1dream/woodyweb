@@ -161,6 +161,57 @@ def _build_pair_reference(symbol: str, source: Any) -> Any:
     return EstReference(symbol, source=source)
 
 
+def count_holdings(source: Any, symbol: str) -> int:
+    """``SqlCountHoldings()``（``php/sql/sqlstocksymbol.php:313``）的本版。
+
+    只用来回答"这个标的是不是**持仓型**"。**查不到一律返回 0**（= 走配对口径），
+    不抛异常 —— 它只是选型判据，不该让整个引用对象构造失败。
+    """
+    connection = getattr(source, "connection", None)
+    if connection is None:
+        return 0
+    getter = getattr(source, "get_stock_id", None)
+    if getter is None:
+        return 0
+    try:
+        stock_id = getter(symbol)
+    except Exception:
+        return 0
+    if stock_id is None:
+        return 0
+    try:
+        from sql.holdingstable import HoldingsSql
+        return int(HoldingsSql(connection).count(stock_id) or 0)
+    except Exception:
+        return 0
+
+
+def build_est_reference(symbol: str, source: Any) -> Any:
+    """按"标的是不是持仓型"造中间层引用（``php/stock/qdiiref.php:245``）。
+
+    ```php
+    if (SqlCountHoldings($strEstSymbol) > 0)   $est_ref = new HoldingsReference($strEstSymbol);
+    else                                       $est_ref = new FundPairReference($strEstSymbol);
+    ```
+
+    **``else`` 分支仍用 ``EstReference`` 而不是 ``FundPairReference``，是刻意偏差**：
+    后者构造时还会查自己的配对（``^NDX → hf_NQ → hf_NQ 的配对 → …``），
+    理由见 :func:`_build_pair_reference`。PHP 靠 ``IsSinaFutureUS()`` 打断递归，
+    本版用更直白的"中间层引用不再找配对"。
+
+    持仓那一半是**照实迁**的：``HoldingsReference`` 已具备
+    ``GetHoldingsDate``/``_est_net_value``，下游
+    （``calc.fundestcalc._official_est_value``）凭它切持仓口径。
+    """
+    if count_holdings(source, symbol) > 0:
+        try:
+            from ref.holdingsref import HoldingsReference
+        except ImportError:
+            return EstReference(symbol, source=source)
+        return HoldingsReference(symbol, source=source)
+    return EstReference(symbol, source=source)
+
+
 def gb_to_utf8(text: Any) -> Any:
     """对应 PHP ``GbToUtf8()``（``php/gb2312.php``）。
 
@@ -1696,7 +1747,8 @@ class QdiiReference(FundReference):
 
         est_symbol = self._est_symbol_of(self.get_symbol(), region)
         if est_symbol:
-            self.set_est_ref(est_symbol)
+            #: ``qdiiref.php:245`` —— 持仓型标的一律走 ``HoldingsReference``
+            self.set_est_ref(build_est_reference(est_symbol, self.source))
         self.set_forex_ref(self.forex_symbol)
 
         if auto_estimate:

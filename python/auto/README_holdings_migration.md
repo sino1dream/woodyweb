@@ -12,6 +12,11 @@
 
 生产端参照：<https://palmmicro.com/woody/res/holdingscn.php?symbol=SH513050>
 
+> 本文引用的 `pitfalls #NN` 在 `.dsh/skills/palmmicro-php-to-python/references/`
+> （**`.dsh/` 被 gitignore，不随仓库提交**）。读不到就当它们是本地批注，
+> 关键结论本文都就地写了一遍 —— 但反过来要记住：**仓库外的文档不会跟着
+> 仓库走**，跨机器协作时那些编号就是死链。
+
 ## 1. 这个分支和 QDII 那条路有什么不同
 
 P0 迁的是**配对型**基金：一只基金跟踪**一个**标的（`SZ161130` 跟 `^NDX`），
@@ -160,11 +165,76 @@ EST 日期取**更早**的那个市场日期（`pick_est_date`，`:97-101`）：
 | PHP | 状态 |
 |---|---|
 | `EchoNetValueHistoryParagraph`（181 行，净值历史段落） | ❌ 未迁，CK4 只取它的"持仓更新日"那句说明 |
-| `EchoFundHistoryParagraph`（`:141`） | ❌ 未迁 |
+| ~~`EchoFundHistoryParagraph`（`:141`）~~ | ✅ **2026-10-15 复核：已迁**，见 `web/services/detail_sections.build_fund_history`（`cfc6e702`），CK4 只是没在 Holdings 分支上接它 |
 | `GetProportionArray` 的调用方 `netvaluehistoryparagraph.php:25` | ❌ 方法已迁，调用方没接 |
 | `StockGetHoldingsReference` 之外的三个 stocklink 用法 | 方法已加（`get_holdings_link` 等），只接了 Holdings 分支 |
 
-## 9. 跑法
+## 9. 下游接线：QDII 的持仓口径（CK4 收尾，已接）
+
+`HoldingsReference` 落地后，PHP 里有**两处**会按"这个标的是不是持仓型"切分支。
+它们不影响 CK4 自己的 `/stock/<symbol>` 页，影响的是 **QDII 基金的估值**
+（`/fund/<symbol>`、`/qdii`）。本轮两处都接了。
+
+**演示库上看不出变化**：只有 `SH513050` 有持仓数据，而它不是任何 QDII 基金的
+est 标的（est 标的是 `QQQ` / `^NDX` 那一层）。所以"接对了没有"不能靠页面看，
+只能靠单测 + PHP 逐例对照 —— 这两样都做了，见 §9.4。
+
+### 9.1 `QdiiReference` 构造时选 est_ref
+
+```php
+// php/stock/qdiiref.php:245
+if (SqlCountHoldings($strEstSymbol) > 0)   $est_ref = new HoldingsReference($strEstSymbol);
+else                                       $est_ref = new FundPairReference($strEstSymbol);
+```
+
+Python 侧原先只有 `set_est_ref(est_symbol)` —— 传**字符串**，`set_est_ref`
+内部一律包成 `EstReference`，所以持仓口径永远到不了估值那一步。
+
+本轮加了 `refobj.build_est_reference(symbol, source)`：判据用
+`refobj.count_holdings()`（= `HoldingsSql.count()`），**查不到一律当 0**
+（走配对口径）—— 它只是选型判据，不该让引用对象构造失败。
+
+### 9.2 `_getOfficialEstVal()` / `_getFairEstVal()` 的持仓分支
+
+```php
+// php/stock/qdiiref.php:110-124
+if ($str = $this->_getEstNetValue($est_ref, $strDate))   return $str;
+if (method_exists($est_ref, 'GetHoldingsDate'))  return strval($est_ref->_estNetValue($strDate));
+return $this->_getEstPrice($est_ref, $strDate);
+```
+
+Python 侧对应实现是 `fundestcalc._official_est_value()`（`:816`），原先注释里
+照抄了 PHP 三行但**中间那行没实现**，直接从"净值"跳到"行情价"。本轮补上
+`_holdings_est_value()`，**刻意不缓存引用对象** —— 持仓清单会被后台改，
+缓存住了页面就会一直用旧比例，而这种错不报错。
+
+**两档顺序是反的，别照抄一半**：官方 EST 净值优先、参考 EST 持仓优先。
+写错成一样的顺序，页面照样出数（那格取自另一档而已），不报错。
+
+> 参考 EST 那条**不在本次接线范围**：Python 走的是
+> `FundPairReference::GetFairNetValue()`（`fundpairref.php:256`）另一套语义，
+> 与 `_getFairEstVal()` 不是同一个东西。
+
+### 9.3 一处刻意偏差：`else` 分支仍是 `EstReference`
+
+PHP 的 `else` 是 `new FundPairReference(...)`，本版仍是 `EstReference`。
+理由沿用了 `_build_pair_reference()` 那条：**`FundPairReference` 构造时会再查
+自己的配对**（`^NDX → hf_NQ → hf_NQ 的配对 → …`），PHP 靠 `IsSinaFutureUS()`
+打断递归，本版用更直白的"中间层引用不再找配对"。换成 `FundPairReference`
+会一次改动全部 33 只基金的取值路径，**不在这轮的风险预算内**。
+
+### 9.4 验证
+
+| 手段 | 结果 |
+|---|---|
+| `test_refobj.EstReferenceSelectionTest` | 7 个：选型两个方向、`count_holdings` 三种退化、`QdiiReference` 构造两条 |
+| `test_fundest.HoldingsEstValueTest` | 3 个：非持仓返回 None、无连接返回 None、持仓档拿到值**且带上日期** |
+| PHP 逐例对照 `_ck4_qdii_compare.py` | **4/4**，含"持仓 + 无净值 → 走持仓档且传 `2026-10-14`" |
+
+对照特意比了两样：数值**和**"传给 `_estNetValue` 的日期"。只比数值看不出
+档位错 —— 三档恰好给出同一个数时（净值 1.0 与行情价 1.0）是分不出来的。
+
+## 10. 跑法
 
 ```bash
 # 单测

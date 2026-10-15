@@ -216,6 +216,14 @@ PHP 是 `_QdiiReference`（抽象中间类）+ 四个地区子类，差异只有
    连带影响：`_getOfficialEstVal()` / `_getFairEstVal()` 里的
    `method_exists($est_ref, 'GetHoldingsDate')` 分支（持仓型基金）**未迁移**。
 
+   > **2026-10-15 复核**：`HoldingsReference` 已迁（CK4 `4d681a0f`），
+   > `GetHoldingsDate` 也有了，所以上面"两者都不在本步范围"的理由**对
+   > Holdings 那一半已经失效**。但接线仍没做 —— `QdiiReference` 构造里
+   > 一律 `set_est_ref(符号)`（内部包成 `EstReference`），从不按
+   > `SqlCountHoldings > 0` 选 `HoldingsReference`；`fundestcalc`
+   > 的 `_official_est_value` 也没走持仓分支。见
+   > `README_holdings_migration.md` §9。
+
 2. **`stock_ref` 自动建，调用方也可注入。** PHP 是
    `new MyStockReference($strSymbol)`（`mystockref.php`，未迁移），
    `is_fund_a()` 为真时构造时自动建 —— 由 `MysqlReference` 顶上

@@ -105,11 +105,13 @@ class FakeConnection:
     导致不同测试之间互相污染 —— 那是测试写法的错误，不是被测代码的问题。
     """
 
-    def __init__(self, fundest=None, netvalue=None):
+    def __init__(self, fundest=None, netvalue=None, holdings=None):
         self.queries = []
         self.tables = {
             "fundest": [dict(r) for r in (fundest or [])],
             "netvaluehistory": [dict(r) for r in (netvalue or [])],
+            #: ``holdings`` 只用来答 ``SqlCountHoldings``（有没有持仓明细）
+            "holdings": [dict(r) for r in (holdings or [])],
         }
         self.commits = 0
 
@@ -944,6 +946,74 @@ class InterfaceNameTest(unittest.TestCase):
         looked_up = set(re.findall(r'getattr\(self\.source,\s*"([a-z_]+)"', source))
         self.assertNotIn("get_net_value_close", looked_up)
         self.assertIn("get_netvalue_close", looked_up)
+
+
+class HoldingsEstValueTest(unittest.TestCase):
+    """``_holdings_est_value`` —— ``qdiiref.php:114`` 的持仓分支。
+
+    **演示库跑不到这条分支**：只有 ``SH513050`` 有持仓数据，而它不是任何 QDII
+    基金的 est 标的（est 标的是 ``QQQ`` / ``^NDX`` 那一层）。所以这三个用例是
+    它唯一的覆盖 —— 等真有持仓型标的入库时，行为已经是被测过的。
+    """
+
+    class Source:
+        """只实现 ``count_holdings`` 用得到的两样：``connection`` 与 id 查表。"""
+
+        def __init__(self, connection=None, ids=None):
+            self.connection = connection
+            self._ids = ids or {"QQQ": "4"}
+
+        def get_stock_id(self, symbol):
+            return self._ids.get(symbol)
+
+    def _calc(self, holdings=None):
+        connection = FakeConnection(holdings=holdings)
+        source = self.Source(connection)
+        return EstimateCalculator(source, FundEstStore(connection),
+                                  now_provider="04:00")
+
+    def test_symbol_without_holdings_returns_none(self):
+        """没有持仓明细 -> ``None``，让调用方继续走"行情价"那条分支。"""
+        calc = self._calc(holdings=[])
+        self.assertIsNone(calc._holdings_est_value("QQQ", "2026-10-14"))
+
+    def test_without_connection_returns_none(self):
+        """纯内存数据源（没有连接）-> ``None``，不抛异常。"""
+        source = self.Source(connection=None)
+        calc = EstimateCalculator(source, FundEstStore(FakeConnection()),
+                                  now_provider="04:00")
+        self.assertIsNone(calc._holdings_est_value("QQQ", "2026-10-14"))
+
+    def test_holdings_symbol_returns_est_net_value(self):
+        """持仓型 -> 返回 ``$est_ref->_estNetValue($strDate)``，且带上了日期。"""
+        import ref.holdingsref
+
+        original = ref.holdingsref.HoldingsReference
+        box = {}
+
+        class FakeRef:
+            def __init__(self, symbol, source=None):
+                box["ref"] = self
+                self.symbol = symbol
+                self.source = source
+                self.calls = []
+
+            def _est_net_value(self, date=None, realtime=False):
+                self.calls.append(date)
+                return 1.0263
+
+        ref.holdingsref.HoldingsReference = FakeRef
+        try:
+            calc = self._calc(holdings=[
+                {"id": 1, "stock_id": "4", "holding_id": 5, "ratio": 30.0},
+            ])
+            value = calc._holdings_est_value("QQQ", "2026-10-14")
+        finally:
+            ref.holdingsref.HoldingsReference = original
+
+        self.assertEqual(value, 1.0263)
+        #: 官方 EST 传的是**那天**的日期，不是 None（``_getFairEstVal`` 才不传）
+        self.assertEqual(box["ref"].calls, ["2026-10-14"])
 
 
 if __name__ == "__main__":

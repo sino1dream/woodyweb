@@ -226,7 +226,12 @@ Flask 路由
    这条大线。先做了侦察，结论比预期关键 —— 详情栈的**服务层大部分已迁**，真正卡住
    整条非基金详情线的是底层**配对引用层**（`php/stock/fundpairref.php`，约 278 行，
    含 `MyPairReference`/`FundPairReference`/`HoldingsReference`及`StockGetFundPairReference`/`StockGetHoldingsReference`/`StockGetPairReferences`），**尚未迁入`auto/ref/refobj.py`**（refobj.py:523、pair_service.py 文档都标注
-   "未迁移"）。CK1 只做不依赖该层的快赢：把已迁的 `stockhistory`+`netvalueclose`
+   "未迁移"）。
+   > **2026-10-15 复核：这一句已过期。** `PairReference`（CK2 `0a6b7632`）、
+   > `FundPairReference`（CK2b `91d188ce`）、`HoldingsReference`（CK4 `4d681a0f`
+   > 落在 `auto/ref/holdingsref.py`）都已落地，`StockGetPairReferences` /
+   > `StockGetHoldingsReference` 也都有。**仍未迁的只剩 `MyPairReference`
+   > 继承 `MyStockReference` 的那半**（`php/stock/mystockref.php` 整个未迁）。CK1 只做不依赖该层的快赢：把已迁的 `stockhistory`+`netvalueclose`
    两段（`history_service`已支持，原仅供`/history/*`页）接进`/fund/<symbol>`详情页（仅接线 + 模板，顺序对齐 PHP：netvalueclose → shares → stockhistory）。
    测试：web **619** OK（+2）、auto 988 OK、compileall 双绿；并修复一处`test_sma_route.FundPairSmaRouteTest`的隔离缺口（CK1 新段落暴露其未注入`history_service`，已补 `_EmptyHistory`注入）。详见`python/auto/README_stock_detail_migration.md`。 **第 14 轮（_mystock.php 详情栈 · CK2 关键石）**：迁移 `fundpairref.php`配对引用层。`MyPairReference`→`refobj.PairReference`，外加 `Ab`/`Ah`/`Adr`三子类（只是`pair_table` 不同）、四张配对表（`abpair`/`adrpair`/`ahpair`/`fundpair`）的正查与反查
    （对应 PHP `StockPairSql::GetPairSymbol`/`GetSymbol`）、`StockGetPairReferences`链式双向工厂，以及构造里的`cny_ref`推导分支表与`LoadCalibration()`。
@@ -296,8 +301,9 @@ Flask 路由
    `refquote.apply_order_book` 回填，页面不联网也有五档）；~~A 股带配对溢价的
    trading~~ 已补（`/stock/<symbol>` 第 4 分支接上 `trading_service.get_table`，
    见 `README_stock_detail_migration.md` §6.4）；~~CK4 Holdings 分支~~ 已补（见上）。
-   **仍未迁**：`EchoNetValueHistoryParagraph`（181 行）与
-   `EchoFundHistoryParagraph`（CK4 只取了"持仓更新日"那句说明）；
+   **仍未迁**：`EchoNetValueHistoryParagraph`（181 行）；
+   ~~`EchoFundHistoryParagraph`~~ **2026-10-15 复核：已迁**（`cfc6e702`，
+   `detail_sections.build_fund_history`），CK4 只是没在 Holdings 分支上接它；
    三个整页外壳（登录、`GetGroupSql()`、
    `StockEditTransactionForm`/`StockMergeTransactionForm`）随账号体系暂缓。
 5. `php/layout.php`、`php/menu.php`、`php/stocklink.php`：站点布局和导航。
@@ -470,7 +476,7 @@ Flask 路由
   给，PHP 是 `LoadSinaFundData()`）、**三个 EST 不在这里实现**（唯一实现是  
   `fundestcalc`，避免重演"估值 4.59 变 20245"那次两条实现并存的事故）、  
   **外部依赖全部可注入**。四个地区合成一个类 + `region` 查表。  
-  已知偏差：PHP 这个位置用的 `FundPairReference` / `HoldingsReference` 未迁移，  
+  已知偏差：PHP 这个位置用的 `FundPairReference` / `HoldingsReference` ~~未迁移~~ → **2026-10-15 复核：两个类都已迁**（CK2b `91d188ce` / CK4 `4d681a0f`），但**本版仍由 `EstReference` 顶上** —— 换成真类是接线改动，见 `README_holdings_migration.md` §9（QDII 持仓口径接线，列为下一轮）；  
   由 `EstReference` 顶上；`MyStockReference`（`stock_ref`）同样未迁，    
   `is_fund_a()` 为真时由 `MysqlReference` 顶上（第 8 轮补的自动建）。  
   详见 `python/auto/README_refobj_migration.md`。

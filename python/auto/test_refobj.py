@@ -20,7 +20,9 @@ from ref.refobj import (
     FundReference,
     MysqlReference,
     QdiiReference,
+    build_est_reference,
     build_qdii_reference,
+    count_holdings,
     gb_to_utf8,
 )
 
@@ -41,16 +43,22 @@ class FakeCursor:
     给 dict，测试里两种都要能过，否则会把"只认一种行形状"的 bug 放过去。
     """
 
-    def __init__(self, pairs=None, as_dict=False):
+    def __init__(self, pairs=None, as_dict=False, counts=None):
         self.pairs = pairs or {}
+        self.counts = counts or {}
         self.as_dict = as_dict
         self.param = None
+        self.sql = ""
         self.closed = False
 
     def execute(self, sql, params=None):
+        self.sql = sql or ""
         self.param = params[0] if params else None
 
     def fetchone(self):
+        #: ``SqlCountHoldings`` 那条 COUNT —— 用于"标的是不是持仓型"的判据
+        if "COUNT(*)" in self.sql.upper():
+            return {"n": self.counts.get(self.param, 0)}
         symbol = self.pairs.get(self.param)
         if symbol is None:
             return None
@@ -63,13 +71,15 @@ class FakeCursor:
 class FakeConnection:
     """假连接：只提供 ``cursor()``。"""
 
-    def __init__(self, pairs=None, as_dict=False):
+    def __init__(self, pairs=None, as_dict=False, counts=None):
         self.pairs = pairs or {}
         self.as_dict = as_dict
+        #: ``stock_id -> 持仓行数``，喂给 ``SELECT COUNT(*)`` 那条查询
+        self.counts = counts or {}
         self.cursors = []
 
     def cursor(self):
-        cursor = FakeCursor(self.pairs, self.as_dict)
+        cursor = FakeCursor(self.pairs, self.as_dict, self.counts)
         self.cursors.append(cursor)
         return cursor
 
@@ -95,7 +105,7 @@ class FakeSource:
 
     def __init__(self, names=None, calibration=None, netvalue=None, history=None,
                  position=None, adjclose=None, net_value_count=2,
-                 pairs=None, pairs_as_dict=False):
+                 pairs=None, pairs_as_dict=False, counts=None):
         self.names = names or {}
         self.calibration = calibration or {}
         self.netvalue = netvalue or {}
@@ -105,7 +115,7 @@ class FakeSource:
         self.net_value_count = net_value_count
         self.written_calibration = []
         #: ``fundpair`` 的"我跟踪谁"：符号 -> 被跟踪标的
-        self.connection = FakeConnection(pairs, pairs_as_dict)
+        self.connection = FakeConnection(pairs, pairs_as_dict, counts)
 
     def get_stock_id(self, symbol):
         return self.STOCK.get(symbol)
@@ -797,6 +807,60 @@ class AliasTest(unittest.TestCase):
 
     def test_function_alias(self):
         self.assertIs(refobj.GbToUtf8, gb_to_utf8)
+
+
+class EstReferenceSelectionTest(unittest.TestCase):
+    """``build_est_reference`` —— ``qdiiref.php:245`` 的"持仓型 / 配对型"选型。
+
+    **演示库跑不到这个分支**：只有 ``SH513050`` 有持仓数据，而它不是任何 QDII
+    基金的 est 标的。这两个用例是它唯一的覆盖 —— 等真有持仓型标的入库时，
+    行为就已经是被测过的，不用再赌。
+    """
+
+    def test_holdings_type_gets_holdings_reference(self):
+        #: ``QQQ`` 在 FakeSource 里是 4；给 36 行持仓 -> 判成持仓型
+        ref = build_est_reference("QQQ", FakeSource(counts={4: 36}))
+        self.assertEqual(type(ref).__name__, "HoldingsReference")
+
+    def test_non_holdings_type_gets_est_reference(self):
+        ref = build_est_reference("QQQ", FakeSource(counts={4: 0}))
+        self.assertIsInstance(ref, EstReference)
+        self.assertNotEqual(type(ref).__name__, "HoldingsReference")
+
+    def test_count_holdings_reads_rows(self):
+        self.assertEqual(count_holdings(FakeSource(counts={4: 36}), "QQQ"), 36)
+
+    def test_count_holdings_unknown_symbol_is_zero(self):
+        """符号不在 ``stock`` 表 -> 0，而不是抛异常。"""
+        self.assertEqual(count_holdings(FakeSource(counts={4: 36}), "SPY"), 0)
+
+    def test_count_holdings_without_connection_is_zero(self):
+        """没有连接（纯内存数据源）-> 0。它只是选型判据，不能让构造失败。"""
+
+        class NoConnection:
+            def get_stock_id(self, _symbol):
+                return 4
+
+        self.assertEqual(count_holdings(NoConnection(), "QQQ"), 0)
+
+    def test_qdii_reference_picks_holdings_when_present(self):
+        """``QdiiReference`` 构造要走 :func:`build_est_reference` 而不是一律包
+        ``EstReference`` —— 否则持仓口径永远到不了估值那一步。
+
+        ``SZ161130`` 的 est 标的是 ``^NDX``（FakeSource 里 id=6），
+        所以计数挂在 6 上。**挂在 QQQ(4) 上这个用例会安静地测不到东西** ——
+        符号选错不报错，只是走不到目标分支（见 pitfalls #70）。
+        """
+        fund = QdiiReference("SZ161130", source=FakeSource(counts={6: 36}),
+                             auto_estimate=False)
+        est_ref = fund.get_est_ref()
+        self.assertIsNotNone(est_ref, "est_symbol 没解析出来，用例的前提不成立")
+        self.assertEqual(type(est_ref).__name__, "HoldingsReference")
+
+    def test_qdii_reference_defaults_to_est_reference(self):
+        fund = QdiiReference("SZ161130", source=FakeSource(counts={6: 0}),
+                             auto_estimate=False)
+        self.assertIsInstance(fund.get_est_ref(), EstReference)
 
 
 if __name__ == "__main__":

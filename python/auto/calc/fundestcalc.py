@@ -828,9 +828,44 @@ class EstimateCalculator:
         value = self._net_value(est_id, date)
         if value is not None:
             return value
+        # 持仓型中间层（qdiiref.php:114 的第二行）：净值取不到时用**持仓加权估值**
+        holdings = self._holdings_est_value(est_symbol, date)
+        if holdings is not None:
+            return holdings
         # _getEstPrice()：用**当日行情价**（含退到上一交易日的兜底）。
         # 注意不要在这里用归一化净值 —— 它与行情价差 ``cal_m`` 倍（实测 749 倍）。
         return self._middle_day_quote(est_symbol, date, data or {})
+
+    def _holdings_est_value(self, est_symbol: str, date: Any) -> Any:
+        """持仓型中间层：``$est_ref->_estNetValue($strDate)``（``qdiiref.php:114``）。
+
+        PHP 的判据是 ``method_exists($est_ref, 'GetHoldingsDate')`` —— 问的是
+        "引用对象是不是持仓型"，而不是"库里有没有数据"。本版用
+        :func:`ref.refobj.count_holdings` 判断（与 :func:`ref.refobj.build_est_reference`
+        同一判据），**不是持仓型就返回 ``None``**，让调用方继续走行情价分支。
+
+        **刻意不缓存引用对象**：持仓清单会被后台改，缓存住了页面就会一直用旧比例，
+        而这种错不报错（读数看着也合理）。构造一次要读一张几十行的表，
+        相对"估值算错"这笔账是划算的。
+        """
+        try:
+            from ref.refobj import count_holdings
+        except ImportError:
+            return None
+        if count_holdings(self.source, est_symbol) <= 0:
+            return None
+        try:
+            from ref.holdingsref import HoldingsReference
+        except ImportError:
+            return None
+        try:
+            ref = HoldingsReference(est_symbol, source=self.source)
+            value = ref._est_net_value(date)
+        except Exception:
+            return None
+        if value in (None, ""):
+            return None
+        return value
 
     def _est_quote_ref(self, est_symbol: str, cal_date: Any, mid_date: Any) -> Any:
         """中间层报价的**校准基准值**（``est_cal``）—— 基金 ``cal_f`` 建起来那天的中间层值。

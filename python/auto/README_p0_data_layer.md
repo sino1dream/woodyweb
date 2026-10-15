@@ -77,7 +77,9 @@ hf_CL、hf_NK、fx_susdcny、fx_shkdcny、fx_sjpycny、fx_seurcny。
 | AGG / IBB / ^DJI / VNQ / RSPH / VGT / XLY / KWEB / IXC / IEO | 各 1 | znb_TPX / znb_CAC | 各 1 |
 
 `qdii` 数组里 8 只（即 §1.1 那 8 只跨数组的）**没有 est 符号** —— 它们是
-QdiiMix 成员，EST 走持仓口径（CK4 `HoldingsReference`，未迁）。
+QdiiMix 成员，EST 走持仓口径（CK4 `HoldingsReference`，
+**2026-10-15 已迁**，`4d681a0f`，见 `README_holdings_migration.md`）。
+迁完只解决"类存在"，这 8 只仍要等各自的 `holdings` / `holdingsdate` 数据入库。
 `qdiiimix` 32 只全都没有 est 符号。
 
 ### 1.4 生产端与仓库 PHP 的两处漂移（以生产端为准）
@@ -599,8 +601,9 @@ calibrationhistory   35 行 @ 2026-10-13（33 只基金 + QQQ + SPY）
 （P0.8 的定时重跑会补上）。
 
 生产端 41 只里我们有 33 只：缺的 8 只（SH501312、SH513850、SZ159509、SZ159529、
-SZ159577、SZ160216、SZ163208、SZ164701）是 §1.3 说的**持仓口径**（CK4
-`HoldingsReference`，未迁），页面归属也是 P1 的事。
+SZ159577、SZ160216、SZ163208、SZ164701）是 §1.3 说的**持仓口径** ——
+`HoldingsReference` 已于 2026-10-15 迁完（`4d681a0f`），所以这 8 只现在的
+阻塞点是**各自的 `holdings` 数据**，不再是"类没迁"。页面归属也是 P1 的事。
 
 ### 6.7 事后抓到的一条错记录（层次混用）
 

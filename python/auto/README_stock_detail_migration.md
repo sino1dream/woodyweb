@@ -53,8 +53,9 @@
 > `StockGetPairReferences` 工厂已迁入 `auto/ref/refobj.py`。
 > 详见 **`README_pair_reference_migration.md`**，本文件只记 CK 层面的排期与验证。
 >
-> 仍未迁：`FundPairReference` 的期货自动校准（列 **CK2b**，已完成）。
-> `HoldingsReference` **CK4 已完成**，见 `README_holdings_migration.md`。
+> ~~仍未迁：`FundPairReference` 的期货自动校准~~ —— **CK2b 已完成**（`91d188ce`，
+> 2026-10-15 复核时把这条自相矛盾的旧话划掉）。
+> `HoldingsReference` **CK4 已完成**（`4d681a0f`），见 `README_holdings_migration.md`。
 
 ## 3. 分阶段 checkpoint
 
