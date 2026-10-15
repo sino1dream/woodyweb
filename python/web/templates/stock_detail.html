@@ -3,14 +3,17 @@
 {% from "_history_table.html" import history_table %}
 {% block title %}{{ symbol }} - 股票详情{% endblock %}
 {% block content %}
-  {# 非基金详情页 —— woody/res/php/_mystock.php 的两个分支共用一个模板。
+  {# 非基金详情页 —— woody/res/php/_mystock.php 的三个分支共用一个模板。
 
      第 2 分支（StockGetFundPairReference，CK2b）：detail.est /
      detail.fund_pair_sma 有值，三张对比表与 detail.sma 则为 Undefined。
 
-     第 4 分支（else，CK3）：只有 detail.sma / 三张对比表 / 尾部三段。
+     第 3 分支（StockGetHoldingsReference，CK4）：detail.est + detail.est_note
+     有值（持仓型基金的估值表），均线走 ``detail.sma``（通用引用）。
 
-     两个 dict 的键互不相交，所以用 ``branch`` 字段显式区分 —— Jinja 对缺失键的
+     第 4 分支（else，CK3）：只有 detail.sma / 三张对比表 / 五档交易表。
+
+     三个 dict 的键互不相交，所以用 ``branch`` 字段显式区分 —— Jinja 对缺失键的
      **链式**访问（``detail.sma.ah_pair``）会抛 UndefinedError 而不是返回假值，
      不能省掉这个标记。 #}
   <h1>{{ symbol }}</h1>
@@ -72,6 +75,22 @@
           <a href="{{ url_for('history.history_page', kind='fundhistory', symbol=symbol) }}">查看全部基金溢价记录</a>
         </p>
       {% endif %}
+    {% elif detail.branch == "holdings" %}
+      {# ---- 第 3 分支：StockGetHoldingsReference（CK4） ---- #}
+
+      {# 估值表（EchoHoldingsEstParagraph，fundestparagraph.php:160）。
+
+         与第 2 分支是同一张表、同一个服务（fundest_service），差别只在估值
+         怎么算出来：那边是"跟踪一个标的 × 校准值"，这边是"一篮子成分股按
+         持仓比例的加权涨幅"（见 ref/holdingsref.py）。所以列数同样是浮动的
+         —— 有参考/实时估值时才多出两列。 #}
+      {% if detail.est %}
+        <h2>{{ detail.est.title or "估值" }}</h2>
+        {# 说明文字里有两个站内链接（仓位估算 / 基金持仓），必须按原文渲染 ——
+           漏掉 safe 会在页面上看到 <a href=...> 的字面文本。 #}
+        <p class="table-note">{{ detail.est_note | safe }}</p>
+        {{ data_table(detail.est, "est-table", first_cell_is_html=True) }}
+      {% endif %}
     {% else %}
       {# ---- 第 4 分支：else（CK3） ---- #}
 
@@ -101,27 +120,37 @@
         </p>
       {% endif %}
 
-      {# 均线（_mystock.php:152-165）。
-
-         四个槽位互斥：有 ah_ref 时摆 ah_pair + fund_pair（adr 还在则追加一张
-         空标题的），只有 adr_ref 时摆 fund_pair，都没有时摆普通均线表。 #}
-      {# 先用 select 滤掉空槽位再循环：不能靠 loop.first 判断"第一张表"，
-         那判断的是列表下标 —— ah_pair 为空时标题会整个丢失。 #}
-      {% set sma_tables = [detail.sma.ah_pair, detail.sma.fund_pair,
-                           detail.sma.adr_extra, detail.sma.plain] | select | list %}
-      {% if sma_tables %}
-        <h2>均线</h2>
-        {% for table in sma_tables %}
-          {% if table.memo and table.memo.start_date %}
-            <p class="table-note">{{ table.memo.start_date }}数据{% if table.memo.bull_bear %}
-              <strong>{{ table.memo.bull_bear }}</strong>{% endif %}</p>
-          {% endif %}
-          {{ data_table(table, "sma-table") }}
-        {% endfor %}
-      {% endif %}
     {% endif %}
 
-    {# ---- 两个分支共有的尾部三段（_mystock.php:167-169）---- #}
+    {# ---- 第 3、4 分支共有的均线（_mystock.php:152-165）---- #}
+
+    {# 四个槽位互斥：有 ah_ref 时摆 ah_pair + fund_pair（adr 还在则追加一张
+       空标题的），只有 adr_ref 时摆 fund_pair，都没有时摆普通均线表。
+
+       放在分支**外面**是因为 Holdings 分支（CK4）同样走 ``EchoSmaParagraph``，
+       而且用的是通用引用（不是持仓引用）—— 与第 4 分支的取数完全一样。
+       第 2 分支不走这里：它的 ``detail.sma`` 不存在，``select`` 会把四个
+       空槽位全滤掉。 #}
+    {# 先用 select 滤掉空槽位再循环：不能靠 loop.first 判断"第一张表"，
+       那判断的是列表下标 —— ah_pair 为空时标题会整个丢失。 #}
+    {# ``detail.get('sma')`` 而不是 ``detail.sma``：第 2 分支（fundpair）的 dict
+       没有这个键，而本项目用的是严格 undefined（缺键即抛），直接点下去会让
+       那一支的页面 500。 #}
+    {% set sma = detail.get('sma') or {} %}
+    {% set sma_tables = [sma.get('ah_pair'), sma.get('fund_pair'),
+                         sma.get('adr_extra'), sma.get('plain')] | select | list %}
+    {% if sma_tables %}
+      <h2>均线</h2>
+      {% for table in sma_tables %}
+        {% if table.memo and table.memo.start_date %}
+          <p class="table-note">{{ table.memo.start_date }}数据{% if table.memo.bull_bear %}
+            <strong>{{ table.memo.bull_bear }}</strong>{% endif %}</p>
+        {% endif %}
+        {{ data_table(table, "sma-table") }}
+      {% endfor %}
+    {% endif %}
+
+    {# ---- 三个分支共有的尾部三段（_mystock.php:167-169）---- #}
     {% if detail.netvalueclose %}
       <h2>{{ detail.netvalueclose.title }}</h2>
       {{ history_table(detail.netvalueclose, "history-table netvalueclose-table") }}

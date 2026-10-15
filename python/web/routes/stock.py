@@ -114,9 +114,24 @@ def _fill_order_book(ref: Any) -> bool:
 
 
 def _get_fundest_service():
-    """估值表服务；只有第 2 分支（``fundpair``）用得到。"""
+    """估值表服务；第 2 / 第 3 分支都用得到。"""
     factory = current_app.extensions.get("fundest_service_factory")
     return None if factory is None else factory()
+
+
+def _get_detail_service() -> Any:
+    """详情页服务；注入了就用注入的（测试里整个顶掉）。
+
+    与 ``sma_service_factory`` 等同一套路子：默认实现要连库，而单测只想验
+    "分支怎么选、模板怎么摆"，把装配过程顶掉最直接。
+    """
+    factory = current_app.extensions.get("stock_detail_service_factory")
+    if factory is not None:
+        return factory()
+    return StockDetailService(
+        source=getattr(_get_reference_service(), "source", None),
+        link_builder=_table_link,
+    )
 
 
 def _parse_paging() -> tuple:
@@ -227,15 +242,19 @@ def stock_page():
 def stock_detail_page(symbol: str):
     """渲染非基金详情页。
 
-    这条路由接 ``_mystock.php`` 四个分支里的**两个**，判断顺序与 PHP 的
+    这条路由接 ``_mystock.php`` 四个分支里的**三个**，判断顺序与 PHP 的
     ``if / else if`` 一致：
 
     1. 第 2 分支 ``StockGetFundPairReference()`` —— ``fundpair`` 表里有这条记录
        （CK2b）。渲染 EST / 跟踪均线，``/stock/<symbol>`` 页面上会**多出**几张表。
-    2. 第 4 分支 ``else`` —— 其它非基金符号（CK3）。
+    2. 第 3 分支 ``StockGetHoldingsReference()`` —— ``holdings`` 表里有持仓明细
+       （CK4）。给持仓型基金（持有一篮子成分股，而不是跟踪单一标的）估值。
+    3. 第 4 分支 ``else`` —— 其它非基金符号（CK3）。
 
-    前三个分支里的第 1 个（基金）由 ``/fund/<symbol>`` 承担，第 3 个
-    （Holdings）还没有对应实现，会落到第 4 分支。
+    第 1 个分支（基金）由 ``/fund/<symbol>`` 承担。
+
+    **顺序不能换**：PHP 是 ``else if`` 短路的，一个符号可能同时出现在
+    ``fundpair`` 与 ``holdings`` 两张表里（演示库里就有），换序会整页换一套表。
 
     **引用对象建不出来时仍然返回 200**，只是没有表 —— 与 PHP 那边
     ``EchoStockGroup()`` 拿不到 ref 时整页只剩链接的行为一致。不按 404 处理：
@@ -250,10 +269,7 @@ def stock_detail_page(symbol: str):
 
     所以第 4 分支建不出来就直接渲染空页，不进服务层。
     """
-    service = StockDetailService(
-        source=getattr(_get_reference_service(), "source", None),
-        link_builder=_table_link,
-    )
+    service = _get_detail_service()
 
     #: 第 2 分支优先，且**不**给它传 ref —— 让它自己按 ``fundpair`` 表判断。
     #: 传 ref 进去等于替它决定了答案。
@@ -270,8 +286,21 @@ def stock_detail_page(symbol: str):
     if not refs:
         return render_template("stock_detail.html", detail=None, symbol=symbol)
 
+    #: 第 3 分支（CK4）：``holdings`` 表里有持仓明细的走这条。
+    #: 与第 2 分支同样**不**替它预判 —— 让它自己按表判断。
+    detail = service.get_holdings_detail(
+        symbol,
+        ref=refs[0],
+        sma_service=_get_sma_service(),
+        history_service=_get_history_service(),
+        fundest_service=_get_fundest_service(),
+    )
+    if detail is not None:
+        return render_template("stock_detail.html", detail=detail, symbol=symbol)
+
     #: ``?live=1`` 时才联网补盘口；默认读快照（见 :func:`_wants_live_refresh`）。
     #: 必须在 ``get_detail`` 之前 —— 服务层读的是引用对象上已有的五档。
+    #: 只喂第 4 分支：五档交易表是那一段独有的，前两个分支不摆这张表。
     if _wants_live_refresh():
         _fill_order_book(refs[0])
 

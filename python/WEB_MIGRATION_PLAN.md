@@ -273,15 +273,32 @@ Flask 路由
    （`test_pairref.UsPairCaliberTest` 4 例、`test_fundcalc.ProductionCaliberTest`
    3 例），变异确认有牙。详见 `README_pair_reference_migration.md` §9、pitfalls #60。
 
-   **仍存在的关键石 / 后续 checkpoint**：CK4 Holdings 分支（含
-   `HoldingsReference`，441 行/24 方法 —— 注意演示库 21 个符号里**一个 QdiiMix
-   都没有**，迁完在演示环境看不到变化）；CK5 交易块 + 链接（账号可演示）。
+   **CK4 Holdings 分支已完成（2026-10-15）**：`HoldingsReference`
+   （`php/stock/holdingsref.php` 441 行/24 方法）→ `auto/ref/holdingsref.py`，
+   外加 `holdings` / `holdingsdate` 两张表的数据层（`sql/holdingstable.py`）、
+   三个 stocklink 助手（`get_holdings_link` / `get_exhaustive_holdings_link` /
+   `get_fund_position_link`），并接进 `/stock/<symbol>` **第 3 分支**
+   （PHP `else if` 顺序：fundpair → holdings → generic，顺序不能改）。
+   演示库原先一行为空，故从生产端 `holdingscn.php?symbol=SH513050` 搬了一份
+   真实样本（36 只成分股，比例合计 100.03%）才验得动。
+   验证三道：PHP 逐例对照 12/12（人造输入）+ 7/7（**真实 36 只**，≤1e-12）+
+   页面逐格比对生产端（官方 EST 1.026 vs 1.025、参考 EST 1.011 vs 1.006，
+   差额归因是演示库缺汇率与 10-14 净值，见
+   `README_holdings_migration.md` §6.3）。
+   对照抓到一个**致命且静默**的真 bug：`holdings_ratio` 的键是 int 而
+   `get_stock_id()` 给 str，PHP 靠"数字字符串数组键自动转 int"躲过，
+   Python 不认 → 比例全取成 0 → 估值**整列归零且不报错**（pitfalls #71/#72）。
+   详见 `python/auto/README_holdings_migration.md`。
+
+   **仍存在的关键石 / 后续 checkpoint**：CK5 交易块 + 链接（账号可演示）。
    **更新（2026-10-15）**：~~CK6 order book 写 snapshot~~ 已完成
    （`4e2ec161`：`realtimequote.orderbook` 列 + quotestore 编解码 + daemon 写入 +
    `refquote.apply_order_book` 回填，页面不联网也有五档）；~~A 股带配对溢价的
    trading~~ 已补（`/stock/<symbol>` 第 4 分支接上 `trading_service.get_table`，
-   见 `README_stock_detail_migration.md` §6.4）。**仍未迁**：`_mystock.php`
-   的 Holdings 分支；三个整页外壳（登录、`GetGroupSql()`、
+   见 `README_stock_detail_migration.md` §6.4）；~~CK4 Holdings 分支~~ 已补（见上）。
+   **仍未迁**：`EchoNetValueHistoryParagraph`（181 行）与
+   `EchoFundHistoryParagraph`（CK4 只取了"持仓更新日"那句说明）；
+   三个整页外壳（登录、`GetGroupSql()`、
    `StockEditTransactionForm`/`StockMergeTransactionForm`）随账号体系暂缓。
 5. `php/layout.php`、`php/menu.php`、`php/stocklink.php`：站点布局和导航。
 

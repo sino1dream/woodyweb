@@ -101,7 +101,13 @@ from web.bootstrap import install_paths
 install_paths()
 
 from calc.futurepremium import get_future_interest_premium, php_round  # noqa: E402
+from ref.holdingsref import StockGetHoldingsReference  # noqa: E402
 from ref.refobj import StockGetFundPairReference, StockGetPairReferences  # noqa: E402
+from ref.stocklink import (  # noqa: E402
+    get_exhaustive_holdings_link,
+    get_fund_position_link,
+    get_holdings_link,
+)
 from web.services.detail_sections import (  # noqa: E402
     build_fund_history,
     build_netvalue_close,
@@ -200,6 +206,21 @@ def _is_symbol_a(ref: Any) -> bool:
             except Exception:
                 return False
     return False
+
+
+#: ``fundestparagraph.php:168``：``if ($ref->CountHoldings() <= 4)`` ——
+#: 持仓超过这么多就不给"穷举持仓比例"链接（未知数太多，反推不出比例）。
+EXHAUSTIVE_HOLDINGS_LIMIT = 4
+
+
+def _invoke_ref(ref: Any, snake: str, camel: str) -> Any:
+    """鸭子类型调引用对象的方法，先 snake_case 后 camelCase。
+
+    持仓引用可能是 :class:`ref.holdingsref.HoldingsReference`，也可能是测试替身
+    或别的实现，两种命名都得认（与 ``fundest_service._invoke`` 同一套路子）。
+    """
+    method = getattr(ref, snake, None) or getattr(ref, camel, None)
+    return None if method is None else method()
 
 
 class StockDetailService:
@@ -331,6 +352,111 @@ class StockDetailService:
             return service.fund_pair_table(ref)
         except Exception:
             return None
+
+    # -- 第 3 分支：StockGetHoldingsReference（CK4） ----------------------
+    def get_holdings_detail(
+        self,
+        symbol: str,
+        ref: Any = None,
+        holdings_ref: Any = None,
+        sma_service: Any = None,
+        history_service: Any = None,
+        fundest_service: Any = None,
+    ) -> dict[str, Any] | None:
+        """``_mystock.php:138-142`` 的 ``holdings_ref`` 分支。
+
+        ## 三段照抄 PHP
+
+        ```php
+        else if ($holdings_ref = StockGetHoldingsReference($strSymbol))
+        {
+            EchoHoldingsEstParagraph($holdings_ref);   // 估值表 + 说明
+            EchoSmaParagraph($ref);                    // 注意是 $ref 不是 $holdings_ref
+            EchoFundHistoryParagraph($holdings_ref);
+        }
+        ```
+
+        **``EchoSmaParagraph($ref)`` 用的是通用引用** ``$ref`` —— 不是持仓引用。
+        均线要的是场内价格（``$ref`` 的行情），持仓引用算的是估算净值，
+        两条路不是一回事。所以本方法同时要 ``ref`` 与 ``holdings_ref`` 两个。
+
+        ## 这一段和配对分支（``fundpair``）长得像，但估值来源完全不同
+
+        ``fundpair`` 是"一只基金跟踪**一个**标的"，估值 = 标的价 × 校准值；
+        本分支是"一只基金持有**几十只**成分股"，估值 = 各成分股按持仓比例的
+        加权涨幅（见 :mod:`ref.holdingsref`）。判断走哪条分支的依据是
+        ``holdings`` 表有没有这只基金的持仓明细行。
+
+        ## 刻意没做的一段
+
+        ``EchoHoldingsEstParagraph()`` 末尾还调了
+        ``EchoNetValueHistoryParagraph($ref, false, 0, 1)``
+        （``fundestparagraph.php:171``）—— 那是"净值 + 汇率 + 仓位"的历史表，
+        ``php/ui/netvaluehistoryparagraph.php`` 181 行，**是一个独立段落**
+        （QDII 详情页也在用），不在本分支的范围里。见模块 docstring 的
+        known deviation。
+        """
+        if holdings_ref is None:
+            holdings_ref = self._build_holdings_ref(symbol)
+        if holdings_ref is None:
+            return None
+        if ref is None:
+            ref = self._build_ref(symbol)
+
+        return {
+            "symbol": symbol,
+            "branch": "holdings",
+            "ref": holdings_ref,
+            #: ``EchoHoldingsEstParagraph`` 的表体：官方 EST / 参考 EST / 溢价
+            "est": self._fund_est_table(fundest_service, holdings_ref),
+            #: 表头下方那句说明（仓位 + 持仓更新日期）
+            "est_note": self._holdings_est_note(holdings_ref),
+            #: ``EchoSmaParagraph($ref)`` —— 通用引用，不是持仓引用
+            "sma": self._sma_sections(symbol, ref, None, None, sma_service),
+            "stockhistory": build_stock_history(history_service, symbol),
+            "netvalueclose": build_netvalue_close(history_service, symbol),
+            "shares": build_shares(history_service, symbol),
+        }
+
+    def _build_holdings_ref(self, symbol: str) -> Any:
+        """``StockGetHoldingsReference($strSymbol)``；不是持仓型返回 ``None``。
+
+        包 ``try``：连不上库时退化成"这一段不显示"，而不是整页 500
+        （与 :meth:`_build_fund_pair_ref` 同一条约定）。
+        """
+        try:
+            return StockGetHoldingsReference(symbol, source=self.source)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _holdings_est_note(ref: Any) -> str:
+        """``EchoHoldingsEstParagraph()`` 里那句说明（``fundestparagraph.php:163-168``）。
+
+        生产端 ``holdingscn.php?symbol=SH513050`` 上是这样一句::
+
+            <a href=".../fundpositioncn.php?symbol=SH513050">仓位估算</a>值使用1.00。
+            <font color=blue>基金持仓</font>更新于2026-10-13。
+
+        两个链接 + 一个日期，其中"穷举持仓比例"那个**只在持仓数 <= 4 时出现**
+        （``:168``）—— 成分股多了就解不出比例了，摆出来也没用。
+
+        **链接是 HTML 字符串**，模板那头必须按原文渲染（不能转义），否则页面上
+        会看到 ``<a href=...>`` 的字面文本。
+        """
+        symbol = _invoke_ref(ref, "get_symbol", "GetSymbol")
+        position = _invoke_ref(ref, "get_position", "GetPosition") or 1.0
+        text = "%s值使用%s。" % (
+            get_fund_position_link(symbol),
+            _number_format(position, 2),
+        )
+        text += "%s更新于%s。" % (
+            get_holdings_link(symbol),
+            _invoke_ref(ref, "get_holdings_date", "GetHoldingsDate") or "",
+        )
+        if (_invoke_ref(ref, "count_holdings", "CountHoldings") or 0) <= EXHAUSTIVE_HOLDINGS_LIMIT:
+            text += get_exhaustive_holdings_link(symbol)
+        return text
 
     # -- 第 4 分支：else（CK3） -------------------------------------------
     def get_detail(

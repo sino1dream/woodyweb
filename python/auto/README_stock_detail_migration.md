@@ -34,7 +34,7 @@
 | **A 股 generic `EchoTradingParagraph($ref,$ah_ref,$adr_ref)`** | ❌ 只有 `fund_table`，缺带 AH/ADR 溢价的通用 trading |
 | **generic `EchoSmaParagraph($ref)` + `_callbackCnhSma`** | ❌ 缺 |
 | **`EchoAhPairSmaParagraph` 接线** | ❌ 回调有、没接服务/路由 |
-| **Holdings 分支** | ❌ 被 `HoldingsReference` 阻塞 |
+| **Holdings 分支** | ✅ **CK4 已完成**（`holdingsref.py` + `/stock/<symbol>` 第 3 分支），详见 `README_holdings_migration.md` |
 | 交易块 `_echoMyStockTransactions`（账号） | ❌ 可演示化 |
 | 链接生成 `_getMyStockLinks` / `GetMyStockLinks` | ❌ 导航类，低优先 |
 
@@ -53,7 +53,8 @@
 > `StockGetPairReferences` 工厂已迁入 `auto/ref/refobj.py`。
 > 详见 **`README_pair_reference_migration.md`**，本文件只记 CK 层面的排期与验证。
 >
-> 仍未迁：`FundPairReference` 的期货自动校准（列 **CK2b**）、`HoldingsReference`。
+> 仍未迁：`FundPairReference` 的期货自动校准（列 **CK2b**，已完成）。
+> `HoldingsReference` **CK4 已完成**，见 `README_holdings_migration.md`。
 
 ## 3. 分阶段 checkpoint
 
@@ -71,7 +72,12 @@
   详情独立成 `/stock/<symbol>`，`/fund` 仍只管基金），渲染 AB/AH/ADR 对比 +
   均线四个槽位 + stockhistory / netvalueclose / shares。
   详见 §6「CK3 落点」。
-- **CK4（Holdings 分支）**：接 `HoldingsReference`（依赖 CK2）。
+- **CK4（Holdings 分支，已完成 2026-10-15）**：`HoldingsReference` +
+  `holdings` / `holdingsdate` 数据层 + `/stock/<symbol>` 第 3 分支 +
+  三个 stocklink 助手。验证：PHP 逐例对照 12/12（人造）+ 7/7（真实 36 只，
+  ≤1e-12），页面实测与生产端逐格比对（官方 EST 1.026 vs 1.025、
+  参考 EST 1.011 vs 1.006，差额归因见 `README_holdings_migration.md` §6.3）。
+  详见 **`README_holdings_migration.md`**。
 - **CK5（交易块 + 链接，账号可演示）**：`_echoMyStockTransactions` 复用演示数据 + `_getMyStockLinks` / `GetMyStockLinks`。
 - **CK6（长期）**：order book（五档盘口）写入 snapshot 表，彻底解决 tradingparagraph 历史问题。
 

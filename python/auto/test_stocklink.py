@@ -32,7 +32,10 @@ from ref.stocklink import (  # noqa: E402
     STOCK_TRANSACTION_DISPLAY,
     get_delete_link,
     get_edit_link,
+    get_exhaustive_holdings_link,
+    get_fund_position_link,
     get_group_stock_link,
+    get_holdings_link,
     get_my_stock_group_link,
     get_my_stock_link,
     get_on_click_link,
@@ -347,6 +350,53 @@ class StockLinkDiffersFromExternalLinkTest(unittest.TestCase):
         self.assertNotEqual(ref.get_stock_link(), ref.get_external_link())
         self.assertIn("/woody/res/sh513100cn.php", ref.get_stock_link())
         self.assertIn("finance.sina.com.cn", ref.get_external_link())
+
+
+class HoldingsLinkTest(unittest.TestCase):
+    """CK4 持仓分支那三个链接（``php/stocklink.php:144`` / ``:232`` / ``:244``）。
+
+    三个页面（持仓 / 仓位估算 / 穷举持仓）在本站点还没有，链接暂时不可达，
+    但**形状必须与 PHP 一致** —— 逐行对照脚本比的就是 href。
+    """
+
+    def test_holdings_link(self):
+        self.assertEqual(
+            '<a href="/woody/res/holdingscn.php?symbol=SH513050">基金持仓</a>',
+            get_holdings_link("SH513050"),
+        )
+
+    def test_holdings_link_display_defaults_to_symbol(self):
+        """``($strDisplay ? $strDisplay : $strSymbol)`` —— 没给文字就用符号。"""
+        self.assertEqual(
+            '<a href="/woody/res/holdingscn.php?symbol=SH513050">SH513050</a>',
+            get_holdings_link("SH513050", display=None),
+        )
+
+    def test_exhaustive_holdings_link(self):
+        self.assertEqual(
+            '<a href="/woody/res/exhaustiveholdingscn.php?symbol=SH513050">穷举持仓比例</a>',
+            get_exhaustive_holdings_link("SH513050"),
+        )
+
+    def test_fund_position_link(self):
+        self.assertEqual(
+            '<a href="/woody/res/fundpositioncn.php?symbol=SH513050">仓位估算</a>',
+            get_fund_position_link("SH513050"),
+        )
+
+    def test_fund_position_link_display_symbol(self):
+        """``$bDisplaySymbol`` 为真时链接文字用符号（``:234``）。"""
+        self.assertEqual(
+            '<a href="/woody/res/fundpositioncn.php?symbol=SH513050">SH513050</a>',
+            get_fund_position_link("SH513050", display_symbol=True),
+        )
+
+    def test_english_pages_drop_cn(self):
+        """英文页不加 ``cn``（``chinese=False``）—— 三个链接都一样。"""
+        self.assertIn("/woody/res/holdings.php?", get_holdings_link("SH513050", chinese=False))
+        self.assertIn(
+            "/woody/res/fundposition.php?", get_fund_position_link("SH513050", chinese=False)
+        )
 
 
 if __name__ == "__main__":

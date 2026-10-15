@@ -335,6 +335,12 @@ class TableRow:
 # ---------------------------------------------------------------------------
 # 取数语义（对应 PHP php/sql/sqldailyclose.php）
 # ---------------------------------------------------------------------------
+#: ``php/debug.php:11`` 的 ``MIN_FLOAT_VAL``：判断"这个数算不算 0"。
+#: 本模块用在 :meth:`DailyCloseSql.get_proportion` 的前值门槛上
+#: （与 PHP ``sqldailyclose.php:95`` 同一道闸）。
+MIN_FLOAT_VAL = 0.0000005
+
+
 class DailyCloseSql:
     """``(stock_id, date, close)`` 形状的日频表访问。
 
@@ -436,6 +442,31 @@ class DailyCloseSql:
         """对应 PHP ``GetDatePrev()``：上一个有记录的日期。"""
         row = self.get_record_prev(stock_id, date)
         return row["date"] if row else None
+
+    def get_proportion(self, stock_id: Any, date: Any, prev_date: Any) -> Any:
+        """对应 PHP ``GetProportion()``（``php/sql/sqldailyclose.php:88``）。
+
+        ``close(date) / close(prev_date)``，**任一日缺失或前值过小都返回
+        ``None``**（PHP 返回 ``false``）。调用方（``HoldingsReference.
+        GetProportionArray``）拿到 ``None`` 就整段放弃那一列 —— 所以这里是
+        "缺一天就不画"，不是"拿 0 顶上"。
+
+        ``前值 > MIN_FLOAT_VAL`` 那道门槛是 PHP 原文就有的：持仓清单里偶尔会
+        有比例 0.000000 的成分股，不挡住会算出除零。
+        """
+        value = self.get_close(stock_id, date)
+        if value is None:
+            return None
+        prev = self.get_close(stock_id, prev_date)
+        if prev is None:
+            return None
+        try:
+            previous = float(prev)
+        except (TypeError, ValueError):
+            return None
+        if previous <= MIN_FLOAT_VAL:
+            return None
+        return float(value) / previous
 
 
 class StockHistorySql(DailyCloseSql):

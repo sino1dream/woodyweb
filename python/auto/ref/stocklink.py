@@ -68,6 +68,18 @@ MYSTOCK_PAGE = "mystock"
 #: ``StockGetTransactionLink()`` 用的页面名（``php/stocklink.php:346``）。
 MYSTOCKTRANSACTION_PAGE = "mystocktransaction"
 
+#: 下面三个是 **CK4 持仓分支**那一段用的页面与显示文字
+#: （``php/stocklink.php:28`` / ``:231`` / ``:243``）。
+#: 显示文字由 PHP 的两个常量拼出来：``STOCK_DISP_POSITION`` = '仓位'
+#: （``php/ui/stockdisp.php:19``）、``STOCK_DISP_HOLDING`` = '持仓'（``:12``）。
+HOLDINGS_PAGE = "holdings"
+EXHAUSTIVE_HOLDINGS_PAGE = "exhaustiveholdings"
+FUND_POSITION_PAGE = "fundposition"
+
+HOLDINGS_DISPLAY = "基金持仓"
+FUND_POSITION_DISPLAY = "仓位估算"
+EXHAUSTIVE_HOLDINGS_DISPLAY = "穷举持仓比例"
+
 #: ``GetOvernightCnhLink()`` 用的页面名（``php/stocklink.php:115``）。
 OVERNIGHT_CNH_PAGE = "overnightcnh"
 
@@ -175,6 +187,57 @@ def get_my_stock_link(
         return get_php_link(PATH_STOCK + MYSTOCK_PAGE, "symbol=" + str(symbol), text, chinese)
     text = display if display else ALL_STOCK_DISPLAY
     return get_php_link(PATH_STOCK + MYSTOCK_PAGE, None, text, chinese)
+
+
+def get_stock_symbol_link(
+    page: Any, symbol: Any, display: Any = None, chinese: bool = True
+) -> str:
+    """对应 ``GetStockSymbolLink()``（``php/stocklink.php:118``）::
+
+        $strQuery = 'symbol='.$strSymbol;
+        return GetStockPageLink($strPage, ($strDisplay ? $strDisplay : $strSymbol), $strQuery);
+
+    页面 + ``symbol=`` 查询串的通用形状。**没给显示文字时用符号本身**
+    （不是页面名）—— PHP 那句三元表达式就是这个意思。
+    """
+    text = display if display else symbol
+    return get_php_link(PATH_STOCK + str(page), "symbol=" + str(symbol), text, chinese)
+
+
+def get_holdings_link(
+    symbol: Any, display: Any = HOLDINGS_DISPLAY, chinese: bool = True
+) -> str:
+    """对应 ``GetHoldingsLink()``（``php/stocklink.php:144``）。
+
+    持仓页：显示这只基金持有哪几只股票、各占多少。
+    """
+    return get_stock_symbol_link(HOLDINGS_PAGE, symbol, display or symbol, chinese)
+
+
+def get_exhaustive_holdings_link(symbol: Any, chinese: bool = True) -> str:
+    """对应 ``GetExhaustiveHoldingsLink()``（``php/stocklink.php:244``）。
+
+    穷举页：反推"各成分股比例取多少才能让估算净值等于真实净值"。
+    **只有持仓数 <= 4 时才有意义**（``fundestparagraph.php:168``）——
+    未知数太多就解不出来了，所以调用方要自己判数量。
+    """
+    return get_stock_symbol_link(
+        EXHAUSTIVE_HOLDINGS_PAGE, symbol, EXHAUSTIVE_HOLDINGS_DISPLAY, chinese
+    )
+
+
+def get_fund_position_link(
+    symbol: Any, display_symbol: bool = False, chinese: bool = True
+) -> str:
+    """对应 ``GetFundPositionLink()``（``php/stocklink.php:232``）。
+
+    ``display_symbol`` 对应 PHP 的 ``$bDisplaySymbol``：为真时链接文字用符号，
+    否则用"仓位估算"。
+    """
+    return get_stock_symbol_link(
+        FUND_POSITION_PAGE, symbol,
+        symbol if display_symbol else FUND_POSITION_DISPLAY, chinese
+    )
 
 
 def get_stock_link(symbol: Any, display: Any = None, chinese: bool = True) -> str:

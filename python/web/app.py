@@ -90,6 +90,7 @@ def create_app(
     fundest_refs_builder: Any = None,
     trading_service_factory: Any = None,
     trading_refs_builder: Any = None,
+    stock_detail_service_factory: Any = None,
     stock_service_factory: Any = None,
     sma_service_factory: Any = None,
     sma_history_factory: Any = None,
@@ -149,6 +150,13 @@ def create_app(
     )
     if trading_refs_builder is not None:
         app.extensions["trading_refs_builder"] = trading_refs_builder
+
+    # 非基金详情页 ``/stock/<symbol>`` 的段落组装器（CK2b / CK4 两个分支）。
+    # **没有默认工厂**：它要 ``link_builder``（生成站内链接需要 ``url_for``，
+    # 也就是请求上下文），装配只能在路由层做（``routes/stock.py``）。
+    # 所以这里是"注入了才注册"，没注入时路由自己按默认方式装配。
+    if stock_detail_service_factory is not None:
+        app.extensions["stock_detail_service_factory"] = stock_detail_service_factory
 
     # 股票列表页（php/ui/stockparagraph.php）：从 stock 表分页取符号。
     app.extensions["stock_service_factory"] = (

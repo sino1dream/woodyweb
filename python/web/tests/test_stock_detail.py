@@ -830,5 +830,196 @@ class FundPairRouteTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
 
 
+class FakeHoldingsRef:
+    """``HoldingsReference`` 替身（CK4）。
+
+    只实现服务层会用到的那几个方法。真实类要连库（读持仓表、给每只成分股
+    建引用对象），而这里要验的是**段落组装**，不是估值怎么算 —— 后者由
+    ``auto/test_holdingsref.py`` 与 PHP 对照脚本负责。
+    """
+
+    def __init__(self, symbol="SH513050", position=1.0, date="2026-10-13", count=37):
+        self._symbol = symbol
+        self._position = position
+        self._date = date
+        self._count = count
+
+    def get_symbol(self):
+        return self._symbol
+
+    def get_position(self):
+        return self._position
+
+    def get_holdings_date(self):
+        return self._date
+
+    def count_holdings(self):
+        return self._count
+
+    def get_price(self):
+        return "1.004"
+
+    def get_date(self):
+        return "2026-10-15"
+
+
+class HoldingsDetailTest(unittest.TestCase):
+    """``get_holdings_detail`` —— ``_mystock.php:138`` 第 3 分支（CK4）。"""
+
+    def setUp(self):
+        self.ref = FakeHoldingsRef()
+        self.fundest = RecordingFundEst()
+        self.sma = FakeSmaService()
+
+    def _detail(self, **kwargs):
+        svc = sds.StockDetailService(source=None)
+        return svc.get_holdings_detail(
+            kwargs.pop("symbol", "SH513050"),
+            ref=kwargs.pop("ref", FakeRef("SH513050")),
+            holdings_ref=kwargs.pop("holdings_ref", self.ref),
+            sma_service=kwargs.pop("sma_service", self.sma),
+            history_service=kwargs.pop("history_service", FakeHistoryService()),
+            fundest_service=kwargs.pop("fundest_service", self.fundest),
+            **kwargs
+        )
+
+    def test_returns_none_without_holdings_ref(self):
+        """不是持仓型（``holdings`` 表没有明细行）→ 由路由层退化到第 4 分支。"""
+        svc = sds.StockDetailService(source=None)
+        self.assertIsNone(svc.get_holdings_detail("SH513050", holdings_ref=None))
+
+    def test_branch_marker(self):
+        """``branch`` 不能少：模板靠它避开支线渲染（Jinja 严格 undefined）。"""
+        self.assertEqual(self._detail()["branch"], "holdings")
+
+    def test_est_table_uses_fundest_service(self):
+        """估值表走注入的 ``fundest_service``，传进去的是**持仓引用**。"""
+        detail = self._detail()
+        self.assertIsNotNone(detail["est"])
+        self.assertEqual(self.fundest.refs_seen, [self.ref])
+
+    def test_note_has_position_and_holdings_date(self):
+        """说明文字 = 仓位 + 持仓更新日期（``fundestparagraph.php:163-166``）。
+
+        生产端页面上那一句是：
+        ``仓位估算值使用1.00。基金持仓更新于2026-10-13。``
+        两处链接都是 HTML，所以断言里认链接文字而不是整串标签。
+        """
+        note = self._detail()["est_note"]
+        self.assertIn("仓位估算", note)
+        self.assertIn("值使用1.00。", note)
+        self.assertIn("基金持仓", note)
+        self.assertIn("更新于2026-10-13。", note)
+
+    def test_note_shows_position_with_two_decimals(self):
+        """``number_format($fPosition, 2)`` —— 仓位固定两位小数。"""
+        note = self._detail(holdings_ref=FakeHoldingsRef(position=0.956))["est_note"]
+        self.assertIn("值使用0.96。", note)
+
+    def test_exhaustive_link_only_when_few_holdings(self):
+        """``if ($ref->CountHoldings() <= 4)``（``fundestparagraph.php:168``）。
+
+        成分股多了就反推不出比例，摆那个链接也没用 —— 所以**必须**验两个方向，
+        只验"4 只时有"的话，守卫被删掉照样通过。
+        """
+        few = self._detail(holdings_ref=FakeHoldingsRef(count=4))["est_note"]
+        self.assertIn("穷举持仓比例", few)
+        many = self._detail(holdings_ref=FakeHoldingsRef(count=37))["est_note"]
+        self.assertNotIn("穷举持仓比例", many)
+
+    def test_sma_uses_the_generic_ref(self):
+        """``EchoSmaParagraph($ref)`` 用的是**通用引用**，不是持仓引用（``:140``）。
+
+        均线要场内价格（``$ref`` 的行情），持仓引用算的是估算净值 ——
+        传错对象不会报错，只会让均线表的数据源变一个。
+        """
+        generic = FakeRef("SH513050")
+        self._detail(ref=generic)
+        seen = [call[1] for call in self.sma.calls]
+        self.assertIn(generic, seen)
+        self.assertNotIn(self.ref, seen)
+
+
+class FakeHoldingsDetailService:
+    """只走第 3 分支的详情页服务替身。
+
+    说明文字**用真实现生成**（``StockDetailService._holdings_est_note``）而不是
+    手写一个字符串 —— 那里面是两个 ``<a>`` 标签，手写纯文本的话"模板有没有
+    转义"这条断言就永远成立，等于没测。
+    """
+
+    def __init__(self):
+        self.fundest = RecordingFundEst()
+        self.sma = FakeSmaService()
+        self.calls = []
+
+    def get_fund_pair_detail(self, symbol, **kwargs):
+        self.calls.append(("fundpair", symbol))
+        return None
+
+    def get_holdings_detail(self, symbol, **kwargs):
+        self.calls.append(("holdings", symbol))
+        ref = FakeHoldingsRef(symbol)
+        return {
+            "symbol": symbol,
+            "branch": "holdings",
+            "ref": ref,
+            "est": self.fundest.get_table([ref]),
+            "est_note": sds.StockDetailService._holdings_est_note(ref),
+            "sma": {"plain": self.sma.sma_table(None)},
+        }
+
+    def get_detail(self, symbol, **kwargs):
+        self.calls.append(("generic", symbol))
+        return None
+
+
+class HoldingsRouteTest(unittest.TestCase):
+    """``/stock/<symbol>`` 的第 3 分支渲染（离线）。"""
+
+    def setUp(self):
+        from web.app import create_app
+
+        self.service = FakeHoldingsDetailService()
+        self.app = create_app(
+            {"TESTING": True},
+            reference_refs_builder=lambda symbols: [FakeRef("SH513050")],
+            sma_service_factory=lambda: FakeSmaService(),
+            history_service_factory=lambda: FakeHistoryService(),
+            stock_detail_service_factory=lambda: self.service,
+        )
+        self.client = self.app.test_client()
+
+    def test_holdings_branch_renders_est_table(self):
+        """持仓分支的估值表与说明文字都要出现在页面上。
+
+        ``est-table`` 那个 CSS 类是模板里写死的，少它就说明走了别的分支。
+        """
+        response = self.client.get("/stock/SH513050")
+        self.assertEqual(response.status_code, 200)
+        html = response.get_data(as_text=True)
+        self.assertIn('class="data-table est-table"', html)
+        self.assertIn("基金持仓", html)
+        self.assertIn("更新于2026-10-13。", html)
+
+    def test_branch_order_fundpair_before_holdings(self):
+        """``else if`` 短路：两个分支都成立时**先**试 ``fundpair``（``:131``）。
+
+        演示库里 SH513050 这类符号可能同时在两张表里，换序会整页换一套表。
+        """
+        self.client.get("/stock/SH513050")
+        self.assertEqual([c[0] for c in self.service.calls], ["fundpair", "holdings"])
+
+    def test_note_links_are_not_escaped(self):
+        """说明文字里的链接必须按 HTML 渲染，不能转义成字面文本。
+
+        与 CK2b 那个 ``first_cell_is_html`` 的坑同源（pitfalls #59）：
+        漏掉 ``| safe`` 时页面上会出现 ``&lt;a href=...&gt;``。
+        """
+        html = self.client.get("/stock/SH513050").get_data(as_text=True)
+        self.assertIn('<a href="/woody/res/fundpositioncn.php?symbol=SH513050">', html)
+        self.assertNotIn("&lt;a href", html)
+
+
 if __name__ == "__main__":
     unittest.main()
