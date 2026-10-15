@@ -170,6 +170,32 @@ def format_ratio_display(value: Any, precision: int = 4) -> str:
         return str(value)
 
 
+def php_number_format(value: Any, precision: int = 2) -> str:
+    """PHP ``number_format($fVal, $precision)``：定点、**不削尾零**、不去负零。
+
+    与 :func:`format_number_display` 是两套格式，别混用：
+
+    * ``format_number_display`` 走 ``StockGetPriceDisplay()``
+      （``php/stock.php:91``），末尾会 ``rtrim('0')`` 再把 ``-0`` 归成 ``0``；
+    * ``number_format`` 原样出 ``"1.00"``，``-0.00`` 也原样出。
+
+    两个调用点都用它：
+
+    * ``_QdiiGetStockPosition()``（``php/ui/netvaluehistoryparagraph.php:16``）
+      —— 仓位那一格，还要拿它跟 ``number_format($ref->GetPosition(), 2)``
+        做**字符串比较**来决定行底色，所以尾零不能削；
+    * ``_getFundPositionStr()``（``php/ui/fundestparagraph.php:135``）
+      —— 估值表上方那行「值使用0.95。」。
+
+    千分位逗号没有实现：这两个调用点的入参（仓位、反算仓位）都远小于 1000，
+    用不到的语义不加。
+    """
+    try:
+        return "%.*f" % (precision, float(value))
+    except (TypeError, ValueError):
+        return str(value)
+
+
 def format_int_display(value: Any) -> str:
     """对应 PHP ``number_format($fVal)``（**只传一个参数**的那一种）。
 

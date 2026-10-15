@@ -114,6 +114,11 @@ TABLES = {
          "time": "00:12:34", "num": 1},
         {"id": 2, "stock_id": "1", "date": "2026-09-29", "close": 30.0,
          "time": "17:30:00", "num": 2},
+        # 中间层标的（^GSPC）也有校准记录 —— 期货均线表前那张表的对象。
+        # 演示库里它**同样有 profile 行**（position 默认 1.0），这正是当年
+        # 谓词写错时多出「净值 / 对冲值」两列的原因。
+        {"id": 3, "stock_id": "7", "date": "2026-10-01", "close": 1.006,
+         "time": "04:03:00", "num": 1749},
     ],
     "shareshistory": [
         # 份额取 8050.00 万份：配合 stockhistory 里 2026-09-30 的成交量 6369249，
@@ -129,8 +134,9 @@ TABLES = {
 def make_source():
     """与假连接配套的数据源：SZ161130 是 QDII（要回落到前一交易日净值）。"""
     return MemoryFundDataSource(
-        stocks={"SZ161130": "1", "USCNY": "8"},
-        names={"SZ161130": "易方达纳斯达克100LOF", "USCNY": "美元人民币"},
+        stocks={"SZ161130": "1", "USCNY": "8", "^GSPC": "7"},
+        names={"SZ161130": "易方达纳斯达克100LOF", "USCNY": "美元人民币",
+               "^GSPC": "标普500指数"},
         profiles={
             "SZ161130": FundProfile(
                 symbol="SZ161130",
@@ -140,6 +146,15 @@ def make_source():
                 cny_est=6.705,
                 is_lof=True,
                 est_symbol="QQQ",
+            ),
+            #: 中间层标的在演示库里**也有** profile（position 默认 1.0）——
+            #: 照实复现，否则测不出当年那个谓词 bug。
+            "^GSPC": FundProfile(
+                symbol="^GSPC",
+                stock_id="7",
+                position=1.0,
+                official_date="2026-10-01",
+                is_lof=True,
             ),
         },
         history_close={("1", "2026-09-30"): 4.796, ("1", "2026-09-29"): 4.727},
@@ -195,6 +210,21 @@ class HistoryRouteTest(unittest.TestCase):
         data = self.client.get("/api/history/calibrationhistory/SZ161130").get_json()
         labels = [c["text"] for c in data["columns"]]
         self.assertEqual(labels, ["日期", "校准值", "时间", "次数", "净值", "对冲值"])
+
+    def test_calibrationhistory_columns_for_middle_layer_symbol(self):
+        """中间层标的（^GSPC）不是 A 股基金 → 只有 4 列。
+
+        PHP 的谓词是 ``$ref->IsFundA()``（A 股 LOF/ETF），不是"有没有 profile"：
+        演示库里 ^GSPC / ^NDX / QQQ / SPY 都有 profile 行，用 profile 当谓词会让
+        期货均线表前那张校准表凭空多出「净值 / 对冲值」，而生产端
+        ``sz161125cn.php`` 里 ^GSPC 那张只有「日期 校准值 时间 次数」。
+        """
+        data = self.client.get("/api/history/calibrationhistory/%5EGSPC").get_json()
+        labels = [c["text"] for c in data["columns"]]
+        self.assertEqual(labels, ["日期", "校准值", "时间", "次数"])
+        # 记录本身要能取到（否则"4 列"是因为整段没数据）
+        self.assertEqual(len(data["rows"]), 1)
+        self.assertEqual(data["rows"][0]["cells"][0], "2026-10-01")
 
     def test_netvaluehistory_columns_avoid_duplicate_netvalue_label(self):
         """PHP 会给基金净值和中间层净值用同一个「净值」列名，这里必须区分。"""
@@ -382,6 +412,88 @@ class HistoryRouteTest(unittest.TestCase):
         # 但这一行只到「溢价」为止
         self.assertIn("官方EST", [c["text"] for c in data["columns"]])
         self.assertEqual(len(data["rows"][0]["cells"]), 4)
+
+    def test_fundhistory_last_column_is_price_when_est_has_no_netvalue(self):
+        """第 8 列文案 = ``<est>价格`` —— est 没有净值记录时。
+
+        对应 PHP ``RefGetTableColumnNetValue()``（``php/ui/stocktable.php:320``）
+        的第三支（``TableColumnPrice``）。生产端 ``sz161125cn.php`` 上
+        SZ161125 的 est 是 ^GSPC（``QdiiGetEstSymbol`` 映射到**指数**而非
+        ETF，``qdiiref.php:26``），指数没有净值行，所以显示「^GSPC价格」。
+        替身里 SZ161130 的 est 是 QQQ 且 QQQ 没有 stock 行 -> 同走这一支。
+        """
+        source = make_source()
+        connection = FakeConnection(TABLES)
+        connection.tables = dict(TABLES)
+        connection.tables["fundest"] = [
+            {"id": 1, "stock_id": "1", "date": "2026-09-29", "close": 4.5452,
+             "time": "04:00:00"},
+        ]
+        app = create_app(
+            {"TESTING": True},
+            history_service_factory=lambda: HistoryService(source, connection),
+        )
+        client = app.test_client()
+
+        labels = [c["text"] for c in
+                  client.get("/api/history/fundhistory/SZ161130").get_json()["columns"]]
+        self.assertEqual(labels, ["日期", "价格", "净值", "溢价",
+                                  "官方EST", "时间", "误差", "QQQ价格"])
+
+    def test_fundhistory_last_column_is_netvalue_when_est_has_records(self):
+        """第 8 列文案 = ``<est>净值`` —— est 有净值记录时。
+
+        对应 ``RefGetTableColumnNetValue()`` 第一支
+        （``CountNetValue() > 0``，``mysqlref.php:31`` 数的是 netvaluehistory
+        行数）。生产端 ``sz162411cn.php`` 上 SZ162411 的 est 是 XOP（ETF，
+        有净值行），显示「XOP净值」。替身用 KWEB 组基金 SZ164906 复现。
+        """
+        tables = dict(TABLES)
+        tables["stockhistory"] = TABLES["stockhistory"] + [
+            {"id": 3, "stock_id": "9", "date": "2026-09-30", "close": 1.0,
+             "volume": 1000, "adjclose": 1.0},
+            # 09-29 那行是给 GetDatePrev() 用的：QDII 的净值日期取前一交易日
+            {"id": 4, "stock_id": "9", "date": "2026-09-29", "close": 0.99,
+             "volume": 900, "adjclose": 0.99},
+        ]
+        tables["netvaluehistory"] = TABLES["netvaluehistory"] + [
+            # 基金自己 09-29 的净值（QDII 取前一交易日）
+            {"id": 20, "stock_id": "9", "date": "2026-09-29", "close": 1.0},
+            # est（KWEB）09-29 的净值 —— 第 8 列取的就是它
+            {"id": 21, "stock_id": "10", "date": "2026-09-29", "close": 42.0},
+        ]
+        tables["fundest"] = [
+            {"id": 1, "stock_id": "9", "date": "2026-09-29", "close": 1.0,
+             "time": "04:00:00"},
+        ]
+        source = MemoryFundDataSource(
+            stocks={"SZ164906": "9", "KWEB": "10"},
+            names={"SZ164906": "中概互联网LOF", "KWEB": "中概互联网ETF"},
+            profiles={
+                "SZ164906": FundProfile(
+                    symbol="SZ164906",
+                    stock_id="9",
+                    position=0.95,
+                    official_date="2026-09-29",
+                    cny_est=6.705,
+                    is_lof=True,
+                    est_symbol="KWEB",
+                ),
+            },
+        )
+        app = create_app(
+            {"TESTING": True},
+            history_service_factory=lambda: HistoryService(source, FakeConnection(tables)),
+        )
+        client = app.test_client()
+
+        data = client.get("/api/history/fundhistory/SZ164906").get_json()
+        labels = [c["text"] for c in data["columns"]]
+        self.assertEqual(labels, ["日期", "价格", "净值", "溢价",
+                                  "官方EST", "时间", "误差", "KWEB净值"])
+        # 行内第 8 格 = est 在 EST 记录日期上的净值
+        cells = data["rows"][0]["cells"]
+        self.assertEqual(cells[7][0], "42")
 
 
 class FakeCnyRef:

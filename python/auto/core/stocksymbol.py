@@ -903,6 +903,17 @@ class StockSymbol:
         if self.is_sina_global_index():
             return self.str_symbol
 
+        # 新浪外汇（``fx_susdcnh`` / ``fx_susdcny`` 这类）**不能加 ``gb_``
+        # 前缀**：实测 ``hq.sinajs.cn/list=gb_fx_susdcnh`` 返回空串，而裸
+        # ``fx_susdcnh`` 返回 ``离岸人民币（香港）,6.6901,…``。
+        #
+        # 这是**刻意偏离 PHP**：``stocksymbol.php:893 GetSinaSymbol()`` 没有
+        # 这一支，会退化成 ``gb_fx_…``。PHP 的外汇行情走的是另一条路
+        # （``forexsource`` 那套按代码直接取），我们这边只有这一条，
+        # 不改就永远抓不到，页面上 USDCNH / USDCNY 两行会一直是空格子。
+        if self.is_sina_forex():
+            return self.str_symbol
+
         # PHP 先把 '.' 换成 '$'，再统一小写
         symbol = self.str_symbol.replace(".", "$")
         lower = symbol.lower()

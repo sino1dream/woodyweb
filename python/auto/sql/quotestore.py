@@ -246,6 +246,14 @@ class QuoteStore:
         if is_invalid_field(date):
             return result
 
+        # 外汇（``fx_susdcnh`` 这类）**不进 ``stockhistory``**。
+        # ``load_sina_forex_data()`` 也会填 open/high/low/close，字段校验过得去，
+        # 于是汇率会被当成股价写一行历史 —— 实测就是这么污染到库里的
+        # （``fx_susdcnh 2026-10-15 close=6.69``）。汇率的"历史"有自己那条路
+        # （``forexupdater`` / ``forexsource`` 按日积累），不走行情表。
+        if getattr(reference, "is_sina_forex", None) and reference.is_sina_forex():
+            return result
+
         if not (is_invalid_field(reference.str_open)
                 or is_invalid_field(reference.str_high)
                 or is_invalid_field(reference.str_low)):

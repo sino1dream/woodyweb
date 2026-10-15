@@ -218,7 +218,8 @@ def main() -> int:
         for sina_symbol in sina_symbols:
             symbol = mapping[sina_symbol]
             ref = StockReference(symbol, quote_loader=client.load)
-            ref.load_sina_data()
+            # PHP ``MyStockReference::LoadData()``：外汇/期货走各自的解析分支
+            ref.load_data()
 
             print("%-10s -> %-10s 名称=%-22s 价=%-10s 昨收=%-10s 日期=%-11s 时间=%s" % (
                 symbol,

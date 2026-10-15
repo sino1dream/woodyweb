@@ -31,13 +31,19 @@ from web.services.fund_list_service import (  # noqa: E402
     FundListService,
 )
 from web.services.detail_sections import (  # noqa: E402
+    build_fund_history,
     build_netvalue_close,
     build_shares,
     build_stock_history,
 )
 from web.services.fund_service import FundService  # noqa: E402
+from web.services.fundest_service import fund_position_memo  # noqa: E402
 from web.services.qdii_page_service import build_qdii_page  # noqa: E402
-from web.services.reference_service import reference_symbols_for_fund  # noqa: E402
+from web.services.reference_service import (  # noqa: E402
+    _fund_reference_symbols,
+    _leverage_symbols,
+    reference_symbols_for_fund,
+)
 
 
 fund_bp = Blueprint("fund", __name__)
@@ -74,6 +80,7 @@ def _render_fund(symbol: str, group: str):
         shares=_build_shares(symbol),
         stockhistory=_build_stock_history(symbol),
         netvalueclose=_build_netvalue_close(symbol),
+        fundhistory=_build_fund_history(symbol),
         sma=_build_sma(symbol),
         calibration=_build_calibration(symbol),
         fundlist=_build_fund_list(symbol),
@@ -509,17 +516,64 @@ def _build_stock_history(symbol: str) -> dict[str, Any] | None:
     return build_stock_history(_get_history_service(), symbol)
 
 
-def _build_netvalue_close(symbol: str) -> dict[str, Any] | None:
+def _build_netvalue_close(symbol: str) -> list:
     """基金详情页的「净值价格比较」表（``php/ui/netvaluecloseparagraph.php``）。
 
-    同样复用 ``history_service`` 的 ``netvalueclose`` kind（与
-    ``/history/netvalueclose/<sym>`` 同源）。PHP 的守卫是
-    ``if ($ref->CountNetValue() == 0) return;`` —— 本版照办：基金没有净值数据时
-    整段不显示，而不是摆一张空表。
+    ## 摆谁的 —— CK6 起与 CK1 时不同
 
-    取表逻辑见 ``web/services/detail_sections.py``（CK3 的 ``/stock`` 页复用）。
+    PHP ``_qdiigroup.php:106-110``::
+
+        EchoNetValueCloseParagraph($ref->GetEstRef());   // 中间层标的（^GSPC）
+        foreach ($arLev as $leverage_ref)
+            EchoNetValueCloseParagraph($leverage_ref);   // 各杠杆标的（SH / SPY）
+
+    所以生产端 ``sz161125cn.php`` 上**没有基金自己**那张表 —— 只有 SH 与 SPY
+    两张（^GSPC 是指数、没有净值行，被 ``CountNetValue()==0`` 守卫挡掉）。
+    基金自己的净值价格比较在 ``/stock/<symbol>``（``_mystock.php:166``）与
+    ``/history/netvalueclose/<symbol>`` 看，那边确实是摆基金自己。
+
+    CK1 接这的一段时摆的是基金自己，与 PHP 对不上；本函数按 PHP 的对象清单
+    摆多张表，返回**列表**（可能为空 —— 一个目标都没有净值数据时）。
+
+    符号走 ``reference_service`` 那两个轻量查询（不建引用对象、不联网）：
+    ``_fund_reference_symbols`` 给（估值标的, 即期外汇, 中间价），
+    ``_leverage_symbols`` 给"谁跟踪估值标的"。同文件的
+    :func:`_build_reference` 用的是同一批数据的公开封装。
     """
-    return build_netvalue_close(_get_history_service(), symbol)
+    service = _get_history_service()
+    if service is None:
+        return []
+    try:
+        source = getattr(_get_reference_service(), "source", None)
+        est_symbol, _forex, _cny = _fund_reference_symbols(symbol, source)
+        targets = []
+        if est_symbol:
+            targets.append(str(est_symbol))
+            targets.extend(str(s) for s in _leverage_symbols(est_symbol, source))
+    except Exception:
+        return []
+
+    tables = []
+    for target in targets:
+        try:
+            table = build_netvalue_close(service, target)
+        except Exception:
+            table = None
+        if table:
+            tables.append(table)
+    return tables
+
+
+def _build_fund_history(symbol: str) -> dict[str, Any] | None:
+    """「基金溢价记录」表（``php/ui/fundhistoryparagraph.php``）。
+
+    PHP 在 ``_qdiigroup.php:104`` 把它摆在期货均线表之后、份额表之前 ——
+    CK6 之前本地基金页整段漏了它。与 ``/history/fundhistory/<sym>`` 是同一张表、
+    同一个服务（PHP 那边也是同一个 ``_echoHistoryTableData()``）。
+
+    取表逻辑在 ``web/services/detail_sections.py``（CK4 的 ``/stock`` 页先用它）。
+    """
+    return build_fund_history(_get_history_service(), symbol)
 
 
 def _build_sma(symbol: str) -> dict[str, Any] | None:
@@ -628,6 +682,13 @@ def _build_fundest(symbol: str) -> dict[str, Any] | None:
     # 会让详情页整个 500（实测踩到）。
     if not table:
         return None
+    #: 估值表上方那行「仓位估算值使用0.95。…」（fundestparagraph.php:135-152）。
+    #: 只有基金详情页这一种调用形式有它，分类页那张表（EchoFundArrayEstParagraph）
+    #: 传的是 false，走的是"EST网页链接"那套标题 —— 所以在这里补，不在服务里补。
+    try:
+        table["memo"] = fund_position_memo(refs[0])
+    except Exception:
+        table["memo"] = ""
     return table if table.get("rows") else None
 
 

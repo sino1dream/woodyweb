@@ -55,11 +55,13 @@ from sql.historytable import (  # noqa: E402
     format_ratio_display,
     format_turnover_display,
     percentage_change,
+    php_number_format,
     stock_calc_hedge,
     use_same_day_net_value,
 )
 from core.stockdata import FundDataSource, MySqlFundDataSource  # noqa: E402
 from core.stocksymbol import (  # noqa: E402
+    StockSymbol,
     in_array_hk_mix,
     in_array_lof_mix,
     in_array_qdii,
@@ -77,23 +79,6 @@ from web.db import get_db  # noqa: E402
 # ---------------------------------------------------------------------------
 # 仓位反算（对应 php/ui/netvaluehistoryparagraph.php 顶部两个函数）
 # ---------------------------------------------------------------------------
-def _php_number_format(value: Any, precision: int = 2) -> str:
-    """PHP ``number_format($fVal, $precision)``：定点、**不削尾零**、不去负零。
-
-    与 :func:`format_number_display` 是两套格式，别混用：
-
-    * ``format_number_display`` 走 ``StockGetPriceDisplay()``
-      （``php/stock.php:91``），末尾会 ``rtrim('0')`` 再把 ``-0`` 归成 ``0``；
-    * ``_QdiiGetStockPosition()`` 直接 ``return number_format($fVal, 2)``
-      （``netvaluehistoryparagraph.php:16``），所以**仓位那一格**保留
-      ``"1.00"`` 这样的原样，``-0.00`` 也原样出。
-    """
-    try:
-        return "%.*f" % (precision, float(value))
-    except (TypeError, ValueError):
-        return str(value)
-
-
 def qdii_get_stock_position(
     proportion: Any,
     prev: Any,
@@ -136,7 +121,7 @@ def qdii_get_stock_position(
     value = percent / est_percent
     if value <= MIN_FLOAT_VAL:
         return None
-    return _php_number_format(value, 2)
+    return php_number_format(value, 2)
 
 
 def qdii_mix_position(
@@ -246,11 +231,48 @@ def _columns_stockhistory(source: FundDataSource, symbol: str, compare: Any, for
     return columns
 
 
-def _columns_fundhistory(est_symbol: Any) -> list:
+def _est_netvalue_column(est_symbol: Any, has_netvalue: bool) -> dict[str, Any]:
+    """fundhistory 第 8 列，对应 PHP ``RefGetTableColumnNetValue()``
+    （``php/ui/stocktable.php:320``）的三分支：::
+
+        $strStockDisplay = TableColumnGetStock($ref);   // 符号 display
+        if ($ref->CountNetValue() > 0)           return new TableColumnNetValue($strStockDisplay);  // <sym>净值
+        if ($ref->IsSinaFutureExceptGoldCN())    return new TableColumnSettlePrice($strStockDisplay);// <sym>结算价
+        return new TableColumnPrice($strStockDisplay, 90);                                          // <sym>价格
+
+    生产端 sz161125cn.php 上 SZ161125 的 est 是 ^GSPC（``QdiiGetEstSymbol``
+    映射到指数而非 ETF，``qdiiref.php:26``），^GSPC 没有净值记录，所以走
+    第三支显示「^GSPC价格」；映射到 ETF 的基金（XOP/KWEB 等）有净值记录，
+    显示「XOP净值」。两条分支宽度都是 90。
+    """
+    text = str(est_symbol)
+    if has_netvalue:
+        return _column(text + "净值", "olive", 90)
+    try:
+        from core.stocksymbol import StockSymbol
+
+        if StockSymbol(text).is_sina_future_except_gold_cn():
+            return _column(text + "结算价", "blue", 90)
+    except Exception:
+        pass
+    return _column(text + "价格", "blue", 90)
+
+
+def _columns_fundhistory(est_symbol: Any, est_has_netvalue: bool = False) -> list:
+    """对应 PHP ``fundhistoryparagraph.php:74-82`` 的列组装。
+
+    后三列（官方EST/时间/误差）只在 ``fundest`` 有记录时才加；第 8 列
+    「标的净值」还要 est_ref 存在才加（``:81`` 的 ``if ($est_ref)``）——
+    **表头级**判断，不是逐行：PHP 里某行没有 fundest 记录时该行只出前
+    四格，表头仍摆八列（生产端实测如此）。
+
+    ``est_symbol`` 为 ``None`` 表示 fundest 无记录，只出前四列。
+    """
     columns = [_COL_DATE, _COL_PRICE, _COL_NETVALUE, _COL_PREMIUM]
     if est_symbol:
         # PHP 只在 fundest 表有记录时才加这几列；这里由调用方判断后传入
         columns += [_COL_OFFICIAL_EST, _COL_TIME, _COL_ERROR]
+        columns.append(_est_netvalue_column(est_symbol, est_has_netvalue))
     return columns
 
 
@@ -527,7 +549,14 @@ class HistoryService:
             # 换成行情日期会一行都查不到（实测踩过）。
             estimate = fundest.get_record(stock_id, net_date) if has_est else None
             rows.append(self._row_fundhistory(record, net_value, estimate, est_symbol, netvalue))
-        return _columns_fundhistory(est_symbol if has_est else None), rows, history.count(stock_id)
+        # 第 8 列的文本分支要看 est 标的有没有净值记录（PHP 的
+        # ``CountNetValue()``，``mysqlref.php:31`` 数 netvaluehistory 行数）。
+        est_has_netvalue = False
+        if has_est and est_symbol:
+            est_id = self.source.get_stock_id(est_symbol)
+            est_has_netvalue = bool(est_id) and netvalue.count(est_id) > 0
+        return (_columns_fundhistory(est_symbol if has_est else None, est_has_netvalue),
+                rows, history.count(stock_id))
 
     def _row_fundhistory(self, record: Any, net_value: Any, estimate: Any, est_symbol: Any, netvalue: Any) -> TableRow:
         date = str(record["date"])
@@ -695,7 +724,7 @@ class HistoryService:
 
         #: PHP 的 ``$strOrgPos``：库里记的仓位，用来判断"反算值和登记值是否吻合"
         #: （吻合就把整行标黄，见 ``EchoMatchTableColumn``）。
-        org_pos = _php_number_format(position, 2)
+        org_pos = php_number_format(position, 2)
         if est_symbol:
             est_id = self.source.get_stock_id(est_symbol)
             est = netvalue.get_close(est_id, date) if est_id else None
@@ -809,11 +838,17 @@ class HistoryService:
     # -- 校准记录 ---------------------------------------------------------
     def _build_calibrationhistory(self, symbol: str, stock_id: Any, start: int, num: int):
         table = CalibrationSql(self.connection)
-        is_fund = bool(getattr(self.source, "get_fund_profile", None) and self.source.get_fund_profile(symbol))
+        # PHP ``$ref->IsFundA()``（``php/stock/stocksymbol.php:733``）：
+        # 只有 **A 股 LOF/ETF** 才补「净值 / 对冲值」两列。
+        #
+        # 曾经用 ``get_fund_profile()`` 当谓词、再兜底 ``in_array_qdii`` ——
+        # 两个都不等于 IsFundA：演示库里 ^GSPC / ^NDX / QQQ / SPY 这些
+        # **中间层标的同样有 profile 行**（position 默认 1.0），于是期货均线表
+        # 前那张校准表凭空多出两列，而生产端 ^GSPC 那张只有
+        # 「日期 校准值 时间 次数」4 列。实测 37 个有校准记录的符号里只有这
+        # 4 个非基金会被修掉，33 只真基金列头不变。
+        is_fund = bool(StockSymbol(symbol).is_fund_a())
         multiplier = calibration_hedge_multiplier(symbol)
-        # 只有基金类才显示净值与对冲值列；对应 PHP $ref->IsFundA()
-        if not is_fund:
-            is_fund = bool(in_array_qdii(symbol) or in_array_qdii_mix(symbol))
 
         netvalue = NetValueHistorySql(self.connection)
         position = self.source.get_position(stock_id) if is_fund else None

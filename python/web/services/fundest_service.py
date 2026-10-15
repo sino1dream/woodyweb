@@ -72,7 +72,7 @@ from web.bootstrap import install_paths
 
 install_paths()
 
-from sql.historytable import TableRow  # noqa: E402
+from sql.historytable import TableRow, php_number_format  # noqa: E402
 from ui.uicolumn import (  # noqa: E402
     STOCK_DISP_EST,
     columns_to_dicts,
@@ -276,6 +276,56 @@ def default_fundest_service_factory() -> FundEstService:
     from web.db import get_db
 
     return FundEstService(MySqlFundDataSource(get_db()))
+
+
+def fund_position_memo(ref: Any) -> str:
+    """估值表上方那行说明（``fundestparagraph.php:135-152``）。
+
+    PHP 在 ``EchoFundEstParagraph()`` 里拼两段，本版合成一句纯文本：
+
+    .. code-block:: php
+
+        $str = _getFundPositionStr($ref);   // 「仓位估算值使用0.95。」
+        if ($ref->GetRealtimeNetValue() && method_exists($ref, 'GetEstRef'))
+        {
+            $str .= $col->GetDisplay()          // 「实时EST」
+                  . $realtime_ref->GetMyStockLink()   // 「ES」
+                  . '和'
+                  . SymCalibrationHistoryLink($est_ref)  // 「^GSPC」
+                  . '关联程度按照100%估算。';
+        }
+
+    生产端 ``sz161125cn.php`` 实测::
+
+        仓位估算值使用0.95。实时EST ES 和 ^GSPC 关联程度按照100%估算。
+
+    ## 三处与 PHP 的差异（迁移期取舍）
+
+    1. **不带链接**。PHP 那段有三个站内链接（仓位估算页 / mystock 页 /
+       校准记录页）；本版只出文字 —— 前两个页面（``fundpositioncn.php`` /
+       ``mystockcn.php``）尚未迁移，校准记录页虽然在``/history`` 有同源页，
+       但一句话里只链一个目标反而更怪。链接的事记在迁移文档里。
+    2. **仓位用 ``number_format($fPos, 2)``**（保留尾零，``1`` → ``"1.00"``），
+       不是 ``GetNumberDisplay`` 那套削尾零的口径。
+    3. 实时那一整段以 ``GetRealtimeNetValue()`` 为闸门（PHP 的 ``if``），
+       没有实时估值就只剩第一句。
+    """
+    position = _invoke(ref, "get_position", "GetPosition")
+    text = "仓位估算值使用%s。" % php_number_format(position, 2)
+    if not _invoke(ref, "get_realtime_net_value", "GetRealtimeNetValue"):
+        return text
+
+    est_ref = _invoke(ref, "get_est_ref", "GetEstRef")
+    realtime_ref = _invoke(ref, "get_realtime_ref", "GetRealtimeRef")
+    if est_ref is None or realtime_ref is None:
+        # PHP 这里是 method_exists() 闸门：建不出 est_ref 就不拼第二句
+        return text
+    #: 注意这句里有一个**字面百分号**（"100%"），所以用拼接而不是 % 格式化
+    return (text + "实时EST "
+            + _text(_invoke(realtime_ref, "get_symbol", "GetSymbol"))
+            + "和"
+            + _text(_invoke(est_ref, "get_symbol", "GetSymbol"))
+            + "关联程度按照100%估算。")
 
 
 def _premium_of(ref: Any) -> Any:

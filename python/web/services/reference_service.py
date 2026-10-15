@@ -375,9 +375,42 @@ def reference_symbols_for_fund(symbol: str, source: Any = None) -> list:
     _append(symbols, _realtime_symbol(est_symbol, source))
     for leverage in _leverage_symbols(est_symbol, source):
         _append(symbols, leverage)
+    for extra in _cnh_and_oil_symbols(symbol):
+        _append(symbols, extra)
     _append(symbols, forex_symbol)
     _append(symbols, cny_symbol)
     return symbols
+
+
+#: 离岸人民币。PHP ``_qdii.php:13`` 里 ``$strCNH = 'fx_susdcnh';`` 是**写死的**，
+#: 与基金是哪个 QDII 地区无关 —— ``QdiiAccount::Create()`` 无条件
+#: ``new MyStockReference($strCNH)``，再经 ``EchoAll()`` 塞进
+#: ``array_merge($acct->GetStockRefArray(), [$acct->oil_ref, $acct->cnh_ref], ...)``。
+#: 所以它在页面上的位置是"杠杆标的之后、外汇之前"，不是跟着地区表走。
+CNH_SYMBOL = "fx_susdcnh"
+
+#: 原油期货。``_qdii.php:17-26``：只有 XOP 组（华宝油气那一支）多带一个
+#: ``hf_CL``，其余 QDII 是 ``$strOil = false``。
+OIL_SYMBOL = "hf_CL"
+
+
+def _cnh_and_oil_symbols(symbol: str) -> list:
+    """``[$acct->cnh_ref, $acct->oil_ref]`` 这两个"页面级附加标的"。
+
+    返回顺序与 PHP 一致（先 CNH 后原油），缺符号时照样给出 ——
+    :func:`quote_state_of` 会在页面上标成「库里无此符号」，比悄悄少一行诚实。
+    """
+    result = [CNH_SYMBOL]
+    try:
+        from core.stocksymbol import in_array_xop_qdii
+    except ImportError:
+        return result
+    try:
+        if in_array_xop_qdii(symbol):
+            result.append(OIL_SYMBOL)
+    except Exception:
+        pass
+    return result
 
 
 def _append(symbols: list, value: Any) -> None:

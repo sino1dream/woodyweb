@@ -439,6 +439,24 @@ class StockReferenceTest(unittest.TestCase):
         self.assertEqual(ref.str_high, "7.20")
         self.assertEqual(ref.str_low, "7.00")
 
+    def test_load_data_dispatches_forex_before_plain_sina(self):
+        """``MyStockReference::LoadData()``（``mystockref.php:117-122``）三分支。
+
+        外汇的字段布局跟普通股不一样，直接走 ``load_sina_data()`` 会被判成
+        "没数据" —— 页面上 USDCNH / USDCNY 两行就整行空。改回"一律
+        ``load_sina_data()``"时本测试应失败。
+        """
+        array = ["10:30:00", "a", "b", "7.1000", "c", "7.05", "7.20", "7.00",
+                 "7.1500", "离岸人民币（香港）", "2026-01-05"]
+        ref = sr.StockReference("fx_susdcnh", quote_loader=lambda _: ",".join(array))
+        ref.load_data()
+        self.assertTrue(ref.has_quote_data())
+        self.assertEqual(ref.get_price(), "7.15")
+
+        plain = sr.StockReference("XOP", quote_loader=lambda _: "")
+        plain.load_data()
+        self.assertFalse(plain.has_quote_data())
+
     def test_load_sina_forex_data_scales_jpy(self):
         array = ["10:30:00", "a", "b", "0.0500", "c", "d", "e", "f", "0.0510", "日元人民币", "2026-01-05"]
         ref = sr.StockReference("fx_sjpycny", quote_loader=lambda _: ",".join(array))

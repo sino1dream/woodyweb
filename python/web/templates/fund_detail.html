@@ -16,73 +16,24 @@
     </tbody>
   </table>
 
-  {# 两张表的数据都由 web/services 下的服务给出，这里只负责渲染：
-     列头的颜色、单元格的颜色都是数据，不再像 PHP 那样 echo <font color>。
-     首格在 PHP 里恒为 GetExternalLink() / GetStockLink() 产出的 <a> 标签，
-     所以 first_cell_is_html=True 只对这两张表打开。 #}
-  {# 均线表（php/ui/smaparagraph.php）。两张表的行是一样的，差别在回调列：
-     qdii 那张的回调列是基金自己的估值，future 那张换算成期货理论价。
-     数值全部由 auto/stockhistory.py 算好，这里只渲染。 #}
-  {% if sma and sma.qdii %}
-    <h2>均线</h2>
-    {% if sma.qdii.memo and sma.qdii.memo.start_date %}
-      <p class="table-note">{{ sma.qdii.memo.start_date }}数据{% if sma.qdii.memo.bull_bear %}
-        <strong>{{ sma.qdii.memo.bull_bear }}</strong>{% endif %}</p>
-    {% endif %}
-    {{ data_table(sma.qdii, "sma-table") }}
-  {% endif %}
-  {# 基金指数对照表（php/ui/fundlistparagraph.php:38）：_qdiigroup.php:100 把它
-     摆在均线表之后、期货均线表之前。末列是「对冲值」而不是「参考值」——
-     只有 QDII 详情页传了 _callbackFundListHedge 回调，其它调用点显示参考值。 #}
-  {% if fundlist %}
-    <h2>{{ fundlist.title }}</h2>
-    {{ data_table(fundlist, "fundlist-table") }}
-    <p class="table-note">
-      {% if fundlist.link %}<a href="{{ fundlist.link.url }}">{{ fundlist.link.text }}</a>{% endif %}
-      对冲值 = 本基金与这一行标的的校准值之比（各自按仓位折算），
-      回答"对冲一份本基金要配多少份它"。
-    </p>
-  {% endif %}
-  {# 每个杠杆标的各一张均线表（smaparagraph.php:156）：_qdiigroup.php:101 紧跟在
-     基金指数对照表之后。左边五列与被算均线的中间层标的那张一模一样，
-     变的只有第 6 列"换算到这个标的是多少"，所以生产端是并排好几张。
-     这些表在 PHP 里传的是 '' 而不是 false，因此没有"日期数据 牛市"那行说明。 #}
-  {% for pair_sma in (fundpairsma or []) %}
-    {{ data_table(pair_sma, "sma-pair-table") }}
-  {% endfor %}
-  {% if sma and sma.future %}
-    {# smaparagraph.php:218 —— 期货均线表之前，先摆中间层标的的校准记录。
-       注意这张表的对象是中间层（^GSPC）而不是基金，所以没有"净值 / 对冲值"两列。 #}
-    {% if sma.calibration %}
-      {{ data_table(sma.calibration, "calibration-table calibration-est-table") }}
-    {% endif %}
-    {% if not (sma.qdii) %}<h2>均线</h2>{% endif %}
-    <p class="table-note">{{ sma.future.premium_text }}</p>
-    {{ data_table(sma.future, "sma-future-table") }}
-  {% endif %}
+  {# 段落顺序对齐生产端 sz161125cn.php：PHP 的权威顺序是
+      php/_qdii.php EchoAll() + php/_qdiigroup.php EchoCommonParagraphs()：
 
-  {% if trading %}
-    <h2>五档交易</h2>
-    <p class="table-note">{{ trading.title }}{% if trading.rotation_link %}
-      <a href="{{ trading.rotation_link.url }}">{{ trading.rotation_link.text }}</a>{% endif %}</p>
-    {# url_for 会把 live=1 拼进查询串，别再手写 '?live=1'，
-       否则会得到 '?live=1?live=1'。 #}
-    {{ data_table(trading, "trading-table") }}
-    {# 盘口来自库快照（后台抓取进程每 60 秒写一次），所以默认就有；
-       live=1 是"这一请求额外联网补一次"，不是显示盘口的前提。 #}
-    <p class="table-note">
-      盘口来自后台抓取进程写入的快照（每 60 秒一次）。
-      想看此刻的挂单，<a href="{{ url_for('fund.fund_page', symbol=fund.symbol, live=1) }}">点此联网刷新</a>。
-    </p>
-  {% else %}
-    <p class="table-note">
-      暂无五档盘口数据（快照里还没有该符号的挂单，通常是抓取进程还没跑到）。
-      <a href="{{ url_for('fund.fund_page', symbol=fund.symbol, live=1) }}">立即抓一次实时行情</a>。
-    </p>
-  {% endif %}
+      估值表（内嵌仓位估算说明 + 校准记录）
+        → 参考数据 → 五档交易 → 均线 → 基金指数对照表 → 各杠杆均线
+        → （中间层校准记录 + 理论溢价 + 期货均线）
+        → 基金溢价记录 → 基金场内份额 → 净值价格比较（中间层 + 各杠杆）
 
+      CK1/CK2b 各轮是"有什么接什么"，顺序一路累积下来与 PHP 不符；
+      CK6 按上面这张单子重排。数据都由 web/services 下的服务给出，
+      列头颜色、单元格颜色都是数据，不再像 PHP 那样 echo <font color>。 #}
   {% if fundest %}
     <h2>估值</h2>
+    {# 仓位估算说明行（fundestparagraph.php:135-152）：生产端在估值表上方。
+        本版只有文字没有链接 —— 仓位估算页 / mystock 页尚未迁移。 #}
+    {% if fundest.memo %}
+      <p class="table-note">{{ fundest.memo }}</p>
+    {% endif %}
     {{ data_table(fundest, "fund-est-table", first_cell_is_html=True) }}
     <p class="table-note">官方 / 参考 / 实时三档估值，缺哪档就不显示哪两列。</p>
   {% endif %}
@@ -108,14 +59,80 @@
     <p class="table-note">参考数据来自外部行情源，抓不到时对应行留空。</p>
   {% endif %}
 
-  {% if netvalueclose %}
-    {# 净值价格比较（php/ui/netvaluecloseparagraph.php）：与 /history/netvalueclose/<sym>
-        同源。PHP 守卫 CountNetValue()==0 时整段不出现，本版由 rows 为空触发隐藏。 #}
-    <h2>{{ netvalueclose.title }}</h2>
-    {{ history_table(netvalueclose, "history-table netvalueclose-table") }}
+  {% if trading %}
+    <h2>五档交易</h2>
+    <p class="table-note">{{ trading.title }}{% if trading.rotation_link %}
+      <a href="{{ trading.rotation_link.url }}">{{ trading.rotation_link.text }}</a>{% endif %}</p>
+    {# url_for 会把 live=1 拼进查询串，别再手写 '?live=1'，
+       否则会得到 '?live=1?live=1'。 #}
+    {{ data_table(trading, "trading-table") }}
+    {# 盘口来自库快照（后台抓取进程每 60 秒写一次），所以默认就有；
+       live=1 是"这一请求额外联网补一次"，不是显示盘口的前提。 #}
     <p class="table-note">
-      同一天的场内价格与单位净值并排比较，看两者是否有稳定偏差。
-      <a href="{{ url_for('history.history_page', kind='netvalueclose', symbol=fund.symbol) }}">查看全部净值价格比较</a>
+      盘口来自后台抓取进程写入的快照（每 60 秒一次）。
+      想看此刻的挂单，<a href="{{ url_for('fund.fund_page', symbol=fund.symbol, live=1) }}">点此联网刷新</a>。
+    </p>
+  {% else %}
+    <p class="table-note">
+      暂无五档盘口数据（快照里还没有该符号的挂单，通常是抓取进程还没跑到）。
+      <a href="{{ url_for('fund.fund_page', symbol=fund.symbol, live=1) }}">立即抓一次实时行情</a>。
+    </p>
+  {% endif %}
+
+  {# 均线表（php/ui/smaparagraph.php EchoQdiiSmaParagraph）。两张表的行是一样的，
+      差别在回调列：qdii 那张的回调列是基金自己的估值，future 那张换算成期货理论价。
+      数值全部由 auto/stockhistory.py 算好，这里只渲染。
+      说明行对齐 PHP _getSmaParagraphMemo()：标的符号 + 日期数据 + 牛熊标记
+      （生产端：^GSPC 2026-10-14数据 牛市 历史价格）。牛熊标记要 stockema50/200
+      有当日行才出得来 —— 演示库这两张表停在 2026-10-09，所以现在是空的。 #}
+  {% if sma and sma.qdii %}
+    <h2>均线</h2>
+    {% if sma.qdii.memo and sma.qdii.memo.start_date %}
+      <p class="table-note">{{ sma.qdii.memo.symbol }} {{ sma.qdii.memo.start_date }}数据{% if sma.qdii.memo.bull_bear %}
+        <strong>{{ sma.qdii.memo.bull_bear }}</strong>{% endif %}</p>
+    {% endif %}
+    {{ data_table(sma.qdii, "sma-table") }}
+  {% endif %}
+  {# 基金指数对照表（php/ui/fundlistparagraph.php:38）：_qdiigroup.php:100 把它
+     摆在均线表之后、期货均线表之前。末列是「对冲值」而不是「参考值」——
+     只有 QDII 详情页传了 _callbackFundListHedge 回调，其它调用点显示参考值。 #}
+  {% if fundlist %}
+    <h2>{{ fundlist.title }}</h2>
+    {{ data_table(fundlist, "fundlist-table") }}
+    <p class="table-note">
+      {% if fundlist.link %}<a href="{{ fundlist.link.url }}">{{ fundlist.link.text }}</a>{% endif %}
+      对冲值 = 本基金与这一行标的的校准值之比（各自按仓位折算），
+      回答"对冲一份本基金要配多少份它"。
+    </p>
+  {% endif %}
+  {# 每个杠杆标的各一张均线表（smaparagraph.php:156）：_qdiigroup.php:101 紧跟在
+     基金指数对照表之后。左边五列与被算均线的中间层标的那张一模一样，
+      变的只有第 6 列"换算到这个标的是多少"，所以生产端是并排好几张。
+      这些表在 PHP 里传的是 '' 而不是 false，因此没有"日期数据 牛市"那行说明。 #}
+  {% for pair_sma in (fundpairsma or []) %}
+    {{ data_table(pair_sma, "sma-pair-table") }}
+  {% endfor %}
+  {% if sma and sma.future %}
+    {# smaparagraph.php:218 —— 期货均线表之前，先摆中间层标的的校准记录。
+       注意这张表的对象是中间层（^GSPC）而不是基金：IsFundA() 为假，
+       所以只有日期/校准值/时间/次数 4 列，没有"净值 / 对冲值"两列
+       （生产端 sz161125cn.php 上 ^GSPC 那张就是这样）。 #}
+    {% if sma.calibration %}
+      {{ data_table(sma.calibration, "calibration-table calibration-est-table") }}
+    {% endif %}
+    {% if not (sma.qdii) %}<h2>均线</h2>{% endif %}
+    <p class="table-note">{{ sma.future.premium_text }}</p>
+    {{ data_table(sma.future, "sma-future-table") }}
+  {% endif %}
+
+  {# 基金溢价记录（php/ui/fundhistoryparagraph.php）：_qdiigroup.php:104 摆在
+     期货均线表之后、份额表之前。CK6 之前本地页整段漏了它。
+      与 /history/fundhistory/<sym> 是同一张表、同一个服务。 #}
+  {% if fundhistory %}
+    <h2>{{ fundhistory.title }}</h2>
+    {{ history_table(fundhistory, "history-table fundhistory-table") }}
+    <p class="table-note">
+      <a href="{{ url_for('history.history_page', kind='fundhistory', symbol=fund.symbol) }}">查看全部溢价记录</a>
     </p>
   {% endif %}
 
@@ -128,9 +145,24 @@
     </p>
   {% endif %}
 
+  {# 净值价格比较（php/ui/netvaluecloseparagraph.php）：_qdiigroup.php:106-110
+      摆的是**中间层标的 + 各杠杆标的**，不是基金自己 —— 生产端 sz161125cn.php
+      上只有 SH 与 SPY 两张（^GSPC 没有净值行，被 CountNetValue()==0 守卫挡掉）。
+      基金自己的那张在 /stock/<symbol> 与 /history/netvalueclose/<sym> 看。
+      所以这里是循环；一个目标都没有净值数据时就一段都不出。 #}
+  {% for netvalue in (netvalueclose or []) %}
+    <h2>{{ netvalue.symbol }}的{{ netvalue.title }}</h2>
+    {{ history_table(netvalue, "history-table netvalueclose-table") }}
+    <p class="table-note">
+      同一天的场内价格与单位净值并排比较，看两者是否有稳定偏差。
+      <a href="{{ url_for('history.history_page', kind='netvalueclose', symbol=netvalue.symbol) }}">查看全部净值价格比较</a>
+    </p>
+  {% endfor %}
+
+  {# 历史价格（php/ui/stockhistoryparagraph.php）：**本地附加段** —— 生产端的基金
+      详情页没有这一段（它在 _mystock.php 的个股详情栈上），CK1 接进来时就有了。
+      与 /history/stockhistory/<sym> 同源，留着当"这个符号的行情一览"用。 #}
   {% if stockhistory %}
-    {# 历史价格（php/ui/stockhistoryparagraph.php）：与 /history/stockhistory/<sym>
-        同源。基金符号会按估值标的自动带出比价列。 #}
     <h2>{{ stockhistory.title }}</h2>
     {{ history_table(stockhistory, "history-table stockhistory-table") }}
     <p class="table-note">

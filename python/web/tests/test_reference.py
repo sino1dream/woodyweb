@@ -475,6 +475,23 @@ class ReferenceSymbolsTest(unittest.TestCase):
         """没有数据源时退化成一个标的，不抛异常。"""
         self.assertEqual(reference_symbols_for_fund("SZ162411"), ["SZ162411"])
 
+    def test_cnh_comes_after_leverage_before_forex(self):
+        """``_qdii.php:13``：``fx_susdcnh`` 是页面级恒定标的，不跟地区表走。
+
+        它在 ``EchoAll()`` 里的位置是
+        ``array_merge($arStockRef, [$oil_ref, $cnh_ref], GetForexRefArray())``
+        —— 也就是**杠杆之后、外汇之前**。改回"只有地区外汇"时本测试应失败。
+        """
+        source = StoredQuoteSource()
+        symbols = reference_symbols_for_fund("SZ161130", source)
+        self.assertIn("fx_susdcnh", symbols)
+        self.assertNotIn("hf_CL", symbols, "非 XOP 组不带原油")
+
+    def test_oil_only_for_xop_group(self):
+        """``_qdii.php:17-26``：只有 XOP 组（SZ162411 华宝油气）多带 ``hf_CL``。"""
+        source = StoredQuoteSource()
+        self.assertIn("hf_CL", reference_symbols_for_fund("SZ162411", source))
+
 
 class FakePairCursor:
     """内存版 ``fundpair`` 查询。
@@ -645,7 +662,10 @@ class FundPairQueryTest(unittest.TestCase):
         finally:
             rs._fund_reference_symbols = original
 
-        self.assertEqual(symbols, ["SZ161130", "^NDX", "hf_NQ", "QQQ", "TQQQ"])
+        # 末尾那个 ``fx_susdcnh`` 是 ``_qdii.php:13`` 写死的页面级标的
+        # （杠杆之后、外汇之前），跟这里桩掉的 ``_fund_reference_symbols`` 无关
+        self.assertEqual(symbols, ["SZ161130", "^NDX", "hf_NQ", "QQQ", "TQQQ",
+                                   "fx_susdcnh"])
 
 
 class QuoteStateTest(unittest.TestCase):

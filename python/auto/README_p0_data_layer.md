@@ -694,3 +694,98 @@ python -B dbtools/bootstrap_fund_data.py --apply --from calib
   踩坑记录（`.dsh/skills/palmmicro-php-to-python/references/pitfalls.md`）；
 * 写入顺序：`stock` 行 → `fundpair` 行 → 历史回填 → 实时链路，
   每一步都可单独重跑（P0.8 的 bootstrap 就是把这四步串起来）。
+
+---
+
+## 九、CK6-3：补 SH 对冲线与两类历史（2026-10-15 完成）
+
+CK6 是"让 `/fund/SZ161125` 与生产端 `sz161125cn.php` 逐段对齐"。前两步
+（CK6-1 谓词、CK6-2 段落集合）是渲染层的事，这一步补的是**演示库缺的数据**。
+每次 `--apply` 前都 `mysqldump` 全库到
+`dbtools/_snapshots/before_20261015_ck6_3_sh.sql`（以及脚本自带的
+`symbols_before_20261015_*.sql`）。
+
+### 9.1 SH 这条对冲线（新增脚本 `dbtools/seed_sh_hedge.py`）
+
+生产端「基金指数对照表」有 SH / SPY 两行、「净值价格比较」有两张表，
+参考数据表里还有 USDCNH —— 本地一样都没有。根子不是渲染，是**库里没有 SH**：
+
+| 缺什么 | 后果 |
+| --- | --- |
+| `stock` 没有 SH 行 | 整个符号不存在 |
+| `fundpair` 没有 `(SH, ^GSPC)` | `_LEVERAGE_SQL`（谁跟踪估值标的）列不出它 → 对照表 / 净值价格比较 / 各杠杆均线三段全空 |
+| `fundposition` 没有 SH 的仓位 | 仓位退回 1，反向 ETF 变成"正向"，对冲值少一个负号 |
+
+脚本按"`stock` 行 → `fundpair` 行 → 仓位 → 外汇快照 → 历史 + EMA"五步走，
+每步幂等。写入结果（2026-10-15 实测）：
+
+* `SH` id=179，名称取新浪（`标普500指数ETF-ProShares做空`，生产端同）；
+* `fx_susdcnh` id=180（`离岸人民币（香港）`，生产端同）；
+* `stockhistory` 800 行 2023-08-08 ~ 2026-10-14，**`10-14 = 32.17` 与生产端
+  参考数据表逐字一致**；EMA50/200 一并补齐；
+* 校准值 `239.942179`（`^GSPC 7718.94 / SH 32.17`），生产端 `239.882` ——
+  差 0.025%，因为生产端的 SH 净值来自 Yahoo（32.178）而不是收盘价
+  （32.17）。我们这条是"中间层净值 = 收盘价"的既有口径，不追着改。
+
+**净值 / 校准 / 快照刻意不在这个脚本里写**，留给既有工具各自的闸门
+（`autocalibrationcli --sync-nav --apply --symbol SH` 与
+`--apply --symbol SH`），这样每一步都能单独重跑、单独诊断。
+
+### 9.2 外汇快照：鸡生蛋又来一次
+
+`quoteupdater` 的符号集合是**从 `stockhistory` 反推**的，外汇本来就没有日线
+历史，永远进不了那个集合 —— 与当年 `^NDX` 那一模一样。所以外汇的
+`realtimequote` 快照由 seed 脚本直接写（`RealtimeQuoteStore`）。
+实测 `USDCNH 6.6902`（生产端 04:45 是 6.6909）、`USDCNY 6.6919`。
+
+顺带修掉两处（见 pitfalls #80 / #81 / #82）：
+
+1. `get_sina_symbol()` 给 `fx_s*` 加了 `gb_` 前缀 → 新浪返回空串；
+2. 分派在 `MyStockReference::LoadData()`（PHP 子类）而不是 `LoadSinaData()`，
+   Python 侧没人调 `load_sina_forex_data()`；
+3. 外汇的 `open/high/low/close` 能通过字段校验，会被当成股价写进
+   `stockhistory` —— 已在 `save_reference()` 提前拦掉（并清掉已污染的两行）。
+
+### 9.3 A 股 / 场内基金历史：以前没有源（新增 `updater/asharehistory.py`）
+
+`seed_index_history.py` 只有美股那条路（`US_MinKService`），于是
+`SZ161125` 的 `stockhistory` 只有 3 行。新源走新浪
+`CN_MarketData.getKLineData`（**裸 JSON 数组**，不是美股那条的 JSONP），
+实测与生产端「基金溢价记录」逐行一致：
+`10-08=3.294 / 10-09=3.312 / 10-12=3.337 / 10-13=3.330 / 10-14=3.340`。
+
+入口 `dbtools/seed_a_share_history.py`（默认 dry-run，`--symbols` / `--days`）。
+
+### 9.4 净值历史回填（新增 `dbtools/backfill_nav_history.py`）
+
+`navcli` 只写**最新一条**，没有回填能力，于是净值表缺 10-09 / 10-13。
+新脚本用 `EastmoneyNavSource`（与 `navcli` 默认源同一个）补**库里没有那一天**
+的行，**已存在的一律不覆盖**。实测与生产端一致：
+`10-09=3.1843 / 10-12=3.1817 / 10-13=3.1803 / 10-14=3.1448`。
+
+补完后「基金溢价记录」第一行（`10-14`）已经八格全齐，且与生产端逐格相同：
+`3.34 / 3.1803 / 5.02% / 官方EST 3.182 / 误差 0.04% / ^GSPC价格 7805.45`。
+
+### 9.5 剩下的断档：是 `fundest` 的**日期口径**，不是渲染
+
+其余各行只有四格（没有官方 EST / 时间 / 误差 / 标的净值），因为
+`fundest` 里查不到对应的**净值日**。生产端的 `fundest` 记录落在**净值日**
+（`09-30 / 10-08 / 10-09 / 10-12 / 10-13`），我们的落在**估算当天**
+（`10-02 / 10-07 / 10-13`）:
+
+| 生产端 | 我们的 |
+| --- | --- |
+| `09-30 = 3.133` | `10-02 = 3.132846` |
+| `10-08 = 3.168` | `10-07 = 3.168052` |
+| `10-13 = 3.1817` | `10-13 = 3.1817` ✅ |
+
+也就是说**值是对的，日期差了一天**（10-13 那天恰好对齐）。这是
+`fundestcli` 的落库口径问题，牵动"官方 EST 什么时候记"这件事，
+不在这次 CK6-3 里改 —— 单独立项。
+
+### 9.6 顺带：EMA 续写
+
+`stockema50/200` 停在 2026-10-09，而 `stockhistory` 已到 10-13，页面上
+「小牛熊分界 / 牛熊分界」两行渲染成 `0 0`、牛熊标记为空。跑
+`dbtools/seed_index_history.py --apply`（重抓 800 天并递推 EMA）后
+均线段 memo 已是「^GSPC 2026-10-14数据 牛市」。

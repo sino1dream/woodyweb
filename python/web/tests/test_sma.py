@@ -102,10 +102,16 @@ class FakeRef:
 
 
 class FakeHistory:
-    """``StockHistory`` 的鸭子类型实现：一口价给出三组字典。"""
+    """``StockHistory`` 的鸭子类型实现：一口价给出三组字典。
+
+    ``bull_bear`` 默认 ``("bull", "牛市")`` —— 与真实现
+    （``sql/stockhistory.py:1101``）同形状：``('bull'|'bear', 文案)``。
+    给纯字符串会让 ``SmaService.memo()`` 的拆包分支永远走不到，
+    ``('bull', '牛市')`` 这种怪文本就没人看得见。
+    """
 
     def __init__(self, sma=None, next_values=None, after_hour_values=None,
-                 ref=None, start_date="2026-10-09", bull_bear="牛市",
+                 ref=None, start_date="2026-10-09", bull_bear=("bull", "牛市"),
                  order=None, need_after_hour=False):
         self._sma = sma if sma is not None else {}
         self.next_values = next_values if next_values is not None else {}

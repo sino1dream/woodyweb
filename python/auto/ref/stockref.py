@@ -725,6 +725,27 @@ class StockReference(StockSymbol):
             return None
         return self.quote_loader(file_name)
 
+    def load_data(self) -> None:
+        """对应 PHP ``MyStockReference::LoadData()``（``mystockref.php:117-122``）。
+
+        .. code-block:: php
+
+            if ($this->IsSinaFuture())       $this->LoadSinaFutureData();
+            else if ($this->IsSinaForex())   $this->LoadSinaForexData();
+            else                             $this->LoadSinaData();
+
+        **这条分派不在** ``StockReference::LoadSinaData()`` 里 —— 后者只认
+        普通股票/指数，外汇在 PHP 里是子类分的。照搬这个层次：外汇符号
+        （``fx_susdcnh``）直接调 :meth:`load_sina_data` 会因为字段布局不同而
+        被判成"没数据"，页面上就变成一整行空格子。
+        """
+        if self.is_sina_future():
+            self.load_sina_future_data()
+        elif self.is_sina_forex():
+            self.load_sina_forex_data()
+        else:
+            self.load_sina_data()
+
     def load_sina_data(self) -> None:
         """对应 PHP ``LoadSinaData()``：按符号类型分派解析。
 
@@ -881,6 +902,7 @@ class StockReference(StockSymbol):
     ConvertTick = convert_tick
     IsExtendedMarket = is_extended_market
     CheckAdjustFactorTime = check_adjust_factor_time
+    LoadData = load_data
     LoadSinaData = load_sina_data
     LoadSinaFutureData = load_sina_future_data
     LoadSinaFundData = load_sina_fund_data

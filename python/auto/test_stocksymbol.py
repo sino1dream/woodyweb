@@ -298,6 +298,17 @@ class SymbolConversionTest(unittest.TestCase):
     def test_get_sina_symbol_global_index_passthrough(self):
         self.assertEqual(StockSymbol("znb_NKY").get_sina_symbol(), "znb_NKY")
 
+    def test_get_sina_symbol_sina_forex_keeps_raw_code(self):
+        """``fx_s*`` 外汇**不加 ``gb_`` 前缀** —— 加了就抓不到。
+
+        实测 ``hq.sinajs.cn/list=gb_fx_susdcnh`` 返回空串，裸
+        ``fx_susdcnh`` 才有数据。改回"一律加 gb_"（PHP ``GetSinaSymbol()``
+        的字面行为）时本测试应失败，代价是参考数据表的 USDCNH/USDCNY
+        两行变空格子。
+        """
+        self.assertEqual(StockSymbol("fx_susdcnh").get_sina_symbol(), "fx_susdcnh")
+        self.assertEqual(StockSymbol("fx_susdcny").get_sina_symbol(), "fx_susdcny")
+
     def test_get_sina_symbol_hongkong_index(self):
         self.assertEqual(StockSymbol("^HSI").get_sina_symbol(), "rt_hkHSI")
         self.assertEqual(StockSymbol("^HSCE").get_sina_symbol(), "rt_hkHSCEI")

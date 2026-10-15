@@ -488,12 +488,23 @@ class SmaService:
         PHP 拼出来的是一句带链接的 HTML；本版返回 dict，让路由层去拼
         （站内链接要 ``url_for``，服务层不该有请求上下文）。
         字段与 PHP 那六段一一对应，方便核对。
+
+        ## ``bull_bear`` 要拆 tuple
+
+        ``StockHistory.get_bull_bear()`` 返回的是 ``('bull'|'bear', 文案)``
+        （渲染层的事它不管，见 ``sql/stockhistory.py`` 的说明），直接 ``str()``
+        会得到 ``"('bull', '牛市')`` 这种怪文本。这里取第二项。
+        EMA 数据缺席时它是 ``None`` → 空串，整段就没有牛熊标记
+        （PHP 那边 ``GetBullBear()`` 返回 false 时同样不加）。
         """
         ref = _invoke(history, "get_ref", "GetRef")
+        bull_bear = _invoke(history, "get_bull_bear", "GetBullBear")
+        if isinstance(bull_bear, (tuple, list)) and len(bull_bear) == 2:
+            bull_bear = bull_bear[1]
         return {
             "symbol": _text(_invoke(ref, "get_symbol", "GetSymbol")),
             "start_date": _text(_invoke(history, "get_start_date", "GetStartDate")),
-            "bull_bear": _text(_invoke(history, "get_bull_bear", "GetBullBear")),
+            "bull_bear": _text(bull_bear),
             "is_admin": self.is_admin,
         }
 

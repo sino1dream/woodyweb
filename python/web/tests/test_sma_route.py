@@ -148,11 +148,17 @@ class FundDetailSmaRouteTest(unittest.TestCase):
             self.assertIn(text, html)
 
     def test_memo_start_date_reaches_the_page(self):
-        """``_getSmaParagraphMemo()`` 的起始日期要出现在表上方那句话里。"""
-        html = self.client.get("/fund/SZ162411").get_data(as_text=True)
+        """``_getSmaParagraphMemo()`` 的起始日期要出现在表上方那句话里。
 
-        self.assertIn("2026-10-09数据", html)
-        self.assertIn("牛市", html)
+        CK6 起 memo 带**符号前缀**（PHP ``$ref->GetMyStockLink()``，
+        ``smaparagraph.php:68``）：生产端 sz161125cn.php 上是
+        「^GSPC 2026-10-14数据 牛市」。替身的 est 符号是 ^NDX，
+        所以整句是「^NDX 2026-10-09数据 牛市」—— 拆标签、压空白后精确匹配。
+        """
+        html = self.client.get("/fund/SZ162411").get_data(as_text=True)
+        text = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", "", html))
+
+        self.assertIn("^NDX 2026-10-09数据 牛市", text)
 
     def test_future_table_shows_the_premium_note(self):
         """「理论溢价：…」是期货那张表独有的说明，走 ``futurepremium`` 表。"""
