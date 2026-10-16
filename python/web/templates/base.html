@@ -21,10 +21,22 @@
       <a href="{{ url_for('group.group_page') }}">分组</a>
       {# 交易管理页（_mystocktransaction.php）—— 分组交易明细，演示数据 #}
       <a href="{{ url_for('transactions.transactions_page') }}">交易</a>
+      {# 后台管理（PHP 的 editstockgroupcn/submitgroup）—— 分组增删改查，
+         登录态未接（账号体系暂缓），页面内有常驻说明 #}
+      <a href="{{ url_for('admin.groups') }}">后台</a>
       <a href="{{ url_for('status.status_page') }}">状态</a>
     </nav>
   </header>
   <main class="site-main">
+    {# flash 反馈（后台页的新建/编辑/删除结果）。PHP 那边用 trigger_error
+       记日志、页面无反馈；这里给用户一个可见的结果提示。 #}
+    {% with messages = get_flashed_messages() %}
+      {% if messages %}
+        <ul class="flash">
+          {% for message in messages %}<li>{{ message }}</li>{% endfor %}
+        </ul>
+      {% endif %}
+    {% endwith %}
     {% block content %}{% endblock %}
   </main>
   <footer class="site-footer">

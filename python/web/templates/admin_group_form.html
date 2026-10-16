@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}{{ "新建" if mode == "new" else "编辑" }}分组 - 基金估值{% endblock %}
+{% block content %}
+  {# 新建/编辑共用表单，照 PHP 的 _editgroupform.php：组名（text）+
+     成员符号（多行 textarea，逗号/换行/空格混排都认）。提交统一走
+     submitgroup 等价物 /admin/group/submit，按 submit 值分派。 #}
+  <h1>{{ "新建分组" if mode == "new" else "编辑分组" }}</h1>
+  <p class="table-note">
+    对应 PHP <code>editstockgroupcn.php</code>（表单）与
+    <code>submitgroup.php</code>（提交）。符号只认 stock 表里已有的，
+    跳过的会在保存后列出。
+  </p>
+
+  <form method="post" action="{{ url_for('admin.group_submit') }}" class="symbol-form admin-form">
+    <input type="hidden" name="group_id" value="{{ group_id or '' }}" />
+    <p>
+      <label for="groupname">分组名</label><br />
+      <input name="groupname" id="groupname" value="{{ group_name }}" type="text"
+             size="20" maxlength="32" class="textfield"{% if name_disabled %} disabled{% endif %} />
+      {% if name_disabled %}
+        <span class="table-note">该组名与股票符号重名，按 PHP 规则不可修改。</span>
+      {% endif %}
+    </p>
+    <p>
+      <label for="symbols">成员符号（逗号 / 换行 / 空格分隔）</label><br />
+      <textarea name="symbols" id="symbols" rows="8" cols="75">{{ symbols }}</textarea>
+    </p>
+    <p>
+      <button type="submit" name="submit" value="{{ '新建' if mode == 'new' else '编辑' }}">
+        {{ '新建' if mode == 'new' else '保存' }}
+      </button>
+      <a href="{{ url_for('admin.groups') }}">取消</a>
+    </p>
+  </form>
+{% endblock %}

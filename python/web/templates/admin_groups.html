@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block title %}后台 · 分组管理 - 基金估值{% endblock %}
+{% block content %}
+  {# 后台分组列表。PHP 没有独立列表页（那边列表是 mystockgroupcn 的账号
+     段落），这里给后台一个入口；行数据来自 core.stockgroupsql 的
+     StockGroupSql.get_all + sql_get_stocks_array。 #}
+  <h1>后台 · 分组管理</h1>
+  <p class="hint">
+    <strong>演示环境说明</strong>：PHP 后台页挂在登录会员下（未登录时提交不执行），
+    这里不接账号体系，所有分组归属于演示会员 <code>member_id={{ member_id }}</code>，
+    写操作立即生效。改数据前请自行备份。
+  </p>
+
+  <p class="table-note">
+    共 {{ rows|length }} 个分组。
+    <a href="{{ url_for('admin.group_new') }}">新建分组</a>
+  </p>
+
+  <table class="data-table admin-groups">
+    <thead>
+      <tr>
+        <th style="width: 50px;">ID</th>
+        <th>分组名</th>
+        <th style="width: 70px;">成员数</th>
+        <th>成员符号</th>
+        <th style="width: 140px;">操作</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in rows %}
+        <tr>
+          <td>{{ row.id }}</td>
+          <td><a href="{{ url_for('admin.group_edit', group_id=row.id) }}">{{ row.name }}</a></td>
+          <td>{{ row.count }}</td>
+          <td>{{ row.symbols|join(', ') }}</td>
+          <td>
+            <a href="{{ url_for('admin.group_edit', group_id=row.id) }}">编辑</a>
+            <form method="post" action="{{ url_for('admin.group_delete', group_id=row.id) }}"
+                  style="display:inline;"
+                  onsubmit="return confirm('确认删除分组「{{ row.name }}」及其 {{ row.count }} 个成员？');">
+              <button type="submit" class="link-button">删除</button>
+            </form>
+          </td>
+        </tr>
+      {% else %}
+        <tr><td colspan="5">还没有分组，点上方「新建分组」创建一个。</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+{% endblock %}

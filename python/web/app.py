@@ -98,6 +98,7 @@ def create_app(
     calibration_service_factory: Any = None,
     fundlist_link_builder: Any = None,
     fundlist_refs_builder: Any = None,
+    admin_source_factory: Any = None,
 ) -> Flask:
     """创建 Flask 应用，允许测试注入服务工厂。"""
     app = Flask(__name__)
@@ -187,6 +188,11 @@ def create_app(
     app.extensions["fundlist_link_builder"] = fundlist_link_builder or _fund_list_link
     # ``$arLev`` 默认查 ``fundpair``；测试可以直接给一批引用对象。
     app.extensions["fundlist_refs_builder"] = fundlist_refs_builder
+
+    # 后台管理（web/routes/admin.py）的数据源工厂。缺省 None → 路由现场用
+    # 请求级库连接（web.db.get_db）；测试注入假数据源即可不连库。
+    if admin_source_factory is not None:
+        app.extensions["admin_source_factory"] = admin_source_factory
 
     init_app(app)
     register_blueprints(app)
