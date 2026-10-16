@@ -18,6 +18,7 @@
 | P0.5 | 校准链路跑通（中间层净值 → 闸门 → `calibrationhistory`） | ✅ `a2e84b05`，本文 §四.3 |
 | P0.6–0.7 | `fundest` 官方 EST 落库 + 期货实时 EST | ✅ `ee6dcee2`，本文 §六 |
 | P0.8 | 一键重跑 `dbtools/bootstrap_fund_data.py`（默认 dry-run） | ✅ `533c459a`，本文 §七 |
+| Plan A | fundest 日期口径对齐（数据修复 + 每日例程，**不改代码口径**） | ✅ 本文 §十 |
 
 P0.5a（修 fundestcalc 中间层基准价尺度错位，EST 放大 4648 倍）已单独提交
 `c5f44b69`，见 `README_fundest_migration.md` §十。
@@ -783,9 +784,196 @@ CK6 是"让 `/fund/SZ161125` 与生产端 `sz161125cn.php` 逐段对齐"。前�
 `fundestcli` 的落库口径问题，牵动"官方 EST 什么时候记"这件事，
 不在这次 CK6-3 里改 —— 单独立项。
 
+（2026-10-16 已按 **A 方案**结项：归因与代码核对见本文 §十。结论是两边
+落库口径本来就一致，差的是运行节奏与数据新鲜度；代码未改一行。）
+
 ### 9.6 顺带：EMA 续写
 
 `stockema50/200` 停在 2026-10-09，而 `stockhistory` 已到 10-13，页面上
 「小牛熊分界 / 牛熊分界」两行渲染成 `0 0`、牛熊标记为空。跑
 `dbtools/seed_index_history.py --apply`（重抓 800 天并递推 EMA）后
 均线段 memo 已是「^GSPC 2026-10-14数据 牛市」。
+
+---
+
+## 十、Plan A：fundest 日期口径对齐（2026-10-16 完成）
+
+> 起源是 §9.5 的遗留项：生产端 `fundest` 日期 `09-30 / 10-08 / 10-09 /
+> 10-12 / 10-13`，我们的 `10-02 / 10-07 / 10-13`，"值是对的、日期差一天"。
+> 用户 2026-10-16 批准 **A 方案**：轻量数据维护（中间层 ETF 归档每日化 +
+> 补 33 只净值 + 每天在美股收盘后窗口跑 `fundestcli`），**不改代码口径**。
+> 结论先行：核对两边源码后，**落库口径本来就一致**，差的是运行节奏与数据
+> 新鲜度 —— 代码一行未改，全部靠数据修复 + 每日例程结项。
+
+### 10.1 归因：日期口径两边一致，差的是运行节奏与数据新鲜度
+
+先把"记录记在哪一天"从两边源码钉死。
+
+**PHP 写入侧**：
+
+```php
+// php/stock/qdiiref.php:134-139  _QdiiReference::EstNetValue()
+$strDate = $est_ref->GetDate();            // 中间层（est 标的）的数据日期
+if ($this->strOfficialCNY = $cny_ref->GetClose($strDate))
+{
+    $this->fOfficialNetValue = $this->GetQdiiValue($this->_getOfficialEstVal($strDate), $this->strOfficialCNY);
+    $this->strOfficialDate = $strDate;
+    $this->UpdateEstNetValue();            // php/stock/fundref.php:91-93
+}
+//   → StockUpdateEstResult(GetStockId(), GetOfficialNetValue(), GetOfficialDate())
+//     php/stock.php:148-159：净值未到才写（"Only update when net value is NOT ready"）
+```
+
+**Python 写入侧**（`auto/calc/fundestcalc.py`）：
+
+```python
+return EstRecord(ctx["mid_date"], value, None)          # :223  mid_date = 中间层最新数据日期
+...
+self.store.write_if_ready(stock_id, record.date, record.value, ...)   # :461-463
+```
+
+两边记的都是**中间层（est 标的）最新数据的日期**。用户起初的归因
+（"生产端记在净值日、我们记在估算当天"）与代码不符 —— 估算当天之所以
+等于中间层日期，是因为估算就跑在美股收盘后那一刻。真正的差异是两条：
+
+1. **运行节奏**：生产端 cron 每天在美股收盘后跑；我们手动 sporadic 跑 ——
+   国庆周只跑了 10-02 / 10-07 / 10-13 三次，生产端从 09-30 起跑了 5 次；
+2. **数据新鲜度**：演示库 ETF 净值/行情缺行、汇率断档、33 只基金净值停在
+   10-12，`mid_date` 停在旧日期，记录日期跟着停。
+
+**读数侧**（`php/ui/fundhistoryparagraph.php:36-44`）：QDII 走
+`UseSameDayNetValue() == false`（`php/stock.php:381-387`，`in_arrayQdii`
+直接 return false）→ 价格日 D 的行查**前一交易日**的 nav 与 fundest。所以
+「基金溢价记录」10-14 行显示的是 nav[10-13] 与 fundest[10-13] ——
+§9.4 实测那一行 `3.34 / 3.1803 / 5.02% / 官方EST 3.182 / 误差 0.04%` 正是
+这个口径（nav 3.1803 = nav[10-13]，EST 3.182 ≈ fundest[10-13]）。
+
+### 10.2 PHP 的记账时间线（每日例程的依据）
+
+以北京时间、美股交易日 X 为例：
+
+| 时刻 | 事件 |
+| --- | --- |
+| X+1 04:00 | 美股 X 日收盘，新浪数据随后就位 |
+| X+1 04:04–04:09 | 生产端写 `fundest[X]`（实测，个别也有 05:05 / 09:13） |
+| X+1 晚间 | `nav[X]` 公布（东财 lsjz）；`AdjustFactor()` 被 `UpdateOfficialNetValue()` 的 `InsertDaily` 返回 true 触发，写 `cal[X]`（`qdiiref.php:178-199`） |
+| X+2 日起 | 页面价格日 X+1 的行显示 nav[X] 与 fundest[X]，误差列 = fundest[X]/nav[X] − 1 |
+
+`AdjustFactor()` 的三个量**同锚一天 X**：
+`cal[X] = QdiiGetCalibration(est[X], cny[X], nav[X]) = est[X] × cny[X] / nav[X]`。
+由这条时间线推出两个安全窗口和一个禁忌窗口：
+
+* **凌晨 04:30–09:00**（est 日 = X、净值日 = X−1）：nav[X] 未到，闸门开放，
+  写出的 `fundest[X] = nav[X−1] × (est[X]/est[X−1]) × fx`；
+* **晚间 20:00–21:30**（nav[X] 刚到、美股尚未开盘）：锚点（est 最新日 X）
+  与基金净值日 X 重合，`--funds` 校准与 PHP 同时机、同口径；
+* **禁忌：04:00–20:00 之间跑 `--funds`**。锚点取 est 最新日 X 而基金净值
+  还是 X−1，`cal[X] = est[X]×cny[X]/nav[X−1]` 混日；次晨 fundest 的
+  `est_quote_ref` 落在 cal_date = X 上，比值 est[X]/est[X] **退化成 1.0**，
+  当天涨跌整项丢失。PHP 在上午根本不重校 —— 没有新净值日，
+  `UpdateOfficialNetValue()` 返回 false。
+
+同理，**美股盘中（00:00–04:00）也不要跑 fundestcli**：那时 est 价是未收盘
+的快照。证据就是 10-14 00:52 写下的 4 条 fundest[10-13]（见 §10.4②）。
+
+### 10.3 数据修复（A 方案执行记录，2026-10-16 核对）
+
+动库前 `mysqldump` 全库到 `dbtools/_snapshots/before_20261016_plan_a.sql`
+（220KB）。背景：当天 9:49 用户自己跑过一次 `autocalibrationcli --funds`
+（`--funds` 的唯一调用方），当时 nav 未补到 10-14、汇率还是新浪即期旧值、
+ETF 无 10-14 行情 —— 等于按漂移窗口口径 + 旧数据写出了 18 条全错的
+10-14 校准行（SZ161125 15471.03 vs 应有 16506.33，+6.69%；SH513100 +19.79%）。
+
+| 补救项 | 入口 | 结果 |
+| --- | --- | --- |
+| 33 只基金净值补到 10-14 | `dbtools/backfill_nav_history.py --symbols <33 只> --days 40 --apply` | 33 只最新净值日全部 2026-10-14，逐值与生产端一致 |
+| 33 只 A 股价格历史 | `dbtools/seed_a_share_history.py --apply` | 40 天（08-13 ~ 10-15） |
+| 4 币种官方中间价 | `forexcli --backfill` / `--fill-official-dates` | 276 行，补掉 10-13 / 10-15 断档 |
+| 14 个美股符号日线 | `_scratch/_plan_a_us_history.py --apply` | 420 行（09-03 ~ 10-15），补 10-14 缺口；**不算 EMA**（ETF 本无 `stockema` 行，30 天窗口反而是错种子） |
+| 13 个中间层 ETF 派生净值 | `autocalibrationcli --sync-nav --apply` | 全部推进到 10-15 |
+| 基金层校准重写 | `_scratch/_plan_a_recalibrate.py --apply` | 66 行（33 只 × 10-13/10-14）按 PHP 口径重写：`est × cny / nav` 同锚一日；10-13 那批旧汇率一并重写 |
+
+`_plan_a_recalibrate.py` 先删后写（`DELETE ... WHERE stock_id AND date`），
+把 9:49 那 18 条错行覆盖掉。两个脚本都默认 dry-run，`--apply` 才落库。
+
+### 10.4 与生产端对照（2026-10-16 抓取 `qdiicn.php`）
+
+探针 `_scratch/_plan_a_prod_compare.py`（解析「EST网页链接 共41项」表，
+生产端 HTML 快照 `_scratch/_qdiicn_prod_1016.html`）：
+
+| 项 | 结果 |
+| --- | --- |
+| 生产端 EST 表 | **41 行，日期全部 2026-10-15** |
+| 本地 `fundest` | **33 条，日期全部 2026-10-15**（`fundestcli` 写入） |
+| 值差分档 | 29 只 ≤0.1%；3 只 0.10~0.11%（SH513870 −0.103%、SZ159941 −0.104%、SZ160416 +0.100%）；SZ164906 +2.30% |
+| SZ161125 | 本地 3.153480 vs 生产 3.155（−0.048%，SPY 对 ^GSPC 的跟踪差） |
+
+三条残留，逐条坐实：
+
+**① SZ164906 +2.30% 是数据源差异，不是公式错。** 生产端 KWEB 净值走
+Yahoo NAV（`sz164906cn.php` 参考行：10-15 = 24.28、昨值 24.75，当日 **−1.9%**），
+我们按"净值(t) = 当日收盘价"派生（新浪 10-15 = 24.61、10-14 = 24.51，
+当日 **+0.41%**）。比值差 −2.29% 与 fundest 偏差 +2.297% 精确吻合；且
+`nav[10-14] 0.8814 × 24.28/24.75 = 0.8647 ≈ 生产 0.865` —— 顺带把
+`fundest[D] = nav[D−1] × est[D]/est[D−1] × fx` 整条链端到端验证了。
+KWEB 持仓是中概股，官方净值（港股收盘定价）与美股收盘价天然有差；
+我们这条口径是 P0.5 定稿的"净值 = 收盘价"（§4.3②），不追着改。
+
+**② 4 只 ETF-est 基金的 10-13 记录超 1% 阈值**（SH513290 +2.43%、
+SH513350 −2.73%、SZ159502 +3.22%、SZ159518 −2.73%）：四条全部
+`time=00:52:5x`，即 10-14 凌晨**美股盘中**写入，est 价是未收盘快照。
+属历史记录，随表格滚动消失；例程避开盘中窗口后不再产生。
+
+**③ 「基金溢价记录」10-15 行仍只有四格**：fundest[10-14] 的写入窗口是
+10-15 04:00–20:00，当天在做数据修复、没跑 fundestcli，而晚间 nav[10-14]
+一回补，闸门永久关闭，这条记录补不回来。10-16 起的每日例程会让 fundest[X]
+逐日归位 —— 今晚 nav[10-15] 公布后，10-15 行即八格全齐。
+
+### 10.5 每日例程（运维口径）
+
+两个窗口，顺序即依赖关系。33 只基金清单（逗号分隔，供 `--symbols`）：
+`SH501300,SH513100,SH513110,SH513290,SH513300,SH513350,SH513390,SH513400,SH513500,SH513650,SH513870,SZ159501,SZ159502,SZ159513,SZ159518,SZ159612,SZ159632,SZ159655,SZ159659,SZ159660,SZ159696,SZ159941,SZ160140,SZ160416,SZ161125,SZ161126,SZ161127,SZ161128,SZ161130,SZ162411,SZ162415,SZ162719,SZ164906`
+
+**晚间（nav 公布后约 20:00，务必在美股开盘 21:30 前）**：
+
+```bash
+# 1) 补 33 只基金净值（只补不覆盖；--days 3 足够覆盖周末/假期断档）
+python -B dbtools/backfill_nav_history.py --symbols <上面清单> --days 3 --apply --skip-backup
+# 2) 基金层校准：cal[X]，est / cny / nav 同锚一天 X（与 PHP AdjustFactor 同时机）
+python -B auto/cli/autocalibrationcli.py --funds --apply
+# 3) 可选：官方中间价回补（有断档时才需要）
+python -B auto/cli/forexcli.py --backfill
+```
+
+**凌晨（美股收盘后 04:30–09:00）**：
+
+```bash
+# 1) 抓行情：A 股基金与 14 个美股符号的 X 日收盘此时都已定
+python -B auto/cli/quotecli.py --all-qdii
+# 2) 刷新实时快照（estquote / realtimequote）
+python -B auto/cli/quoteupdatercli.py --once
+# 3) 归档指数快照（^NDX / ^GSPC 不在 --all-qdii 里，中间层 cal_m 推进用）
+python -B auto/cli/quotecli.py --archive-snapshot ^NDX ^GSPC
+# 4) 中间层净值推进（净值(t) = 当日收盘价）
+python -B auto/cli/autocalibrationcli.py --sync-nav --apply
+# 5) 写官方 EST：fundest[X]，X = 中间层最新日期
+python -B auto/cli/fundestcli.py
+```
+
+`--skip-backup` 只在确认当天已备份过时用（§八 的约定）。汇率说明：凌晨跑
+fundestcli 时官方中间价最新只到 X 日（SAFE 当日 09:20 公布），`cny_mid`
+取不到 X 日会退到最新一条，量级一致；断档由晚间第 3 步补。
+
+### 10.6 遗留项
+
+1. **`calibrate_fund` 的锚点口径本身还没修**：它取"est 标的最新行情日"，
+   而 PHP 恒锚基金净值日。例程窗口（晚间校准、凌晨 fundest）能规避，但
+   漂移窗口里误跑仍会写出比值 1.0 的校准 —— 按 AGENTS.md 四件套单独立项
+   （锚点改成基金净值日 + 单测 + 本文档小节 + PHP 逐例对照）。
+2. **中间层 `cal_m` 的每日推进**靠上面凌晨第 3 步归档的指数日线；它不进
+   EST 数学（`cal_f` 在估值式里约掉、`cal_m` 根本不出现），只影响
+   「校准记录」段落与中间层页面的新鲜度。
+3. **ETF 没有 `stockema` 行**（均线 memo 不显示）—— `_plan_a_us_history.py`
+   刻意不算 EMA；要补得连 50/200 日窗口一起灌，属另一次数据修复。
+4. 持仓口径的 8 只（SH501312 等）仍无 est 符号，官方 EST 走不到 ——
+   等各自的 `holdings` 数据（§1.3）。
