@@ -520,6 +520,22 @@ class QdiiRegionTest(unittest.TestCase):
         self.assertEqual(build_qdii_reference("SZ161130", source=source, auto_estimate=False).region, "us")
         self.assertEqual(build_qdii_reference("SH510900", source=source, auto_estimate=False).region, "hk")
 
+    def test_build_uppercases_symbol(self):
+        """小写 URL 符号（``/fund/sz161125``）也必须解析出 est_ref。
+
+        对应 PHP ``StockGetSymbol()``（``stock.php:30``）的 strtoupper 分支：
+        ``QdiiGetEstSymbol()`` 是查表，符号表键全大写，Python dict 不区分
+        大小写就静默查不到（估值全空、不报错）。详见
+        :func:`ref.refobj.build_qdii_reference` 的 docstring。
+        """
+        ref = build_qdii_reference("sz161125", source=FakeSource(), auto_estimate=False)
+        self.assertEqual(ref.get_symbol(), "SZ161125")
+        self.assertIsNotNone(ref.get_est_ref())
+        self.assertEqual(ref.get_est_ref().get_symbol(), "^GSPC")
+        # 带下划线的符号（外汇那类）不大写 —— PHP 的 strpos('_') 守卫
+        ref2 = build_qdii_reference("fx_susdcny", source=FakeSource(), auto_estimate=False)
+        self.assertEqual(ref2.get_symbol(), "fx_susdcny")
+
 
 class QdiiValueTest(unittest.TestCase):
     """`GetQdiiValue` / `GetEstValue` / 份额换算。"""

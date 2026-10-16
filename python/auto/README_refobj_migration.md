@@ -253,3 +253,34 @@ PHP 是 `_QdiiReference`（抽象中间类）+ 四个地区子类，差异只有
   **页面的实时 EST 列还没接上** —— 这是下一步最便宜的一个接线点。
 * 渲染层（`php/ui/table.php` 等）未迁移，所以 `refobj` 现在还没有真正的
   生产调用方；接下来的第 4 步会消费它。
+
+---
+
+## 七、2026-10-16：`build_qdii_reference()` 符号大小写规范化
+
+**现象**：`/fund/sz161125`（小写 URL，生产端链接就是这个风格）的「估值」表
+只剩表头四列，官方EST / EST日期两格为空、溢价格却有值；大写 URL 完全正常。
+
+**根因**：#71/#72 家族的新变体。`QdiiGetEstSymbol()`（`qdiiref.php:49`）是
+`isset($ar[$strSymbol])` 式查表，符号表键全大写；Python dict 键区分大小写，
+小写符号静默查不到 → `est_ref` 建不出来 → 三档 EST 全空。迷惑性在于
+`has_data` 仍为真（基金名字走 MySQL，collation 不区分大小写，照常命中），
+于是"名字显示正常、估值两列空"。
+
+**修法**：`build_qdii_reference()` 入口按 PHP `StockGetSymbol()`
+（`stock.php:25-32`）规范化 —— `trim` + 无下划线才 `upper`（外汇符号
+`fx_susdcny` 那类带下划线，不能动）。一处修改覆盖所有调用方
+（`web/routes/fund.py::_build_qdii_refs` / `qdii_page_service.classify_symbols` /
+fundestcli 等），路由层不用改。
+
+**PHP 依据**：生产端 `sz161125cn.php` 是每基金一个的静态页面，符号在页面里
+硬编码大写，所以生产端小写 URL 也正常；`StockGetSymbol()` 是给用户输入
+（`GetInputSymbolArray` / stockbot）用的同一语义的规范化，我们取它的规则。
+
+**测试**：`auto/test_refobj.py::QdiiRegionTest::test_build_uppercases_symbol`
+（小写解析出 `^GSPC`、带下划线符号不被大写）。pitfalls #84。
+
+**验证**：修复后 `/fund/sz161125` 与 `/fund/SZ161125` 输出一致
+（官方EST 3.153 / EST日期 2026-10-15 / 参考 3.152 / 实时 3.157），
+与生产端 `sz161125cn.php`（官方 3.155 / 10-15 / 参考 3.153 / 实时 3.158）
+逐项对齐，残差为已知的 SPY/QQQ vs ^GSPC/^NDX 跟踪差与抓取时刻差。

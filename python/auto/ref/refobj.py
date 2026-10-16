@@ -2044,7 +2044,29 @@ def build_qdii_reference(symbol: str, source: Any = None, region: str = None, **
     地区决定用哪个中间价（USCNY/HKCNY/JPCNY/EUCNY）与哪个即期外汇。
     判断顺序与 ``qdiiref.php`` 里四个子类的用法一致：先试hk/jp/eu 的
     ``est_symbol`` 查表（它们各自只认自己那批符号），剩下的归 ``us``。
+
+    ## 符号先规范化：没有下划线就大写
+
+    对应 PHP ``StockGetSymbol()``（``stock.php:25-32``）::
+
+        if (strpos($str, '_') === false)	$str = strtoupper($str);
+
+    为什么非改不可：``QdiiGetEstSymbol()``（``qdiiref.php:49``）是
+    ``isset($ar[$strSymbol])`` 式的**查表**，而符号表的键全是大写
+    （``SZ161125`` 那批）。Python 的 dict 键区分大小写，小写符号
+    （``sz161125``）会**静默查不到** —— est_ref 建不出来，三档 EST 全空，
+    页面「估值」表只剩现价与两列空格（与 pitfalls #71/#72 同族：
+    查表没命中时不报错，只是没数据）。MySQL 那侧反而不要紧：连接
+    collation 不区分大小写，``get_stock_name('sz161125')`` 照常命中，
+    所以"名字显示正常、估值全空"这种半截现象最有迷惑性。
+
+    生产端不会踩到：``sz161125cn.php`` 是每基金一个的静态页面文件，
+    符号在页面里硬编码大写。我们的 URL（``/fund/sz161125``）是从链接触
+    达的，大小写取决于链接怎么写，所以在构造入口统一。
     """
+    symbol = str(symbol).strip()
+    if "_" not in symbol:
+        symbol = symbol.upper()
     if region is None:
         region = "us"
         for candidate in ("hk", "jp", "eu"):

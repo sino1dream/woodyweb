@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="zh-Hans">
+<head>
+	<meta http-equiv="content-type" content="text/html; charset=UTF-8">
+    <title>美股QDII基金净值计算工具</title>
+    <meta name="description" content="美股QDII官方EST用来验证计算方式的准确性。以参考EST为准，折价不申购、溢价不赎回。上涨赚溢价、下跌赚净值，不要怂，就是干！">
+    <link rel="canonical" href="https://palmmicro.com/woody/res/qdiicn.php" />
+    <link rel="shortcut icon" href="/image/favicon.ico" type="image/x-icon">
+    <link href="/common/style.css" rel="stylesheet" type="text/css" />
+</head>
+<body bgproperties=fixed leftmargin=0 topmargin=0>
+<!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-DQ4P3FHV66"></script>
+<script>
+	window.dataLayer = window.dataLayer || [];
+	function gtag(){dataLayer.push(arguments);}
+	gtag('js', new Date());
+
+	gtag('config', 'G-DQ4P3FHV66');
+</script>
+<div id="banner">
+    <div class="logo"><a href="/indexcn.html"><img src=/image/image_palmmicro.jpg alt="Palmmicro Name Logo" /></a></div>
+    <div class="blue"></div>
+</div>
+<script>
+	var width = window.screen.width;
+	var height = window.screen.height;
+	document.cookie = "screenheight=" + height + "; path=/";
+	document.cookie = "screenwidth=" + width + "; path=/";
+</script>
+<table width=900 height=85% border=0 cellpadding=0 cellspacing=0>
+<tbody>
+<tr>
+<td width=30 valign=top bgcolor=#66CC66>&nbsp;</td>
+<td width=120 valign=top bgcolor=#66CC66>
+<div>
+    <p>&nbsp;</p>
+    <p><a href="../indexcn.php" class=A2>资源共享</a></p>
+    <p>&nbsp;</p>
+    <p><a href="chinaindexcn.php" class=A2>A股指数</a></p>
+    <p><a href="chinafuturecn.php" class=A2>A股商品</a></p>
+    <p><font color=yellow style="font-size:10pt; font-weight:bold">美股QDII</font></p>
+    <p><a href="qdiimixcn.php" class=A2>混合QDII</a></p>
+    <p><a href="qdiihkcn.php" class=A2>港股QDII</a></p>
+    <p><a href="qdiijpcn.php" class=A2>日本QDII</a></p>
+    <p><a href="qdiieucn.php" class=A2>欧洲QDII</a></p>    
+</div>
+</td>
+<td width=30 valign=top bgcolor=#66CC66>&nbsp;</td>
+<td width=50 valign=top bgcolor=#ffffff>&nbsp;</td>
+<td  valign=top>
+<div>
+    <h1>美股QDII基金净值计算工具</h1>	
+	<script>
+		var now = new Date(1792127865000); 
+		function UpdateTime() 
+		{ 
+			now.setTime(now.getTime() + 250); 
+			document.getElementById("time").innerHTML = now.toLocaleTimeString(); 
+		} 
+		setInterval("UpdateTime()", 250);
+	</script>    
+    <p>参考数据 <span id="time"></span>
+    	<TABLE borderColor=#cccccc cellSpacing=0 width=640 border=1 class="text" id="referencetable">
+        	<thead><tr><th class=c1 width=80 align=left><font color=maroon>代码</font></th><th class=c1 width=70 align=left><font color=blue>价格</font></th><th class=c1 width=70 align=left>涨幅</th><th class=c1 width=100 align=left>日期</th><th class=c1 width=50 align=left>时间</th><th class=c1 width=270 align=left>名称</th></tr></thead>
+        	<tbody>        
+    		<tr><td class=c1><a href="https://finance.sina.com.cn/fund/quotes/501300/bc.shtml" target=_blank>SH501300</a></td><td class=c1><font color=green>0.923</font></td><td class=c1><font color=red>-0.11%</font></td><td class=c1>2026-10-16</td><td class=c1>13:17</td><td class=c1>美元债LOF</td></tr>        
+    		<tr><td class=c1><a href="https://finance.sina.com.cn/fund/quotes/513290/bc.shtml" target=_blank>SH513290</a></td><td class=c1><font color=red>1.758</font></td><td class=c1><font color=black>2.81%</font></td><td class=c1>2026-10-16</td><td class=c1>13:17</td><td class=c1>纳指生物科技ETF汇添富</td></tr>        
+    		<tr><td class=c1><a href="https://finance.sina.com.cn/fund/quotes/513400/bc.shtml" target=_blank>SH513400</a></td><td class=c1><font color=red>1.318</font></td><td class=c1><font color=black>1.62%</font></td><td class=c1>2026-10-16</td><td class=c1>13:17</td><td class=c1>道琼斯ETF鹏华</td></tr>        
+    		<tr><td class=c1><a href="https://finance.sina.com.cn/fund/quotes/160140/bc.shtml" target=_blank>SZ160140</a></td><td class=c1><font color=red>1.351</font></td><td class=c1><font color=black>0.75%</font></td><td class=c1>2026-10-16</td><td class=c1>13:16</td><td class=c1>美国REIT精选LOF</td></tr>        
+    		<tr><td class=c1><a href="https://finance.sina.com.cn/fund/quotes/161126/bc.shtml" target=_blank>SZ161126</a></td><td class=c1><font color=red>2.234</font></td><td class=c1><font color=black>2.15%</font></td><td class=c1>2026-10-16</td><td class=c1>13:17</td><td class=c1>标普医疗保健LOF</td></tr>        
+    		<tr><td class=c1><a href="https://finance.sina.com.cn/fund/quotes/161128/bc.shtml" target=_blank>SZ161128</a></td><td class=c1><font color=red>7.58</font></td><td class=c1><font color=black>1.27%</font></td><td class=c1>2026-10-16</td><td class=c1>13:17</td><td class=c1>标普信息科技LOF</td></tr>        
+    		<tr><td class=c1><a href="https://finance.sina.com.cn/fund/quotes/162415/bc.shtml" target=_blank>SZ162415</a></td><td class=c1><font color=red>2.757</font></td><td class=c1><font color=black>1.77%</font></td><td class=c1>2026-10-16</td><td class=c1>13:17</td><td class=c1>美国消费LOF</td></tr>        
+    		<tr><td class=c1><a href="https://finance.sina.com.cn/fund/quotes/164906/bc.shtml" target=_blank>SZ164906</a></td><td class=c1><font color=red>0.877</font></td><td class=c1><font color=black>1.86%</font></td><td class=c1>2026-10-16</td><td class=c1>13:17</td><td class=c1>中概互联网LOF</td></tr>        
+    		<tr><td class=c1><a href="https://finance.sina.com.cn/fund/quotes/159502/bc.shtml" target=_blank>SZ159502</a></td><td class=c1><font color=red>1.535</font></td><td class=c1><font color=black>2.27%</font></td><td class=c1>2026-10-16</td><td class=c1>13:17</td><td class=c1>标普生物科技ETF嘉实</td></tr>        
+    		<tr><td class=c1><a href="https://finance.sina.com.cn/fund/quotes/161127/bc.shtml" target=_blank>SZ161127</a></td><td class=c1><font color=red>1.995</font></td><td class=c1><font color=black>1.94%</font></td><td class=c1>2026-10-16</td><td class=c1>13:17</td><td class=c1>标普生物科技LOF</td></tr>        
+    		<tr><td class=c1><a href="https://finance.sina.com.cn/fund/quotes/513350/bc.shtml" target=_blank>SH513350</a></td><td class=c1><font color=green>1.397</font></td><td class=c1><font color=red>-1.27%</font></td><td class=c1>2026-10-16</td><td class=c1>13:17</td><td class=c1>标普油气ETF富国</td></tr>        
+    		<tr><td class=c1><a href="https://finance.sina.com.cn/fund/quotes/159518/bc.shtml" target=_blank>SZ159518</a></td><td class=c1><font color=green>1.321</font></td><td class=c1><font color=red>-1.56%</font></td><td class=c1>2026-10-16</td><td class=c1>13:16</td><td class=c1>标普油气ETF嘉实</td></tr>        
+    		<tr><td class=c1><a href="https://finance.sina.com.cn/fund/quotes/162411/bc.shtml" target=_blank>SZ162411</a></td><td class=c1><font color=green>1.004</font></td><td class=c1><font color=red>-1.57%</font></td><td class=c1>2026-10-16</td><td class=c1>13:16</td><td class=c1>华宝油气LOF</td></tr>        
+    		<tr><td class=c1><a href="https://finance.sina.com.cn/fund/quotes/160416/bc.shtml" target=_blank>SZ160416</a></td><td class=c1><font color=green>2.261</font></td><td class=c1><font color=red>-0.92%</font></td><td class=c1>2026-10-16</td><td class=c1>13:16</td><td class=c1>石油基金LOF</td></tr>        
+    		<tr><td class=c1><a href="https://finance.sina.com.cn/fund/quotes/162719/bc.shtml" target=_blank>SZ162719</a></td><td class=c1><font color=green>3.289</font></td><td class=c1><font color=red>-1.32%</font></td><td class=c1>2026-10-16</td><td class=c1>13:16</td><td class=c1>石油LOF</td></tr>        
+    		<tr><td class=c1><a href="https://finance.sina.com.cn/fund/quotes/513100/bc.shtml" target=_blank>SH513100</a></td><td class=c1><font color=red>2.356</font></td><td class=c1><font color=black>1.51%</font></td><td class=c1>2026-10-16</td><td class=c1>13:17</td><td class=c1>纳指ETF国泰</td></tr>        
+    		<tr><td class=c1><a href="https://finance.sina.com.cn/fund/quotes/513110/bc.shtml" target=_blank>SH513110</a></td><td class=c1><font color=red>2.559</font></td><td class=c1><font color=black>0.99%</font></td><td class=c1>2026-10-16</td><td class=c1>13:17</td><td class=c1>纳指ETF华泰柏瑞</td></tr>        
+    		<tr><td class=c1><a href="https://finance.sina.com.cn/fund/quotes/513390/bc.shtml" target=_blank>SH513390</a></td><td class=c1><font color=red>2.503</font></td><td class=c1><font color=black>0.81%</font></td><td class=c1>2026-10-16</td><td class=c1>13:17</td><td class=c1>纳指100ETF博时</td></tr>        
+    		<tr><td class=c1><a href="https://finance.sina.com.cn/fund/quotes/513870/bc.shtml" target=_blank>SH513870</a></td><td class=c1><font color=red>2.145</font></td><td class=c1><font color=black>1.08%</font></td><td class=c1>2026-10-16</td><td class=c1>13:17</td><td class=c1>纳指ETF富国</td></tr>        
+    		<tr><td class=c1><a href="https://finance.sina.com.cn/fund/quotes/159501/bc.shtml" target=_blank>SZ159501</a></td><td class=c1><font color=red>2.209</font></td><td class=c1><font color=black>1.8%</font></td><td class=c1>2026-10-16</td><td class=c1>13:17</td><td class=c1>纳指ETF嘉实</td></tr>        
+    		<tr><td class=c1><a href="https://finance.sina.com.cn/fund/quotes/159513/bc.shtml" target=_blank>SZ159513</a></td><td class=c1><font color=red>1.859</font></td><td class=c1><font color=black>1.09%</font></td><td class=c1>2026-10-16</td><td class=c1>13:17</td><td class=c1>纳斯达克100ETF大成</td></tr>        
+    		<tr><td class=c1><a href="https://finance.sina.com.cn/fund/quotes/159632/bc.shtml" target=_blank>SZ159632</a></td><td class=c1><font color=red>2.544</font></td><td class=c1><font color=black>1.15%</font></td><td class=c1>2026-10-16</td><td class=c1>13:17</td><td class=c1>纳斯达克ETF华安</td></tr>        
+    		<tr><td class=c1><a href="https://finance.sina.com.cn/fund/quotes/159659/bc.shtml" target=_blank>SZ159659</a></td><td class=c1><font color=red>2.471</font></td><td class=c1><font color=black>1.69%</font></td><td class=c1>2026-10-16</td><td class=c1>13:17</td><td class=c1>纳斯达克100ETF招商</td></tr>        
+    		<tr><td class=c1><a href="https://finance.sina.com.cn/fund/quotes/159660/bc.shtml" target=_blank>SZ159660</a></td><td class=c1><font color=red>2.472</font></td><td class=c1><font color=black>0.98%</font></td><td class=c1>2026-10-16</td><td class=c1>13:17</td><td class=c1>纳指ETF汇添富</td></tr>        
+    		<tr><td class=c1><a href="https://finance.sina.com.cn/fund/quotes/159696/bc.shtml" target=_blank>SZ159696</a></td><td class=c1><font color=red>2.165</font></td><td class=c1><font color=black>1.88%</font></td><td class=c1>2026-10-16</td><td class=c1>13:17</td><td class=c1>纳指ETF易方达</td></tr>        
+    		<tr><td class=c1><a href="https://finance.sina.com.cn/fund/quotes/159941/bc.shtml" target=_blank>SZ159941</a></td><td class=c1><font color=red>1.74</font></td><td class=c1><font color=black>1.69%</font></td><td class=c1>2026-10-16</td><td class=c1>13:17</td><td class=c1>纳指ETF广发</td></tr>        
+    		<tr><td class=c1><a href="https://finance.sina.com.cn/fund/quotes/161130/bc.shtml" target=_blank>SZ161130</a></td><td class=c1><font color=red>4.835</font></td><td class=c1><font color=black>1.15%</font></td><td class=c1>2026-10-16</td><td class=c1>13:17</td><td class=c1>纳斯达克100LOF</td></tr>        
+    		<tr><td class=c1><a href="https://finance.sina.com.cn/fund/quotes/513300/bc.shtml" target=_blank>SH513300</a></td><td class=c1><font color=red>2.812</font></td><td class=c1><font color=black>1.22%</font></td><td class=c1>2026-10-16</td><td class=c1>13:17</td><td class=c1>纳斯达克ETF华夏</td></tr>        
+    		<tr><td class=c1><a href="https://finance.sina.com.cn/fund/quotes/513500/bc.shtml" target=_blank>SH513500</a></td><td class=c1><font color=red>2.678</font></td><td class=c1><font color=black>0.71%</font></td><td class=c1>2026-10-16</td><td class=c1>13:17</td><td class=c1>标普500ETF博时</td></tr>        
+    		<tr><td class=c1><a href="https://finance.sina.com.cn/fund/quotes/513650/bc.shtml" target=_blank>SH513650</a></td><td class=c1><font color=red>2.01</font></td><td class=c1><font color=black>0.95%</font></td><td class=c1>2026-10-16</td><td class=c1>13:17</td><td class=c1>标普500ETF南方</td></tr>        
+    		<tr><td class=c1><a href="https://finance.sina.com.cn/fund/quotes/159612/bc.shtml" target=_blank>SZ159612</a></td><td class=c1><font color=red>2.083</font></td><td class=c1><font color=black>0.97%</font></td><td class=c1>2026-10-16</td><td class=c1>13:17</td><td class=c1>标普500ETF国泰</td></tr>        
+    		<tr><td class=c1><a href="https://finance.sina.com.cn/fund/quotes/161125/bc.shtml" target=_blank>SZ161125</a></td><td class=c1><font color=red>3.298</font></td><td class=c1><font color=black>0.98%</font></td><td class=c1>2026-10-16</td><td class=c1>13:17</td><td class=c1>标普500LOF</td></tr>        
+    		<tr><td class=c1><a href="https://finance.sina.com.cn/fund/quotes/159655/bc.shtml" target=_blank>SZ159655</a></td><td class=c1><font color=red>2.023</font></td><td class=c1><font color=black>1.05%</font></td><td class=c1>2026-10-16</td><td class=c1>13:17</td><td class=c1>标普500ETF华夏</td></tr>        
+    		<tr><td class=c1><a href="https://finance.sina.com.cn/fund/quotes/159509/bc.shtml" target=_blank>SZ159509</a></td><td class=c1><font color=red>3.242</font></td><td class=c1><font color=black>2.56%</font></td><td class=c1>2026-10-16</td><td class=c1>13:17</td><td class=c1>纳指科技ETF景顺</td></tr>        
+    		<tr><td class=c1><a href="https://finance.sina.com.cn/fund/quotes/159529/bc.shtml" target=_blank>SZ159529</a></td><td class=c1><font color=red>1.332</font></td><td class=c1><font color=black>0.99%</font></td><td class=c1>2026-10-16</td><td class=c1>13:17</td><td class=c1>标普消费ETF景顺</td></tr>        
+    		<tr><td class=c1><a href="https://finance.sina.com.cn/fund/quotes/513850/bc.shtml" target=_blank>SH513850</a></td><td class=c1><font color=red>1.913</font></td><td class=c1><font color=black>1.65%</font></td><td class=c1>2026-10-16</td><td class=c1>13:17</td><td class=c1>美国50ETF易方达</td></tr>        
+    		<tr><td class=c1><a href="https://finance.sina.com.cn/fund/quotes/159577/bc.shtml" target=_blank>SZ159577</a></td><td class=c1><font color=red>1.713</font></td><td class=c1><font color=black>1.48%</font></td><td class=c1>2026-10-16</td><td class=c1>13:17</td><td class=c1>美国50ETF汇添富</td></tr>        
+    		<tr><td class=c1><a href="https://finance.sina.com.cn/fund/quotes/501312/bc.shtml" target=_blank>SH501312</a></td><td class=c1><font color=red>2.362</font></td><td class=c1><font color=black>1.9%</font></td><td class=c1>2026-10-16</td><td class=c1>13:17</td><td class=c1>海外科技LOF</td></tr>        
+    		<tr><td class=c1><a href="https://finance.sina.com.cn/fund/quotes/160216/bc.shtml" target=_blank>SZ160216</a></td><td class=c1><font color=green>0.616</font></td><td class=c1><font color=red>-0.32%</font></td><td class=c1>2026-10-16</td><td class=c1>13:17</td><td class=c1>国泰商品LOF</td></tr>        
+    		<tr><td class=c1><a href="https://finance.sina.com.cn/fund/quotes/164701/bc.shtml" target=_blank>SZ164701</a></td><td class=c1><font color=red>1.601</font></td><td class=c1><font color=black>0.63%</font></td><td class=c1>2026-10-16</td><td class=c1>13:17</td><td class=c1>黄金LOF</td></tr>        
+    		<tr><td class=c1><a href="https://finance.sina.com.cn/fund/quotes/163208/bc.shtml" target=_blank>SZ163208</a></td><td class=c1><font color=green>1.458</font></td><td class=c1><font color=red>-1.95%</font></td><td class=c1>2026-10-16</td><td class=c1>13:16</td><td class=c1>全球油气能源LOF</td></tr>    	
+    		</tbody>
+    	</TABLE>
+    	&nbsp;
+    </p>    
+    <p><b><font color=magenta>EST</font></b>网页链接共41项 <a href="https://palmmicro.com/woody/res/qdiicn.php?sort=symbol">按代码排序</a> <a href="https://palmmicro.com/woody/res/qdiicn.php?sort=premium">按官方溢价排序</a>
+    	<TABLE borderColor=#cccccc cellSpacing=0 width=630 border=1 class="text" id="estimationtable">
+        	<thead><tr><th class=c1 width=80 align=left><font color=maroon>代码</font></th><th class=c1 width=80 align=left>官方<font color=magenta>EST</font></th><th class=c1 width=100 align=left>EST日期</th><th class=c1 width=70 align=left><font color=orange>溢价</font></th><th class=c1 width=80 align=left>参考<font color=magenta>EST</font></th><th class=c1 width=70 align=left><font color=orange>溢价</font></th><th class=c1 width=80 align=left>实时<font color=magenta>EST</font></th><th class=c1 width=70 align=left><font color=orange>溢价</font></th></tr></thead>
+        	<tbody>        
+    		<tr><td class=c1 title="美元债LOF"><a href="https://palmmicro.com/woody/res/sh501300cn.php">SH501300</a></td><td class=c1><font color=green>0.92</font></td><td class=c1>2026-10-15</td><td class=c1><font color=black>0.31%</font></td><td class=c1><font color=green>0.92</font></td><td class=c1><font color=black>0.36%</font></td></tr>        
+    		<tr><td class=c1 title="纳指生物科技ETF汇添富"><a href="https://palmmicro.com/woody/res/sh513290cn.php">SH513290</a></td><td class=c1><font color=green>1.687</font></td><td class=c1>2026-10-15</td><td class=c1><font color=black>4.22%</font></td><td class=c1><font color=green>1.678</font></td><td class=c1><font color=black>4.78%</font></td></tr>        
+    		<tr><td class=c1 title="道琼斯ETF鹏华"><a href="https://palmmicro.com/woody/res/sh513400cn.php">SH513400</a></td><td class=c1><font color=green>1.277</font></td><td class=c1>2026-10-15</td><td class=c1><font color=black>3.23%</font></td><td class=c1><font color=green>1.27</font></td><td class=c1><font color=black>3.78%</font></td></tr>        
+    		<tr><td class=c1 title="美国REIT精选LOF"><a href="https://palmmicro.com/woody/res/sz160140cn.php">SZ160140</a></td><td class=c1><font color=red>1.36</font></td><td class=c1>2026-10-15</td><td class=c1><font color=red>-0.64%</font></td><td class=c1><font color=red>1.359</font></td><td class=c1><font color=red>-0.59%</font></td></tr>        
+    		<tr><td class=c1 title="标普医疗保健LOF"><a href="https://palmmicro.com/woody/res/sz161126cn.php">SZ161126</a></td><td class=c1><font color=red>2.236</font></td><td class=c1>2026-10-15</td><td class=c1><font color=red>-0.11%</font></td><td class=c1><font color=red>2.235</font></td><td class=c1><font color=red>-0.06%</font></td></tr>        
+    		<tr><td class=c1 title="标普信息科技LOF"><a href="https://palmmicro.com/woody/res/sz161128cn.php">SZ161128</a></td><td class=c1><font color=green>6.843</font></td><td class=c1>2026-10-15</td><td class=c1><font color=black>10.77%</font></td><td class=c1><font color=green>6.84</font></td><td class=c1><font color=black>10.82%</font></td></tr>        
+    		<tr><td class=c1 title="美国消费LOF"><a href="https://palmmicro.com/woody/res/sz162415cn.php">SZ162415</a></td><td class=c1><font color=red>2.763</font></td><td class=c1>2026-10-15</td><td class=c1><font color=red>-0.22%</font></td><td class=c1><font color=red>2.762</font></td><td class=c1><font color=red>-0.17%</font></td></tr>        
+    		<tr><td class=c1 title="中概互联网LOF"><a href="https://palmmicro.com/woody/res/sz164906cn.php">SZ164906</a></td><td class=c1><font color=green>0.865</font></td><td class=c1>2026-10-15</td><td class=c1><font color=black>1.41%</font></td><td class=c1><font color=red>0.881</font></td><td class=c1><font color=red>-0.4%</font></td></tr>        
+    		<tr><td class=c1 title="标普生物科技ETF嘉实"><a href="https://palmmicro.com/woody/res/sz159502cn.php">SZ159502</a></td><td class=c1><font color=green>1.486</font></td><td class=c1>2026-10-15</td><td class=c1><font color=black>3.27%</font></td><td class=c1><font color=green>1.478</font></td><td class=c1><font color=black>3.83%</font></td></tr>        
+    		<tr><td class=c1 title="标普生物科技LOF"><a href="https://palmmicro.com/woody/res/sz161127cn.php">SZ161127</a></td><td class=c1><font color=green>1.968</font></td><td class=c1>2026-10-15</td><td class=c1><font color=black>1.35%</font></td><td class=c1><font color=green>1.967</font></td><td class=c1><font color=black>1.4%</font></td></tr>        
+    		<tr><td class=c1 title="标普油气ETF富国"><a href="https://palmmicro.com/woody/res/sh513350cn.php">SH513350</a></td><td class=c1><font color=green>1.373</font></td><td class=c1>2026-10-15</td><td class=c1><font color=black>1.72%</font></td><td class=c1><font color=green>1.366</font></td><td class=c1><font color=black>2.27%</font></td></tr>        
+    		<tr><td class=c1 title="标普油气ETF嘉实"><a href="https://palmmicro.com/woody/res/sz159518cn.php">SZ159518</a></td><td class=c1><font color=green>1.309</font></td><td class=c1>2026-10-15</td><td class=c1><font color=black>0.9%</font></td><td class=c1><font color=green>1.302</font></td><td class=c1><font color=black>1.44%</font></td></tr>        
+    		<tr><td class=c1 title="华宝油气LOF"><a href="https://palmmicro.com/woody/res/sz162411cn.php">SZ162411</a></td><td class=c1><font color=red>1.011</font></td><td class=c1>2026-10-15</td><td class=c1><font color=red>-0.73%</font></td><td class=c1><font color=red>1.011</font></td><td class=c1><font color=red>-0.68%</font></td></tr>        
+    		<tr><td class=c1 title="石油基金LOF"><a href="https://palmmicro.com/woody/res/sz160416cn.php">SZ160416</a></td><td class=c1><font color=red>2.278</font></td><td class=c1>2026-10-15</td><td class=c1><font color=red>-0.73%</font></td><td class=c1><font color=red>2.277</font></td><td class=c1><font color=red>-0.68%</font></td></tr>        
+    		<tr><td class=c1 title="石油LOF"><a href="https://palmmicro.com/woody/res/sz162719cn.php">SZ162719</a></td><td class=c1><font color=red>3.29</font></td><td class=c1>2026-10-15</td><td class=c1><font color=red>-0.03%</font></td><td class=c1><font color=green>3.288</font></td><td class=c1><font color=black>0.02%</font></td></tr>        
+    		<tr><td class=c1 title="纳指ETF国泰"><a href="https://palmmicro.com/woody/res/sh513100cn.php">SH513100</a></td><td class=c1><font color=green>2.006</font></td><td class=c1>2026-10-15</td><td class=c1><font color=black>17.46%</font></td><td class=c1><font color=green>1.995</font></td><td class=c1><font color=black>18.09%</font></td><td class=c1><font color=green>1.999</font></td><td class=c1><font color=black>17.88%</font></td></tr>        
+    		<tr><td class=c1 title="纳指ETF华泰柏瑞"><a href="https://palmmicro.com/woody/res/sh513110cn.php">SH513110</a></td><td class=c1><font color=green>2.303</font></td><td class=c1>2026-10-15</td><td class=c1><font color=black>11.12%</font></td><td class=c1><font color=green>2.291</font></td><td class=c1><font color=black>11.72%</font></td><td class=c1><font color=green>2.295</font></td><td class=c1><font color=black>11.52%</font></td></tr>        
+    		<tr><td class=c1 title="纳指100ETF博时"><a href="https://palmmicro.com/woody/res/sh513390cn.php">SH513390</a></td><td class=c1><font color=green>2.251</font></td><td class=c1>2026-10-15</td><td class=c1><font color=black>11.19%</font></td><td class=c1><font color=green>2.239</font></td><td class=c1><font color=black>11.79%</font></td><td class=c1><font color=green>2.243</font></td><td class=c1><font color=black>11.58%</font></td></tr>        
+    		<tr><td class=c1 title="纳指ETF富国"><a href="https://palmmicro.com/woody/res/sh513870cn.php">SH513870</a></td><td class=c1><font color=green>1.911</font></td><td class=c1>2026-10-15</td><td class=c1><font color=black>12.27%</font></td><td class=c1><font color=green>1.9</font></td><td class=c1><font color=black>12.88%</font></td><td class=c1><font color=green>1.904</font></td><td class=c1><font color=black>12.67%</font></td></tr>        
+    		<tr><td class=c1 title="纳指ETF嘉实"><a href="https://palmmicro.com/woody/res/sz159501cn.php">SZ159501</a></td><td class=c1><font color=green>1.884</font></td><td class=c1>2026-10-15</td><td class=c1><font color=black>17.24%</font></td><td class=c1><font color=green>1.874</font></td><td class=c1><font color=black>17.87%</font></td><td class=c1><font color=green>1.877</font></td><td class=c1><font color=black>17.66%</font></td></tr>        
+    		<tr><td class=c1 title="纳斯达克100ETF大成"><a href="https://palmmicro.com/woody/res/sz159513cn.php">SZ159513</a></td><td class=c1><font color=green>1.671</font></td><td class=c1>2026-10-15</td><td class=c1><font color=black>11.23%</font></td><td class=c1><font color=green>1.662</font></td><td class=c1><font color=black>11.83%</font></td><td class=c1><font color=green>1.665</font></td><td class=c1><font color=black>11.62%</font></td></tr>        
+    		<tr><td class=c1 title="纳斯达克ETF华安"><a href="https://palmmicro.com/woody/res/sz159632cn.php">SZ159632</a></td><td class=c1><font color=green>2.279</font></td><td class=c1>2026-10-15</td><td class=c1><font color=black>11.63%</font></td><td class=c1><font color=green>2.267</font></td><td class=c1><font color=black>12.23%</font></td><td class=c1><font color=green>2.271</font></td><td class=c1><font color=black>12.03%</font></td></tr>        
+    		<tr><td class=c1 title="纳斯达克100ETF招商"><a href="https://palmmicro.com/woody/res/sz159659cn.php">SZ159659</a></td><td class=c1><font color=green>2.168</font></td><td class=c1>2026-10-15</td><td class=c1><font color=black>13.99%</font></td><td class=c1><font color=green>2.156</font></td><td class=c1><font color=black>14.6%</font></td><td class=c1><font color=green>2.16</font></td><td class=c1><font color=black>14.39%</font></td></tr>        
+    		<tr><td class=c1 title="纳指ETF汇添富"><a href="https://palmmicro.com/woody/res/sz159660cn.php">SZ159660</a></td><td class=c1><font color=green>2.192</font></td><td class=c1>2026-10-15</td><td class=c1><font color=black>12.78%</font></td><td class=c1><font color=green>2.18</font></td><td class=c1><font color=black>13.39%</font></td><td class=c1><font color=green>2.184</font></td><td class=c1><font color=black>13.18%</font></td></tr>        
+    		<tr><td class=c1 title="纳指ETF易方达"><a href="https://palmmicro.com/woody/res/sz159696cn.php">SZ159696</a></td><td class=c1><font color=green>1.868</font></td><td class=c1>2026-10-15</td><td class=c1><font color=black>15.91%</font></td><td class=c1><font color=green>1.858</font></td><td class=c1><font color=black>16.53%</font></td><td class=c1><font color=green>1.861</font></td><td class=c1><font color=black>16.32%</font></td></tr>        
+    		<tr><td class=c1 title="纳指ETF广发"><a href="https://palmmicro.com/woody/res/sz159941cn.php">SZ159941</a></td><td class=c1><font color=green>1.501</font></td><td class=c1>2026-10-15</td><td class=c1><font color=black>15.95%</font></td><td class=c1><font color=green>1.493</font></td><td class=c1><font color=black>16.57%</font></td><td class=c1><font color=green>1.495</font></td><td class=c1><font color=black>16.36%</font></td></tr>        
+    		<tr><td class=c1 title="纳斯达克100LOF"><a href="https://palmmicro.com/woody/res/sz161130cn.php">SZ161130</a></td><td class=c1><font color=green>4.479</font></td><td class=c1>2026-10-15</td><td class=c1><font color=black>7.96%</font></td><td class=c1><font color=green>4.477</font></td><td class=c1><font color=black>8.01%</font></td><td class=c1><font color=green>4.484</font></td><td class=c1><font color=black>7.82%</font></td></tr>        
+    		<tr><td class=c1 title="纳斯达克ETF华夏"><a href="https://palmmicro.com/woody/res/sh513300cn.php">SH513300</a></td><td class=c1><font color=green>2.493</font></td><td class=c1>2026-10-15</td><td class=c1><font color=black>12.78%</font></td><td class=c1><font color=green>2.48</font></td><td class=c1><font color=black>13.38%</font></td><td class=c1><font color=green>2.485</font></td><td class=c1><font color=black>13.18%</font></td></tr>        
+    		<tr><td class=c1 title="标普500ETF博时"><a href="https://palmmicro.com/woody/res/sh513500cn.php">SH513500</a></td><td class=c1><font color=green>2.465</font></td><td class=c1>2026-10-15</td><td class=c1><font color=black>8.65%</font></td><td class=c1><font color=green>2.452</font></td><td class=c1><font color=black>9.23%</font></td><td class=c1><font color=green>2.455</font></td><td class=c1><font color=black>9.07%</font></td></tr>        
+    		<tr><td class=c1 title="标普500ETF南方"><a href="https://palmmicro.com/woody/res/sh513650cn.php">SH513650</a></td><td class=c1><font color=green>1.877</font></td><td class=c1>2026-10-15</td><td class=c1><font color=black>7.11%</font></td><td class=c1><font color=green>1.867</font></td><td class=c1><font color=black>7.69%</font></td><td class=c1><font color=green>1.869</font></td><td class=c1><font color=black>7.53%</font></td></tr>        
+    		<tr><td class=c1 title="标普500ETF国泰"><a href="https://palmmicro.com/woody/res/sz159612cn.php">SZ159612</a></td><td class=c1><font color=green>1.934</font></td><td class=c1>2026-10-15</td><td class=c1><font color=black>7.72%</font></td><td class=c1><font color=green>1.923</font></td><td class=c1><font color=black>8.3%</font></td><td class=c1><font color=green>1.926</font></td><td class=c1><font color=black>8.14%</font></td></tr>        
+    		<tr><td class=c1 title="标普500LOF"><a href="https://palmmicro.com/woody/res/sz161125cn.php">SZ161125</a></td><td class=c1><font color=green>3.155</font></td><td class=c1>2026-10-15</td><td class=c1><font color=black>4.54%</font></td><td class=c1><font color=green>3.153</font></td><td class=c1><font color=black>4.59%</font></td><td class=c1><font color=green>3.158</font></td><td class=c1><font color=black>4.44%</font></td></tr>        
+    		<tr><td class=c1 title="标普500ETF华夏"><a href="https://palmmicro.com/woody/res/sz159655cn.php">SZ159655</a></td><td class=c1><font color=green>1.888</font></td><td class=c1>2026-10-15</td><td class=c1><font color=black>7.14%</font></td><td class=c1><font color=green>1.878</font></td><td class=c1><font color=black>7.72%</font></td><td class=c1><font color=green>1.881</font></td><td class=c1><font color=black>7.56%</font></td></tr>        
+    		<tr><td class=c1 title="纳指科技ETF景顺"><a href="https://palmmicro.com/woody/res/sz159509cn.php">SZ159509</a></td><td class=c1><font color=green>2.322</font></td><td class=c1>2026-10-15</td><td class=c1><font color=black>39.64%</font></td><td class=c1><font color=green>2.309</font></td><td class=c1><font color=black>40.39%</font></td></tr>        
+    		<tr><td class=c1 title="标普消费ETF景顺"><a href="https://palmmicro.com/woody/res/sz159529cn.php">SZ159529</a></td><td class=c1><font color=green>1.266</font></td><td class=c1>2026-10-15</td><td class=c1><font color=black>5.22%</font></td><td class=c1><font color=green>1.259</font></td><td class=c1><font color=black>5.79%</font></td></tr>        
+    		<tr><td class=c1 title="美国50ETF易方达"><a href="https://palmmicro.com/woody/res/sh513850cn.php">SH513850</a></td><td class=c1><font color=green>1.766</font></td><td class=c1>2026-10-15</td><td class=c1><font color=black>8.35%</font></td><td class=c1><font color=green>1.756</font></td><td class=c1><font color=black>8.93%</font></td></tr>        
+    		<tr><td class=c1 title="美国50ETF汇添富"><a href="https://palmmicro.com/woody/res/sz159577cn.php">SZ159577</a></td><td class=c1><font color=green>1.588</font></td><td class=c1>2026-10-15</td><td class=c1><font color=black>7.9%</font></td><td class=c1><font color=green>1.579</font></td><td class=c1><font color=black>8.49%</font></td></tr>        
+    		<tr><td class=c1 title="海外科技LOF"><a href="https://palmmicro.com/woody/res/sh501312cn.php">SH501312</a></td><td class=c1><font color=red>2.367</font></td><td class=c1>2026-10-15</td><td class=c1><font color=red>-0.21%</font></td><td class=c1><font color=red>2.366</font></td><td class=c1><font color=red>-0.16%</font></td><td class=c1><font color=red>2.366</font></td><td class=c1><font color=red>-0.16%</font></td></tr>        
+    		<tr><td class=c1 title="国泰商品LOF"><a href="https://palmmicro.com/woody/res/sz160216cn.php">SZ160216</a></td><td class=c1><font color=grey>0.616</font></td><td class=c1>2026-10-15</td><td class=c1><font color=gray>0</font></td><td class=c1><font color=grey>0.616</font></td><td class=c1><font color=gray>0</font></td><td class=c1><font color=green>0.614</font></td><td class=c1><font color=black>0.38%</font></td></tr>        
+    		<tr><td class=c1 title="黄金LOF"><a href="https://palmmicro.com/woody/res/sz164701cn.php">SZ164701</a></td><td class=c1><font color=red>1.605</font></td><td class=c1>2026-10-15</td><td class=c1><font color=red>-0.27%</font></td><td class=c1><font color=red>1.604</font></td><td class=c1><font color=red>-0.22%</font></td><td class=c1><font color=red>1.603</font></td><td class=c1><font color=red>-0.12%</font></td></tr>        
+    		<tr><td class=c1 title="全球油气能源LOF"><a href="https://palmmicro.com/woody/res/sz163208cn.php">SZ163208</a></td><td class=c1><font color=red>1.474</font></td><td class=c1>2026-10-15</td><td class=c1><font color=red>-1.1%</font></td><td class=c1><font color=red>1.474</font></td><td class=c1><font color=red>-1.05%</font></td><td class=c1><font color=red>1.473</font></td><td class=c1><font color=red>-1%</font></td></tr>    	
+    		</tbody>
+    	</TABLE>
+    	&nbsp;
+    </p>
+    <p>美股QDII官方EST用来验证计算方式的准确性。以参考EST为准，折价不申购、溢价不赎回。上涨赚溢价、下跌赚净值，不要怂，就是干！<br /><img src=/woody/blog/photo/gan.jpg alt="赢了会所嫩模，输了下海挖沙！" /><br /><font color=gray>赢了会所嫩模，输了下海挖沙！</font></p>			
+	<h3>相关链接</h3>
+	<p><a href="https://palmmicro.com/woody/res/lofcn.php">LOF基金</a> <a href="https://palmmicro.com/woody/res/overnightcn.php">义工群对比</a> <a href="https://palmmicro.com/woody/res/overnightcnhcn.php?overnightcnh=95000">义工群对冲计算器</a> <a href="https://palmmicro.com/woody/res/ahcomparecn.php">A股和H股对比</a> <a href="https://palmmicro.com/woody/res/autotractorcn.php">拖拉机自动化</a> <a href="https://palmmicro.com/account/simpletestcn.php">简单测试</a> <a href="https://palmmicro.com/woody/blog/entertainment/20150818cn.php#qdii">开发记录</a><br /><a href="https://palmmicro.com/woody/res/chinaindexcn.php">A股指数</a> <a href="https://palmmicro.com/woody/res/chinafuturecn.php">A股商品</a> <font color=blue>美股QDII</font> <a href="https://palmmicro.com/woody/res/qdiimixcn.php">混合QDII</a> <a href="https://palmmicro.com/woody/res/qdiihkcn.php">港股QDII</a> <a href="https://palmmicro.com/woody/res/qdiijpcn.php">日本QDII</a> <a href="https://palmmicro.com/woody/res/qdiieucn.php">欧洲QDII</a><br /><a href="https://palmmicro.com/woody/res/biotechcn.php">生物科技</a> <a href="https://palmmicro.com/woody/res/chinainternetcn.php">中丐互怜</a> <a href="https://palmmicro.com/woody/res/commoditycn.php">大宗商品和黄金</a> <a href="https://palmmicro.com/woody/res/hangsengcn.php">恒生指数</a> <a href="https://palmmicro.com/woody/res/hsharescn.php">H股中国企业指数</a> <a href="https://palmmicro.com/woody/res/hstechcn.php">恒生科技指数</a> <a href="https://palmmicro.com/woody/res/mscius50cn.php">MSCI美国50</a> <a href="https://palmmicro.com/woody/res/oilfundcn.php">原油</a> <a href="https://palmmicro.com/woody/res/qqqfundcn.php">纳斯达克100</a> <a href="https://palmmicro.com/woody/res/spyfundcn.php">标普500</a></p>
+	<p><img src=/woody/image/wx.jpg alt="Palmmicro微信公众号小狐狸二维码" /><br /><font color=green>Palmmicro微信公众号小狐狸二维码</font></p>
+</div>
+<div>
+    <p><br /><a href="https://palmmicro.com/woody/indexcn.php">资源共享</a> <a href="https://palmmicro.com/woody/imagecn.php">相片</a> <a href="https://palmmicro.com/woody/blogcn.php">网络日志</a></p>
+</div>
+<div>
+    <p><font color=green>更多选项？请先<a href="https://palmmicro.com/account/logincn.php">登录</a>或者<a href="https://palmmicro.com/account/registercn.php">注册</a>。</font></p>
+</div>
+<div>
+    <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        <!-- Ads on Woody's blog -->
+        <ins class="adsbygoogle"
+        style="display:inline-block;width:300px;height:250px"
+        data-ad-client="ca-pub-7413337917168353"
+        data-ad-slot="6567638260"></ins>
+    <script>
+        (adsbygoogle = window.adsbygoogle || []).push({});
+    </script>
+</div>
+</td>
+</tr>
+</tbody>
+</table>
+<div id="copyright">
+	<p>2006-2026 Palmmicro版权所有&copy;，保留所有权利。</p>
+</div>
+</body>
+</html>
