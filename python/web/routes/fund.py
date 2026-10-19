@@ -13,7 +13,6 @@ Werkzeug 会让它们重载，匹配时**先注册的规则优先**。所以必�
 
 from __future__ import annotations
 
-import json
 import os
 
 from typing import Any
@@ -67,12 +66,10 @@ def _parse_sources() -> dict[str, float]:
 def _render_fund(symbol: str, group: str):
     """渲染基金详情页，并把分组信息带过去用于生成返回链接。"""
     output = _get_service().get_fund(symbol, _parse_sources())
-    config_json = json.dumps(output["config"], ensure_ascii=False, indent=2, sort_keys=True)
 
     return render_template(
         "fund_detail.html",
         fund=output,
-        config_json=config_json,
         group=group,
         trading=_build_trading(symbol),
         fundest=_build_fundest(symbol),

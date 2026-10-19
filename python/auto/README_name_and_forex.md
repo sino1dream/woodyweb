@@ -46,11 +46,12 @@ if calibration is not None:
 
 本页把生产端的两张表合并成一张，所以必须靠列名区分开。
 
-#### 0.5.3 最终列（12 列）
+#### 0.5.3 最终列（19 列，2026-10-19 起）
 
 ```text
-基金代码 | 名称 | 跟踪代码 | 仓位 | 校准值 | 校准日期 |
-最新行情日期 | 行情更新时间 | 最新价 | 涨跌幅 | 溢价率 | 数据源
+基金代码 | 名称 | 跟踪代码 | 仓位 | 基金净值 | 基金净值日期 |
+最新行情日期 | 行情更新时间 | 最新价 | 涨跌幅 | 溢价率 | 数据源 |
+官方EST | EST日期 | 溢价 | 参考EST | 溢价 | 实时EST | 溢价
 ```
 
 | 列 | 来源 | 对应生产端 |
@@ -59,14 +60,47 @@ if calibration is not None:
 | 名称 | `stock.name` | 参考数据「名称」 |
 | 跟踪代码 | `FundProfile.est_symbol`（估值标的） | 对照表「跟踪代码」 |
 | 仓位 | `fundposition.close` | 对照表「仓位」 |
-| 校准值 | `calibrationhistory.close` | 对照表「校准值」 |
-| 校准日期 | `calibrationhistory.date` | 对照表「日期」 |
+| 基金净值 | `netvaluehistory.close`（最新） | （本页新增） |
+| 基金净值日期 | `netvaluehistory.date`（最新） | （本页新增） |
 | 最新行情日期 | `realtimequote.quote_date` | 参考数据「日期」 |
 | 行情更新时间 | `realtimequote.quote_time` | 参考数据「时间」 |
 | 最新价 | `realtimequote.price` | 参考数据「价格」 |
 | 涨跌幅 | `(price/prev_price-1)×100` | 参考数据「涨幅」 |
 | 溢价率 | `(price/net_value-1)×100` | 生产端基金页「溢价」 |
 | 数据源 | `realtimequote.source` | （本页新增，便于排查） |
+| 官方EST | `QdiiReference.get_official_net_value()` | 估值表「官方EST」 |
+| EST日期 | `QdiiReference.get_official_date()` | 估值表「EST日期」 |
+| 溢价（官方） | `get_percentage_text(official)` | 估值表「溢价」 |
+| 参考EST | `get_fair_net_value()` | 估值表「参考EST」 |
+| 溢价（参考） | `get_percentage_text(fair)` | 估值表「溢价」 |
+| 实时EST | `get_realtime_net_value()` | 估值表「实时EST」 |
+| 溢价（实时） | `get_percentage_text(realtime)` | 估值表「溢价」 |
+
+##### 0.5.3.1 2026-10-19：删「校准值 / 校准日期」，接 EST 七列
+
+用户要求对齐生产端 `qdiicn.php`：该页**第二张表**（`EchoFundArrayEstParagraph`
+→ `_echoFundEstTableItem()`，`php/ui/fundestparagraph.php`）本来就是
+「代码 | 官方EST | EST日期 | 溢价 | 参考EST | 溢价 | 实时EST | 溢价」，
+而「校准值 / 校准日期」两列只存在于 PHP 的**基金指数对照表**
+（`fundlistparagraph.php`，即生产端 `fundlistcn.php` 那个页面），
+`qdiicn.php` 上根本没有。本页一直把两张表合并成一张，于是把那两列也搬了进来
+—— 属于历史遗留，本次按用户要求删除。
+
+* 三档 EST 的取数全部委托 `QdiiReference`（`refobj.build_qdii_reference`），
+  内部只有 `fundestcalc` 一个实现（见 `README_fundest_migration.md`）；
+* **没有实时 EST 的两格留空、不补位** —— 对应 PHP 行里的两个 `if`：
+  参考 EST 那档有 `else if ($bFair)` 补齐（列表里别人有时补两个空格），
+  实时 EST 那档**连 else 都没有**（PHP 的已知错位 bug，见
+  `web/services/fundest_service.py` docstring）。本版按用户要求统一留空；
+* 溢价 = `(场内价 / 该档估值 - 1) × 100%`，即 PHP 的
+  `GetPercentageDisplay($fOfficialPrice)`（除数是估值、被除数默认现价）。
+  实测生产端 SH513100：2.345 / 1.989 - 1 = 17.9%，与页面一致；
+* 溢价格配色沿用页内「涨红跌绿」（`.est-premium.positive/.negative`），
+  与涨跌幅、溢价率同一套；
+* **全程容错**：建引用对象或算估值抛异常时七列全空 —— 列表页不该因一只基金
+  算错估值就整页 500（PHP 那边会 fatal，不跟）。
+
+校准值本身仍在算（`_auto_calibrate()`，EST 要用它），只是不再显示。
 
 #### 0.5.4 实测与生产端逐项吻合
 

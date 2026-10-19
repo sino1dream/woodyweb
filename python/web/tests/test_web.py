@@ -315,16 +315,22 @@ class FundGroupRouteTest(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertIn("QDII-LOF 基金指数对照表", html)
-        # 表头对齐生产端 qdiicn.php / fundlistcn.php：
+        # 表头对齐生产端 qdiicn.php 的两张表（2026-10-19 起 EST 七列接进本页，
+        # 「校准值 / 校准日期」两列同时删除）：
         #   参考数据表  代码 | 价格 | 涨幅 | 日期 | 时间 | 名称
-        #   对照表      代码 | 跟踪代码 | 仓位 | 校准值 | 日期 | 参考值
-        # 两处"日期"在本页合并成一张表，所以必须拆成「校准日期」与「最新行情日期」，
-        # 否则会把校准值的日期误读成行情日期。
+        #   估值表      代码 | 官方EST | EST日期 | 溢价 | 参考EST | 溢价 | 实时EST | 溢价
+        # 两处"日期"在本页合并成一张表，所以必须拆成「EST日期」与「最新行情日期」，
+        # 否则会把估值的日期误读成行情日期。
         for column in (
-            "基金代码", "名称", "跟踪代码", "仓位", "校准值", "校准日期",
+            "基金代码", "名称", "跟踪代码", "仓位",
+            "基金净值", "基金净值日期",
             "最新行情日期", "行情更新时间", "最新价", "涨跌幅", "溢价率", "数据源",
+            "官方EST", "EST日期", "溢价", "参考EST", "溢价", "实时EST", "溢价",
         ):
             self.assertIn("<th>%s</th>" % column, html)
+        # 2026-10-19 删除的两列不应再出现
+        self.assertNotIn("<th>校准值</th>", html)
+        self.assertNotIn("<th>校准日期</th>", html)
         # 旧的列名不应再出现
         self.assertNotIn("<th>股票代码</th>", html)
         self.assertNotIn("<th>日期</th>", html)
@@ -493,22 +499,27 @@ class RealtimeQuoteRouteTest(unittest.TestCase):
         self.assertIn('class="premium ', html)
 
     def test_fund_list_columns_match_production_pages(self):
-        """表头对齐生产端 qdiicn.php 与 fundlistcn.php（列名 + 口径）。
+        """表头对齐生产端 qdiicn.php 的两张表（列名 + 口径）。
 
-        生产端把「参考数据」和「基金指数对照表」放在两张表里；本页合并成一张，
-        因此两处同名的"日期"必须拆开：校准值那份是 calibrationhistory 的日期，
-        行情那份是行情的日期。这个测试锁住这个区分，避免以后又被并回一列。
+        生产端把「参考数据」和「估值」放在两张表里；本页合并成一张，
+        因此两处同名的"日期"必须拆开：估值那份是 EST 日期
+        （``GetOfficialDate()``，中间层行情的日期），行情那份是基金自己的
+        行情日期。这个测试锁住这个区分，避免以后又被并回一列。
         """
         response = self.client.get("/fund/qdiilof")
         html = response.get_data(as_text=True)
 
         # 拆分后的两列各自独立存在
-        self.assertIn('<th>校准日期</th>', html)
+        self.assertIn('<th>EST日期</th>', html)
         self.assertIn('<th>最新行情日期</th>', html)
         # 不再有歧义的裸"日期"列
         self.assertNotIn('<th>日期</th>', html)
         # 生产端参考数据表的「涨幅」→ 本页「涨跌幅」
         self.assertIn('<th>涨跌幅</th>', html)
+        # 估值表三档各两列，列名照抄 fundestparagraph.php 的 TableColumn*
+        self.assertIn('<th>官方EST</th>', html)
+        self.assertIn('<th>参考EST</th>', html)
+        self.assertIn('<th>实时EST</th>', html)
 
     def test_fund_list_has_net_value_columns(self):
         """「基金净值」与「基金净值日期」两列（新增）。
@@ -555,17 +566,22 @@ class RealtimeQuoteRouteTest(unittest.TestCase):
         self.assertIn('<td class="change positive">2.47%</td>', html)
         self.assertIn('<td class="quote-source">fake</td>', html)
 
-    def test_fund_list_keeps_calibration_date_separate_from_quote_date(self):
-        """校准日期与行情日期是两列，不能互相覆盖。
+    def test_fund_list_keeps_est_date_separate_from_quote_date(self):
+        """EST 日期与行情日期是两个 ``<td>``，不能互相覆盖。
 
-        测试替身的校准值是 2026-06-10（见 make_source），行情日期是 2026-06-08；
-        两者都不为空且不同，正好用来验证没有被合并成一列。
+        列名可以重复（三档都叫「溢价」），但 ``td`` 的 class 必须各就各位：
+        ``est-date`` 是估值标的的行情日期，``quote-date`` 是基金自己的。
+        这个测试锁住 class 不串味——真正有值的场景见
+        ``FundListEstColumnsTest``（那里用假引用对象钉三档的取值/留空）。
         """
         response = self.client.get("/fund/qdiilof")
         html = response.get_data(as_text=True)
 
-        self.assertIn('<td class="calibration-date">2026-06-10</td>', html)
+        self.assertIn('<td class="est-date">', html)
         self.assertIn('<td class="quote-date">2026-06-08</td>', html)
+        self.assertIn('<td class="est-official">', html)
+        self.assertIn('<td class="est-fair">', html)
+        self.assertIn('<td class="est-realtime">', html)
 
     def test_fund_list_shows_tracking_symbol(self):
         """「跟踪代码」列取 est_symbol（估值用的中间层标的），对应生产端对照表。
@@ -591,6 +607,160 @@ class RealtimeQuoteRouteTest(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertIn("QDII-LOF 基金指数对照表", response.get_data(as_text=True))
+
+
+class FakeQdiiRef:
+    """:class:`~ref.refobj.QdiiReference` 的测试替身。
+
+    只实现 ``FundListService._build_est()`` 真正会调到的六个方法。
+    三档各自带「估值值 / 显示文本 / 溢价文本」，默认全给齐
+    （数值取生产端 qdiicn.php 的 SH513100 那一行）；
+    把某一档设成 ``None`` 就模拟 PHP 的 ``GetXxxNetValue()`` 返回 false。
+    """
+
+    def __init__(self, official=1.989, official_date="2026-10-19",
+                 official_disp="1.989", official_premium="17.9%",
+                 fair=1.977, fair_disp="1.977", fair_premium="18.6%",
+                 realtime=1.9771, realtime_disp="1.977", realtime_premium="18.62%"):
+        self._official = official
+        self._official_date = official_date
+        self._official_disp = official_disp
+        self._official_premium = official_premium
+        self._fair = fair
+        self._fair_disp = fair_disp
+        self._fair_premium = fair_premium
+        self._realtime = realtime
+        self._realtime_disp = realtime_disp
+        self._realtime_premium = realtime_premium
+
+    def get_official_net_value(self):
+        return self._official
+
+    def get_official_date(self):
+        return self._official_date
+
+    def get_fair_net_value(self):
+        return self._fair
+
+    def get_realtime_net_value(self):
+        return self._realtime
+
+    def get_price_display(self, disp=None, prev=None, precision=None):
+        for value, text in (
+            (self._official, self._official_disp),
+            (self._fair, self._fair_disp),
+            (self._realtime, self._realtime_disp),
+        ):
+            if value is not None and disp == value:
+                return text
+        return ""
+
+    def get_percentage_text(self, divisor=None, dividend=None):
+        for value, text in (
+            (self._official, self._official_premium),
+            (self._fair, self._fair_premium),
+            (self._realtime, self._realtime_premium),
+        ):
+            if value is not None and divisor == value:
+                return text
+        return ""
+
+
+class FundListEstColumnsTest(unittest.TestCase):
+    """分组页 EST 七列（2026-10-19 接）——对应 PHP ``_echoFundEstTableItem()``。
+
+    这里**不连库、不建真引用对象**：把 ``ref.refobj.build_qdii_reference``
+    换成返回 :class:`FakeQdiiRef` 的桩，直接钉「三档估值怎么变成七列」——
+    包括两档可能没有、没有时留空（不补位）这两条 PHP 语义。
+    """
+
+    def setUp(self):
+        self.service = FundListService(make_source(), auto_calibrate=False)
+
+    def _row(self, ref):
+        from unittest import mock
+
+        with mock.patch("ref.refobj.build_qdii_reference", return_value=ref):
+            return self.service._build_row("SH513100")
+
+    def test_three_tiers_fill_all_seven_columns(self):
+        row = self._row(FakeQdiiRef())
+
+        self.assertEqual(row["official_est"], "1.989")
+        self.assertEqual(row["est_date"], "2026-10-19")
+        self.assertEqual(row["official_premium"], "17.9%")
+        self.assertEqual(row["official_premium_class"], "positive")
+        self.assertEqual(row["fair_est"], "1.977")
+        self.assertEqual(row["fair_premium"], "18.6%")
+        self.assertEqual(row["fair_premium_class"], "positive")
+        self.assertEqual(row["realtime_est"], "1.977")
+        self.assertEqual(row["realtime_premium"], "18.62%")
+        self.assertEqual(row["realtime_premium_class"], "positive")
+
+    def test_without_realtime_leaves_two_cells_blank(self):
+        """没有实时 EST 的两格留空 —— 用户点名要的行为，也是 PHP 的 if 语义。"""
+        row = self._row(FakeQdiiRef(realtime=None))
+
+        self.assertEqual(row["official_est"], "1.989")
+        self.assertEqual(row["fair_est"], "1.977")
+        self.assertEqual(row["realtime_est"], "")
+        self.assertEqual(row["realtime_premium"], "")
+        self.assertEqual(row["realtime_premium_class"], "")
+
+    def test_without_fair_leaves_two_cells_blank(self):
+        row = self._row(FakeQdiiRef(fair=None))
+
+        self.assertEqual(row["official_est"], "1.989")
+        self.assertEqual(row["fair_est"], "")
+        self.assertEqual(row["fair_premium"], "")
+        # 实时那两格不受影响
+        self.assertEqual(row["realtime_est"], "1.977")
+
+    def test_without_official_est_leaves_everything_blank(self):
+        """PHP 的守卫 ``if ($fund->GetOfficialNetValue())``：官方估值没有的
+        基金不进 EST 表 —— 这里七列全空（行还在，行情表里有它）。"""
+        row = self._row(FakeQdiiRef(official=None))
+
+        for key in ("official_est", "est_date", "official_premium",
+                    "fair_est", "fair_premium",
+                    "realtime_est", "realtime_premium"):
+            self.assertEqual(row[key], "", key)
+
+    def test_builder_failure_leaves_everything_blank(self):
+        """建引用对象抛异常时七列全空 —— 列表页不能因一只基金算错估值就 500。"""
+        from unittest import mock
+
+        with mock.patch("ref.refobj.build_qdii_reference", side_effect=RuntimeError("boom")):
+            row = self.service._build_row("SH513100")
+
+        self.assertEqual(row["official_est"], "")
+        self.assertEqual(row["realtime_premium"], "")
+
+    def test_negative_premium_is_green_positive_is_red(self):
+        """涨红跌绿（全站统一口径）：-0.61% → negative，0.57% → positive。"""
+        row = self._row(FakeQdiiRef(
+            official=0.867, official_disp="0.867", official_premium="-0.61%",
+            fair=None, realtime=None,
+        ))
+
+        self.assertEqual(row["official_premium"], "-0.61%")
+        self.assertEqual(row["official_premium_class"], "negative")
+
+        row = self._row(FakeQdiiRef(
+            official=0.917, official_disp="0.917", official_premium="0.57%",
+            fair=None, realtime=None,
+        ))
+        self.assertEqual(row["official_premium_class"], "positive")
+
+    def test_zero_premium_without_percent_sign_has_no_color(self):
+        """``GetPercentageText()`` 归零时返回 ``"0"``（不带 %）——不上色。"""
+        row = self._row(FakeQdiiRef(
+            official=1.0, official_disp="1", official_premium="0",
+            fair=None, realtime=None,
+        ))
+
+        self.assertEqual(row["official_premium"], "0")
+        self.assertEqual(row["official_premium_class"], "")
 
 
 if __name__ == "__main__":

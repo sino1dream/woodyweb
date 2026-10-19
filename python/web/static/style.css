@@ -98,13 +98,6 @@ h2 {
   font-weight: bold;
 }
 
-.config-json {
-  overflow: auto;
-  padding: 14px;
-  background: #fff;
-  border: 1px solid #ddd;
-}
-
 .ok {
   color: #087c25;
   font-weight: bold;
@@ -185,8 +178,27 @@ h2 {
   color: #087c25;
 }
 
+/* EST 三档溢价列（2026-10-19 接）：与溢价率同一套配色（涨红跌绿）。
+   对应生产端 qdiicn.php 第二张表里「官方EST/EST日期/溢价/参考EST/溢价/
+   实时EST/溢价」那三对，数字用等宽字体方便上下比对。 */
+.fund-list td.est-official,
+.fund-list td.est-fair,
+.fund-list td.est-realtime,
+.fund-list td.est-premium {
+  font-family: Consolas, "Courier New", monospace;
+  white-space: nowrap;
+}
+
+.fund-list td.est-premium.positive {
+  color: #cc0000;
+}
+
+.fund-list td.est-premium.negative {
+  color: #087c25;
+}
+
 /* 日期与时间列：等宽字体对齐，扫描一列时数字位能对上 */
-.fund-list td.calibration-date,
+.fund-list td.est-date,
 .fund-list td.net-value-date,
 .fund-list td.quote-date,
 .fund-list td.quote-time {

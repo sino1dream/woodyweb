@@ -1,7 +1,14 @@
 """基金分组列表服务。
 
 对应 PHP：``php/ui/fundlistparagraph.php`` 的 ``EchoFundListParagraph()`` ——
-「基金指数对照表」，每行列出符号、跟踪标的、仓位、校准值、日期和参考值。
+「基金指数对照表」，每行列出符号、跟踪标的、仓位与参考值。
+
+**2026-10-19 列调整**（用户要求，对齐生产端 ``qdiicn.php`` 第二张表）：
+去掉「校准值 / 校准日期」两列，增加 EST 七列
+（官方EST / EST日期 / 溢价 / 参考EST / 溢价 / 实时EST / 溢价）。
+数据来自每行的 :class:`~ref.refobj.QdiiReference`，对应 PHP
+``php/ui/fundestparagraph.php`` 的 ``_echoFundEstTableItem()`` ——
+生产端把这些列放在**独立的第二张表**里，本页合并成一张。
 
 与 PHP 的差别：PHP 里每行的引用对象（``FundPairReference`` 等）同时负责取数、
 校准和渲染；这里把列数据摊平成 dict，由模板渲染，取数逻辑留在
@@ -90,6 +97,19 @@ def format_change_percent(change: Any, digits: int = 2) -> str:
     if text in ("", "-0", "0"):
         return "0"
     return text + "%"
+
+
+def _premium_class(text: Any) -> str:
+    """溢价格的上色类名（涨红跌绿，与页内涨跌幅 / 溢价率同一套）。
+
+    判据与 ``reference_service.percentage_cell`` 相同：带 ``%`` 且以 ``-``
+    开头算跌。没有 ``%``（``GetPercentageText()`` 返回 ``"0"`` 或空串，
+    即没有价格可比）时不上色 —— 与那一格留空是两回事，别把灰色逻辑搬过来。
+    """
+    displayed = "" if text is None else str(text)
+    if not displayed.endswith("%"):
+        return ""
+    return "negative" if displayed.startswith("-") else "positive"
 
 
 class FundListService:
@@ -198,17 +218,22 @@ class FundListService:
     def get_group(self, name: str) -> dict[str, Any]:
         """取一个分组的表头与全部数据行。
 
-        列名对齐生产端 ``qdiicn.php`` / ``fundlistcn.php`` 的两张表：
+        列名对齐生产端 ``qdiicn.php`` 的**两张表**（本页合并成一张）：
 
         * 参考数据表：``代码 | 价格 | 涨幅 | 日期 | 时间 | 名称``
-          → 对应本页的「基金代码 / 最新价 / 涨跌幅 / 行情日期 / 行情时间 / 名称」；
-        * 基金指数对照表：``代码 | 跟踪代码 | 仓位 | 校准值 | 日期 | 参考值``
-          → 对应本页的「跟踪代码 / 仓位 / 校准值 / 校准日期」。
+          → 对应本页的「基金代码 / 最新价 / 涨跌幅 / 最新行情日期 /
+          行情更新时间 / 名称」；
+        * 估值表（``fundestparagraph.php::_echoFundEstTableItem()``）：
+          ``代码 | 官方EST | EST日期 | 溢价 | 参考EST | 溢价 |
+          实时EST | 溢价`` → 对应本页末尾七列。
 
-        **日期列必须分两栏**：校准值那份日期是 ``calibrationhistory`` 的日期，
-        行情那份是行情的日期，两者通常不同（行情每天更新，校准值只在重标定时变）。
-        生产端把它们放在不同表里，本页合并成一张表，所以用列名区分开，
-        避免把「校准日期」误读成「行情日期」。
+        **日期列分两栏**：EST 日期是估值标的的行情日期，行情日期是基金
+          自己的，两者通常不同。基金净值的日期（T+1 公布）又与它们不同，
+          所以三处各占一列，不合并。
+
+        ~~原「校准值 / 校准日期」两列 2026-10-19 删除~~：那是
+        ``fundlistparagraph.php`` 的旧列，生产端当前页面没有；校准值仍由
+        ``_auto_calibrate()`` 在取数前算好（EST 要用它），只是不再显示。
         """
         definition = get_fund_group(name)
         if definition is None:
@@ -219,7 +244,7 @@ class FundListService:
         # $leverage_ref->DailyCalibration()`` —— 页面装配时顺手把中间层的
         # 校准值按最新净值重算一遍。
         #
-        # **必须在 ``_build_row`` 之前做**：列表里的「校准值」列要显示刚算出来的值。
+        # **必须在 ``_build_row`` 之前做**：EST 三档估值拿的是刚算出来的校准值。
         # 整个分组只做一次（同一页可能有多只基金共用 QQQ，重复校准会白抓指数行情）。
         self._auto_calibrate(symbols)
         rows = [self._build_row(symbol) for symbol in symbols]
@@ -232,8 +257,6 @@ class FundListService:
                 "名称",
                 "跟踪代码",
                 "仓位",
-                "校准值",
-                "校准日期",
                 "基金净值",
                 "基金净值日期",
                 "最新行情日期",
@@ -242,6 +265,13 @@ class FundListService:
                 "涨跌幅",
                 "溢价率",
                 "数据源",
+                "官方EST",
+                "EST日期",
+                "溢价",
+                "参考EST",
+                "溢价",
+                "实时EST",
+                "溢价",
             ],
             "rows": rows,
             "count": len(rows),
@@ -255,6 +285,8 @@ class FundListService:
 
         ``group`` 是符号在 URL 里应归属的分组名，模板据此决定详情链接带上哪个
         分组前缀。``price`` / ``premium`` 来自 stockhistory 与 netvaluehistory。
+        末尾十一个键（``official_est`` … ``realtime_premium_class``）来自
+        :meth:`_build_est`，对应生产端估值表的七列。
         """
         row = {
             "symbol": symbol,
@@ -262,8 +294,6 @@ class FundListService:
             "name": self.source.get_stock_name(symbol) or "",
             "est_symbol": "",
             "position": "",
-            "calibration": "",
-            "calibration_date": "",
             "net_value": "",
             "net_value_date": "",
             "quote_date": "",
@@ -274,6 +304,9 @@ class FundListService:
             "premium": "",
             "premium_class": "",
         }
+        # EST 七列：放在最前面合并，这样下面 ``stock_id is None`` 的提前返回
+        # 也照样带着这十个键（模板少判一层，未知符号整行留空）。
+        row.update(self._build_est(symbol))
 
         stock_id = self.source.get_stock_id(symbol)
         if stock_id is None:
@@ -307,13 +340,6 @@ class FundListService:
         net_value_date = self._read_latest_net_value_date(stock_id)
         if net_value_date:
             row["net_value_date"] = str(net_value_date)
-
-        calibration = self.source.get_calibration_now(stock_id)
-        if calibration is not None:
-            row["calibration"] = _text(calibration.close)
-            row["calibration_date"] = calibration.date
-            # 兼容旧模板/旧测试对 "date" 的引用
-            row["date"] = calibration.date
 
         price = None
         quote = self._read_quote(symbol)
@@ -353,6 +379,72 @@ class FundListService:
             row["premium_class"] = "negative" if premium < 0 else "positive"
 
         return row
+
+    def _build_est(self, symbol: str) -> dict[str, Any]:
+        """EST 七列 —— 对应 PHP ``fundestparagraph.php::_echoFundEstTableItem()``。
+
+        生产端 ``qdiicn.php`` 把这三档估值放在**第二张表**里
+        （``EchoFundArrayEstParagraph``），本页合并成一张表，列名与那张表一致：
+        官方EST / EST日期 / 溢价 / 参考EST / 溢价 / 实时EST / 溢价。
+
+        三档的判据全部来自 :class:`~ref.refobj.QdiiReference`
+        （``build_qdii_reference``，内部委托 ``fundestcalc`` 计算）：
+
+        * **官方EST** —— ``GetOfficialNetValue()``。算不出来的基金 PHP 根本
+          不进 EST 表，这里表现为七列全空（行还在：行情表里有它）；
+        * **参考EST / 实时EST** —— 可能没有（PHP 的 ``GetFairNetValue()`` /
+          ``GetRealtimeNetValue()`` 返回 false）。**留空、不补位**，
+          与 PHP 行里的两个 ``if`` 一致。
+
+        溢价 = ``(场内价 / 该档估值 - 1) × 100%``，即 PHP 的
+        ``GetPercentageDisplay($fOfficialPrice)``（除数是估值、被除数默认是
+        现价）—— 生产端实测 SH513100：2.345 / 1.989 - 1 = 17.9%，对得上。
+
+        **全程容错**：建引用对象或算估值抛异常时七列全空。分组页是列表，
+        一只基金的估值算错不该让整页 500（PHP 那边 fatal，我们不跟）。
+        """
+        est = {
+            "official_est": "", "est_date": "",
+            "official_premium": "", "official_premium_class": "",
+            "fair_est": "", "fair_premium": "", "fair_premium_class": "",
+            "realtime_est": "", "realtime_premium": "", "realtime_premium_class": "",
+        }
+        try:
+            #: 延迟导入：``ref.refobj`` 会反向用到 ``web`` 之外的包，
+            #: 模块级导入容易和 ``app`` 工厂的形成环，用到时再进。
+            from ref.refobj import build_qdii_reference
+
+            ref = build_qdii_reference(symbol, source=self.source)
+        except Exception:
+            return est
+
+        official = ref.get_official_net_value()
+        if not official:
+            # PHP 的守卫 ``if ($fund->GetOfficialNetValue())``：官方估值没有的
+            # 基金不进 EST 表。这里行还在（行情表里有它），只是七列全空。
+            return est
+
+        est["official_est"] = _text(ref.get_price_display(official))
+        est["est_date"] = _text(ref.get_official_date())
+        premium = ref.get_percentage_text(official)
+        est["official_premium"] = _text(premium)
+        est["official_premium_class"] = _premium_class(premium)
+
+        fair = ref.get_fair_net_value()
+        if fair:
+            est["fair_est"] = _text(ref.get_price_display(fair))
+            fair_premium = ref.get_percentage_text(fair)
+            est["fair_premium"] = _text(fair_premium)
+            est["fair_premium_class"] = _premium_class(fair_premium)
+
+        realtime = ref.get_realtime_net_value()
+        if realtime:
+            est["realtime_est"] = _text(ref.get_price_display(realtime))
+            realtime_premium = ref.get_percentage_text(realtime)
+            est["realtime_premium"] = _text(realtime_premium)
+            est["realtime_premium_class"] = _premium_class(realtime_premium)
+
+        return est
 
     def _read_quote(self, symbol: str) -> Any:
         """取**最近一次**行情快照。

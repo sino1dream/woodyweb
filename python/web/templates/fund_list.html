@@ -25,8 +25,6 @@
             <td>{{ row.name }}</td>
             <td class="est-symbol">{{ row.est_symbol }}</td>
             <td>{{ row.position }}</td>
-            <td>{{ row.calibration }}</td>
-            <td class="calibration-date">{{ row.calibration_date }}</td>
             {# 基金净值：官方公布的单位净值（netvaluehistory），与「最新价」不是一回事 #}
             <td class="net-value">{{ row.net_value }}</td>
             <td class="net-value-date">{{ row.net_value_date }}</td>
@@ -36,6 +34,16 @@
             <td class="change {{ row.change_class }}">{{ row.change }}</td>
             <td class="premium {{ row.premium_class }}">{{ row.premium }}</td>
             <td class="quote-source">{{ row.quote_source }}</td>
+            {# EST 七列（2026-10-19 接）：对应生产端 qdiicn.php 第二张表
+                 （php/ui/fundestparagraph.php 的 _echoFundEstTableItem）。
+                 溢价 = 场内价 / 该档估值 - 1；没有实时 EST 的两格留空。 #}
+            <td class="est-official">{{ row.official_est }}</td>
+            <td class="est-date">{{ row.est_date }}</td>
+            <td class="est-premium {{ row.official_premium_class }}">{{ row.official_premium }}</td>
+            <td class="est-fair">{{ row.fair_est }}</td>
+            <td class="est-premium {{ row.fair_premium_class }}">{{ row.fair_premium }}</td>
+            <td class="est-realtime">{{ row.realtime_est }}</td>
+            <td class="est-premium {{ row.realtime_premium_class }}">{{ row.realtime_premium }}</td>
           </tr>
         {% endfor %}
       </tbody>

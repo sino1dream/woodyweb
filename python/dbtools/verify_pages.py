@@ -55,13 +55,16 @@ def _print_group(group) -> None:
     print(" | ".join(group["columns"]))
     print("-" * 110)
     keys = (
-        "symbol", "name", "est_symbol", "position", "calibration", "calibration_date",
+        "symbol", "name", "est_symbol", "position",
         "quote_date", "quote_time", "price", "change", "premium", "quote_source",
+        #: EST 七列（2026-10-19 接，对齐生产端 qdiicn.php 第二张表）
+        "official_est", "est_date", "official_premium",
+        "fair_est", "fair_premium", "realtime_est", "realtime_premium",
     )
     filled = 0
     for row in group["rows"]:
-        # 有最新价或有校准值就算"有数据"
-        if not (row.get("price") or row.get("calibration")):
+        # 有最新价或有官方 EST 就算"有数据"
+        if not (row.get("price") or row.get("official_est")):
             continue
         filled += 1
         print(" | ".join(str(row.get(key, "")) for key in keys))

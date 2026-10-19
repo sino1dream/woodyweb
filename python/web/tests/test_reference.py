@@ -344,7 +344,10 @@ class ReferenceRouteTest(unittest.TestCase):
         response = self.client.get("/fund/SZ162411")
 
         self.assertEqual(response.status_code, 200)
-        self.assertIn("估值配置", response.get_data(as_text=True))
+        #: 页面主体照常渲染（基金名出现在标题里）。
+        #: 以前这里断言的是调试段「估值配置」，该段已删（2026-10-19，
+        #: 本地附加的 JSON dump，生产端没有）。
+        self.assertIn("华宝油气", response.get_data(as_text=True))
 
 
 class RealReferenceBuildingTest(unittest.TestCase):
