@@ -71,7 +71,7 @@ from core.stocksymbol import (  # noqa: E402
     in_array_qdii_mix,
 )
 from ref.holdingsref import StockGetHoldingsReference, ratio_of  # noqa: E402
-from ref.refobj import QDII_REGIONS, QdiiReference  # noqa: E402
+from ref.refobj import NETVALUE_PRECISION, QDII_REGIONS, QdiiReference  # noqa: E402
 from ui.uicolumn import POS_NETVALUE_DIFF  # noqa: E402
 from web.db import get_db  # noqa: E402
 
@@ -434,6 +434,7 @@ class HistoryService:
 
         cny_symbol, est_symbol, holdings_ref = self._net_value_refs(symbol, ref)
         position = self.source.get_position(stock_id)
+        est_has_netvalue = self._est_has_netvalue(netvalue, est_symbol)
 
         rows = []
         for record in netvalue.get_all(stock_id, start, num):
@@ -441,7 +442,8 @@ class HistoryService:
             prev_date = netvalue.get_date_prev(stock_id, date)
             rows.append(
                 self._row_netvaluehistory(symbol, netvalue, record, prev_date,
-                                          cny_symbol, est_symbol, position, holdings_ref)
+                                          cny_symbol, est_symbol, position, holdings_ref,
+                                          est_has_netvalue)
             )
 
         #: PHP 的 ``IsTableCommonDisplay($iStart, $iNum)`` 为真时
@@ -531,6 +533,10 @@ class HistoryService:
             is_hk_mix=in_array_hk_mix(symbol),
         )
 
+        # 第 8 列的文本分支要看 est 标的有没有净值记录（PHP 的
+        # ``CountNetValue()``，``mysqlref.php:31`` 数 netvaluehistory 行数）。
+        est_has_netvalue = self._est_has_netvalue(netvalue, est_symbol) if has_est else False
+
         rows = []
         for record in history.get_all(stock_id, start, num):
             date = str(record["date"])
@@ -548,24 +554,29 @@ class HistoryService:
             # 即 netvalue 与 fundest 用**同一个** $strDate（QDII 就是前一交易日）。
             # 换成行情日期会一行都查不到（实测踩过）。
             estimate = fundest.get_record(stock_id, net_date) if has_est else None
-            rows.append(self._row_fundhistory(record, net_value, estimate, est_symbol, netvalue))
-        # 第 8 列的文本分支要看 est 标的有没有净值记录（PHP 的
-        # ``CountNetValue()``，``mysqlref.php:31`` 数 netvaluehistory 行数）。
-        est_has_netvalue = False
-        if has_est and est_symbol:
-            est_id = self.source.get_stock_id(est_symbol)
-            est_has_netvalue = bool(est_id) and netvalue.count(est_id) > 0
+            rows.append(self._row_fundhistory(record, net_value, estimate, est_symbol,
+                                              netvalue, est_has_netvalue))
         return (_columns_fundhistory(est_symbol if has_est else None, est_has_netvalue),
                 rows, history.count(stock_id))
 
-    def _row_fundhistory(self, record: Any, net_value: Any, estimate: Any, est_symbol: Any, netvalue: Any) -> TableRow:
+    def _row_fundhistory(self, record: Any, net_value: Any, estimate: Any, est_symbol: Any,
+                         netvalue: Any, est_has_netvalue: bool = False) -> TableRow:
         date = str(record["date"])
         close = record["close"]
 
         row = TableRow()
         row.add(date)
         row.add(format_price_display(close, net_value))
-        row.add(format_price_display(net_value))
+        #: PHP: $ref->GetNetValueDisplay()（``mysqlref.php:75``）—— **有净值记录
+        #: 时精度取 NETVALUE_PRECISION(4)**，否则退回符号自身精度。这一行能出来
+        #: 就意味着 ``netvaluehistory`` 命中了（``get_close`` 非空才会 append），
+        #: 即 PHP 的 ``iNetValueCount > 0`` 必然成立，所以恒 4 位。
+        #:
+        #: 生产端 ``sz161125cn.php`` 的「基金溢价记录」净值列是四位
+        #: （3.1548 / 3.1448 / 3.1803 / 3.1817）；用默认的 3 位会四舍五入成
+        #: 3.155 / 3.145 / 3.18 / 3.182 —— 2026-10-19 对照生产端发现，
+        #: 库里存的就是 3.1548（东财/新浪同值），纯显示层取位错。
+        row.add(format_price_display(net_value, precision=NETVALUE_PRECISION))
         row.add(format_percentage_display(net_value, close))
 
         if estimate is not None:
@@ -591,16 +602,29 @@ class HistoryService:
                     # 供读者判断这次估算是基于哪个行情算出来的
                     est_id = self.source.get_stock_id(est_symbol)
                     est_value = netvalue.get_close(est_id, estimate.get("date")) if est_id else None
-                    if est_value is None and est_id:
-                        # 中间层的净值口径可能没有该日期 -> 退回行情价
+                    if est_value is None and est_id and not est_has_netvalue:
+                        #: PHP ``GetNetValue()`` 第三支（``mysqlref.php:72``）：est
+                        #: **没有**净值记录时才退回行情价（``GetVal() -> GetClose()``）；
+                        #: 有净值记录但缺该日期 -> ``false`` -> 这一格为空。
+                        #: （原实现不区分两种"取不到"，有净值记录时也会摆出行情价，
+                        #: 与 PHP 相反。）
                         est_value = self.source.get_history_close(est_id, estimate.get("date"))
-                    row.add(format_price_display(est_value))
+                    #: PHP: $est_ref->GetNetValueDisplay() —— 与基金自己的净值列
+                    #: 同一套两档精度：est 有净值记录 4 位，否则用 est 符号自身的
+                    #: 精度（^GSPC / QQQ / SPY 这类指数与美股是 2 位）。
+                    est_precision = (NETVALUE_PRECISION if est_has_netvalue
+                                     else StockSymbol(str(est_symbol)).get_precision())
+                    row.add(format_price_display(est_value, precision=est_precision))
         return row
 
     # -- 净值记录 ---------------------------------------------------------
     def _build_netvaluehistory(self, symbol: str, stock_id: Any, start: int, num: int):
         netvalue = NetValueHistorySql(self.connection)
         cny_symbol, est_symbol, holdings_ref = self._net_value_refs(symbol)
+        #: est 有没有净值记录决定「标的净值」列的精度档（PHP 的
+        #: ``$est_ref->GetNetValueDisplay()``，``mysqlref.php:75``），
+        #: 一次表渲染只查一回，不逐行 COUNT。
+        est_has_netvalue = self._est_has_netvalue(netvalue, est_symbol)
 
         rows = []
         total = netvalue.count(stock_id)
@@ -613,11 +637,22 @@ class HistoryService:
             prev_date = netvalue.get_date_prev(stock_id, date)
             rows.append(
                 self._row_netvaluehistory(symbol, netvalue, record, prev_date,
-                                          cny_symbol, est_symbol, position, holdings_ref)
+                                          cny_symbol, est_symbol, position, holdings_ref,
+                                          est_has_netvalue)
             )
         return _columns_netvaluehistory(cny_symbol, est_symbol), rows, total
 
     # -- 净值记录段落的引用选型（``EchoNetValueHistoryParagraph``） ----------
+    def _est_has_netvalue(self, netvalue: NetValueHistorySql, est_symbol: Any) -> bool:
+        """est 标的有没有净值记录（PHP ``$est_ref->CountNetValue() > 0``）。
+
+        决定「标的净值」列的**精度档**（4 位还是 est 符号自身精度）与
+        **取数路径**（净值还是行情价回退）。查不到 stock_id 时按"没有"处理。
+        """
+        if not est_symbol:
+            return False
+        est_id = self.source.get_stock_id(est_symbol)
+        return bool(est_id) and netvalue.count(est_id) > 0
     def _net_value_refs(self, symbol: str, ref: Any = None):
         """``EchoNetValueHistoryParagraph()`` 的三支选路（``:157-172``）。
 
@@ -695,6 +730,7 @@ class HistoryService:
     def _row_netvaluehistory(
         self, symbol: str, netvalue: NetValueHistorySql, record: Any, prev_date: Any,
         cny_symbol: Any, est_symbol: Any, position: Any, holdings_ref: Any = None,
+        est_has_netvalue: bool = False,
     ) -> TableRow:
         """``EchoNetValueItem()``（``netvaluehistoryparagraph.php:62``）的一行。
 
@@ -729,7 +765,21 @@ class HistoryService:
             est_id = self.source.get_stock_id(est_symbol)
             est = netvalue.get_close(est_id, date) if est_id else None
             est_prev = netvalue.get_close(est_id, prev_date) if (est_id and prev_date) else None
-            row.add(format_price_display(est) if est is not None else "")
+            if not est_has_netvalue:
+                #: PHP ``GetNetValue()`` 第三支（``mysqlref.php:72``）：est **没有**
+                #: 净值记录时取行情价（``GetVal() -> GetClose()``）。演示库里
+                #: ^GSPC / ^NDX 这类**指数** est 正是如此 —— 不加这条回退，
+                #: 「标的净值」列对它们永远是空的，而生产端有值（指数收盘价，
+                #: 精度 2 位）。有净值记录的 est（QQQ/SPY/XOP/KWEB）不走这里。
+                if est is None and est_id:
+                    est = self.source.get_history_close(est_id, date)
+                if est_prev is None and est_id and prev_date:
+                    est_prev = self.source.get_history_close(est_id, prev_date)
+            #: PHP: $est_ref->GetNetValueDisplay() —— 两档精度：est 有净值记录
+            #: 取 NETVALUE_PRECISION(4)，否则用 est 符号自身精度（指数/美股 2 位）。
+            est_precision = (NETVALUE_PRECISION if est_has_netvalue
+                             else StockSymbol(str(est_symbol)).get_precision())
+            row.add(format_price_display(est, precision=est_precision) if est is not None else "")
             if est is not None:
                 row.add(format_percentage_display(est_prev, est))
                 # 对应 PHP _QdiiGetStockPosition()：先用汇率变动把"净值涨幅"里的
@@ -823,7 +873,11 @@ class HistoryService:
         row.add(date)
         # PHP: GetPriceDisplay($fClose, $fNetValue) —— 以净值为基准上色
         row.add(format_price_display(close, net_value))
-        row.add(format_price_display(net_value))
+        #: PHP: $ref->GetNetValueDisplay()（``mysqlref.php:75``）—— 整表有
+        #: ``CountNetValue() == 0`` 的守卫（``netvaluecloseparagraph.php:45``），
+        #: 行能出来就必有净值记录，精度恒取 NETVALUE_PRECISION(4)。
+        #: 3 位会把 3.1548 显示成 3.155（与「基金溢价记录」同一个坑）。
+        row.add(format_price_display(net_value, precision=NETVALUE_PRECISION))
         # PHP: GetPercentageDisplay($fNetValue, $fClose) —— 溢价（价格相对净值）
         row.add(format_percentage_display(net_value, close))
         # PHP: GetPercentageDisplay($fClosePrev, $fClose) —— 涨幅
@@ -852,6 +906,13 @@ class HistoryService:
 
         netvalue = NetValueHistorySql(self.connection)
         position = self.source.get_position(stock_id) if is_fund else None
+        #: PHP ``GetNetValueDisplay()`` 的两档精度 + ``GetNetValue()`` 的取值
+        #: 三支（``mysqlref.php:60-78``）：有净值记录 -> 净值（4 位）；
+        #: 没有净值记录 -> ``GetVal()`` 取行情价（符号自身精度，A 股基金 3 位）。
+        #: A 股基金都有净值回填，正常走 4 位那一档。
+        fund_has_netvalue = netvalue.count(stock_id) > 0
+        net_precision = (NETVALUE_PRECISION if fund_has_netvalue
+                         else StockSymbol(symbol).get_precision())
 
         rows = []
         for record in table.get_all(stock_id, start, num):
@@ -864,7 +925,11 @@ class HistoryService:
             row.add(record["num"])
             if is_fund:
                 net = netvalue.get_close(stock_id, date)
-                row.add(format_price_display(net) if net is not None else "")
+                if net is None and not fund_has_netvalue:
+                    #: PHP GetNetValue() 第三支：没有净值记录 -> 退回行情价
+                    net = self.source.get_history_close(stock_id, date)
+                row.add(format_price_display(net, precision=net_precision)
+                        if net is not None else "")
                 hedge = stock_calc_hedge(calibration, position)
                 if hedge is None:
                     row.add("")

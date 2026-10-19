@@ -291,10 +291,82 @@ shareshistory            200(空)   200(空)   200(空)   200     200   200(空)
 （`_columns_fundhistory` 按 `FundEstSql.count()` 判断）。当前 `fundest` 为空，
 所以这四列暂时不出现 —— 写入端迁移后会自动出现。
 
+### 7.6 净值列的精度：`GetNetValueDisplay()` 的 4 位口径（2026-10-19）
+
+**现象**（用户对照生产端 `sz161125cn.php`）：「基金溢价记录」的净值列
+本地显示 `3.155`，生产端是 `3.1548`；东财 / 新浪的基金净值也都是 `3.1548`。
+查库确认 `netvaluehistory` 里存的就是 `3.1548` —— **纯显示层四舍五入**。
+
+**PHP 口径**（`php/stock/mysqlref.php:75-79`）：
+
+```php
+function GetNetValueDisplay($fNetValue)
+{
+    if ($fNetValue === false)	return '';
+    return $this->GetPriceDisplay($fNetValue, false,
+        ($this->iNetValueCount > 0 ? NETVALUE_PRECISION : $this->GetPrecision()));
+}
+```
+
+* **有净值记录**（`iNetValueCount > 0`，构造时 `netvaluehistory.count()`）→
+  `NETVALUE_PRECISION` = **4 位**（`php/debug.php:13`）；
+* 没有 → 退回符号自身精度（`StockSymbol::GetPrecision()`：A 股基金 /
+  新浪基金 / B 股 3 位，外汇 4 位，其余 2 位）。
+* 配套的取值三支在 `GetNetValue()`（`:60-73`）：新浪期货→复权价；
+  有净值记录→该日期净值（缺日期返回 false）；**没有净值记录→
+  `GetVal()` 取行情收盘价**。
+
+**本服务漏译的 5 个调用点**（PHP 全文共 6 处，第 6 处在
+`kraneshares.php:39`，不在本服务）：
+
+| PHP 调用点 | 表格 / 列 | 修法 |
+| --- | --- | --- |
+| `fundhistoryparagraph.php:13` | 基金溢价记录 · 净值 | 恒 4 位（行能出来即命中净值表） |
+| `netvaluecloseparagraph.php:15` | 净值价格比较 · 净值 | 恒 4 位（整表有 `CountNetValue()>0` 守卫） |
+| `calibrationhistoryparagraph.php:11` | 校准记录 · 净值 | 4 位；无净值记录时补 `GetVal()` 回退 |
+| `fundhistoryparagraph.php:24` | 基金溢价记录 · 末列（est 标的净值） | est 有净值行 4 位，否则 est 符号精度（^GSPC 2 位） |
+| `netvaluehistoryparagraph.php:87` | 净值记录 · 标的净值 | 同上；并补 `GetVal()` 回退（原来该列对指数 est 恒空） |
+
+**两个附带着修掉的取数问题**（都与 `GetNetValue()` 三支有关）：
+
+1. 基金溢价记录末列原来不区分"est 没有净值记录"和"有记录但缺该日期"，
+   两种情况都回退到行情价 —— 后者 PHP 是**空格**。现在只在
+   `est_has_netvalue == false` 时回落。
+2. 净值记录的「标的净值」列原来完全没有 `GetVal()` 回退，演示库里
+   ^GSPC / ^NDX 这类**指数 est** 的该列永远是空的，而生产端有值
+   （指数收盘价，2 位精度）。补上后 `SZ161125` 该列显示
+   `7718.94` / `7805.45`，与生产端同源。
+
+**为什么单测和逐例对照都没抓到**：`_php_fundhistory_check.php` 的
+`RefStub::$iNetValueCount` 恒为 **0**，PHP 侧于是也退到 3 位，与 Python
+的 3 位"一致地错"。现在按例装配（默认 1，行存在即命中净值表），
+并新增 4 个精度用例（case.8-11：净值四位 / est 无净值行取行情价 2 位 /
+est 有净值行四位 / est 有净值行缺日期为空），自检注入"净值列退回 3 位"
+可被 8 例抓到。
+
+**实测**（本地 vs 生产端 `sz161125cn.php`，2026-10-19）：
+
+```text
+日期        价格    净值      溢价    官方EST  时间    误差
+10-16       3.299   3.1548    4.57%   3.155    04:06   0        <- 生产端
+10-16       3.299   3.1548    4.57%   3.153    11:37   -0.04%   <- 本地（修后）
+```
+
+净值 / 价格 / 溢价三列已逐格一致；**官方EST 与误差列的差异是数据新鲜度
+问题不是显示问题**：本地 `fundest[10-15]` 是 11:37 的盘中快照
+（`fundestcli` 的禁忌窗口），生产端是 04:06 美股收盘后算的；
+`fundest[10-14]` 本地整条缺失、`^GSPC` 缺 10-15 行情，所以那两行
+生产端有的 EST 三列本地不全。按每日例程（`README_p0_data_layer.md` §十）
+重跑即可，不需要改代码。
+
 ## 八、测试
 
-`python/auto/test_historytable.py`（40 个）+ `web/tests/test_history.py`（17 个）。
-全量：`auto` **425 个**、`web` **57 个**。
+`python/auto/test_historytable.py` + `web/tests/test_history.py`。
+2026-10-19 净值精度轮新增 `web/tests/test_history.py::
+NetValueDisplayPrecisionTest`（8 例：三张表的净值四位 + est 末列精度两档
++ est 缺日期为空 + 净值记录的 `GetVal()` 回退）。
+全量：`auto` **1257 个**、`web` **743 个**；PHP 逐例对照
+`_php_fundhistory_compare.py` **12/12**，自检 **5/5**。
 
 ## 九、已知缺口
 

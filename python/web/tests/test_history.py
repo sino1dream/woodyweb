@@ -251,7 +251,10 @@ class HistoryRouteTest(unittest.TestCase):
         cells = data["rows"][0]["cells"]
         self.assertEqual(cells[0], "2026-09-30")          # 日期=行情日期
         self.assertEqual(cells[1][0], "4.796")            # 价格
-        self.assertEqual(cells[2][0], "4.545")            # 净值（09-29 的）
+        #: 净值四位（PHP GetNetValueDisplay -> NETVALUE_PRECISION）。
+        #: 库里就是 4.5452，3 位会四舍五入成 4.545 —— 2026-10-19 对照生产端
+        #: sz161125cn.php 发现「基金溢价记录」整列少一位（3.1548 -> 3.155）。
+        self.assertEqual(cells[2][0], "4.5452")           # 净值（09-29 的）
         self.assertEqual(cells[3], "5.52%")               # 溢价 = 4.796/4.5452-1
 
     def test_premium_matches_production_value(self):
@@ -282,7 +285,8 @@ class HistoryRouteTest(unittest.TestCase):
         cells = data["rows"][0]["cells"]
         self.assertEqual(cells[0], "2026-09-30")
         self.assertEqual(cells[1][0], "4.796")            # 价格
-        self.assertEqual(cells[2][0], "4.545")            # 净值（前一交易日）
+        #: 净值四位：与「基金溢价记录」同一个 PHP 口径（GetNetValueDisplay）
+        self.assertEqual(cells[2][0], "4.5452")           # 净值（前一交易日）
         self.assertEqual(cells[4], "1.46%")               # 涨幅 = 4.796/4.727-1
 
     # -- 分页 -------------------------------------------------------------
@@ -360,7 +364,9 @@ class HistoryRouteTest(unittest.TestCase):
         cells = data["rows"][0]["cells"]
         # 日期 | 价格 | 净值 | 溢价 | 官方EST | 时间 | 误差
         self.assertEqual(cells[0], "2026-09-30")
-        self.assertEqual(cells[2][0], "4.545")            # 净值（09-29）
+        #: 净值四位（NETVALUE_PRECISION）；官方 EST 仍是三位 —— PHP 的
+        #: GetPriceDisplay() 默认精度，两列口径不同，别一起改。
+        self.assertEqual(cells[2][0], "4.5452")           # 净值（09-29）
         self.assertEqual(cells[4][0], "4.545")            # 官方 EST
         self.assertEqual(cells[5], "04:00")               # 时间截到分
         self.assertEqual(cells[6], "0")                   # 误差 0
@@ -494,6 +500,237 @@ class HistoryRouteTest(unittest.TestCase):
         # 行内第 8 格 = est 在 EST 记录日期上的净值
         cells = data["rows"][0]["cells"]
         self.assertEqual(cells[7][0], "42")
+
+
+class NetValueDisplayPrecisionTest(unittest.TestCase):
+    """净值列的显示精度：PHP ``GetNetValueDisplay()`` 的两档口径。
+
+    ``php/stock/mysqlref.php:75-79``：**有净值记录**（``iNetValueCount > 0``）
+    时精度取 ``NETVALUE_PRECISION``（4 位），否则退回符号自身精度
+    （A 股基金 / 新浪基金 / B 股 3 位，外汇 4 位，其余 2 位）。
+
+    2026-10-19 用户对照生产端 ``sz161125cn.php`` 的「基金溢价记录」发现
+    净值列整列少一位：库里 3.1548（东财 / 新浪同值）显示成 3.155。
+    PHP 的 6 个 ``GetNetValueDisplay`` 调用点有 5 个在本服务，当时 3 个
+    漏译成 3 位（基金溢价记录 / 净值价格比较 / 校准记录），另 2 个
+    （两个 est 列）精度该跟 est 走 —— 本轮统一修掉。
+    """
+
+    def _client(self, tables, **source_kwargs):
+        stocks = source_kwargs.pop("stocks", {"SZ161130": "1"})
+        source = MemoryFundDataSource(stocks=stocks, **source_kwargs)
+        app = create_app(
+            {"TESTING": True},
+            history_service_factory=lambda: HistoryService(source, FakeConnection(tables)),
+        )
+        return app.test_client()
+
+    @staticmethod
+    def _qdii_tables(netvalue_rows, fundest_rows=None, stock_id="1"):
+        """QDII 两天行情 + 指定净值（QDII 净值取前一交易日）。"""
+        tables = dict(TABLES)
+        tables["stockhistory"] = [
+            {"id": 1, "stock_id": stock_id, "date": "2026-10-16", "close": 3.299,
+             "volume": 1, "adjclose": 3.299},
+            {"id": 2, "stock_id": stock_id, "date": "2026-10-15", "close": 3.266,
+             "volume": 1, "adjclose": 3.266},
+        ]
+        tables["netvaluehistory"] = netvalue_rows
+        tables["fundest"] = fundest_rows or []
+        return tables
+
+    def test_fundhistory_netvalue_keeps_four_decimals(self):
+        """基金溢价记录净值列四位 —— 复刻生产端 sz161125cn.php 的那一行。
+
+        库里 nav[10-15] = 3.1548；3 位精度会四舍五入成 3.155。
+        """
+        client = self._client(self._qdii_tables(
+            [{"id": 1, "stock_id": "1", "date": "2026-10-15", "close": 3.1548}]))
+        cells = client.get("/api/history/fundhistory/SZ161130").get_json()["rows"][0]["cells"]
+        self.assertEqual(cells[0], "2026-10-16")          # 日期 = 行情日期
+        self.assertEqual(cells[2][0], "3.1548")           # 净值四位，不削不抬
+
+    def test_netvalueclose_netvalue_keeps_four_decimals(self):
+        """净值价格比较的净值列同一个口径（整表守卫 CountNetValue>0 恒满足）。"""
+        client = self._client(self._qdii_tables(
+            [{"id": 1, "stock_id": "1", "date": "2026-10-15", "close": 3.1548}]))
+        cells = client.get("/api/history/netvalueclose/SZ161130").get_json()["rows"][0]["cells"]
+        self.assertEqual(cells[2][0], "3.1548")
+
+    def test_calibrationhistory_netvalue_keeps_four_decimals(self):
+        """校准记录的净值列（A 股基金分支）也是 4 位。"""
+        tables = dict(TABLES)
+        tables["netvaluehistory"] = [
+            {"id": 1, "stock_id": "1", "date": "2026-10-01", "close": 3.1548},
+            {"id": 2, "stock_id": "1", "date": "2026-09-29", "close": 3.1448},
+        ]
+        client = self._client(tables)
+        rows = client.get("/api/history/calibrationhistory/SZ161130").get_json()["rows"]
+        by_date = {row["cells"][0]: row["cells"] for row in rows}
+        # TABLES 里 stock 1 有两条校准记录（10-01 与 09-29），净值列是第 5 格
+        self.assertEqual(by_date["2026-10-01"][4][0], "3.1548")
+        self.assertEqual(by_date["2026-09-29"][4][0], "3.1448")
+
+    def test_fundhistory_last_column_four_decimals_when_est_has_netvalue(self):
+        """末列（标的净值）：est 有净值记录 -> 4 位。"""
+        tables = dict(TABLES)
+        tables["stockhistory"] = TABLES["stockhistory"] + [
+            {"id": 3, "stock_id": "9", "date": "2026-09-30", "close": 1.0,
+             "volume": 1000, "adjclose": 1.0},
+            {"id": 4, "stock_id": "9", "date": "2026-09-29", "close": 0.99,
+             "volume": 900, "adjclose": 0.99},
+        ]
+        tables["netvaluehistory"] = TABLES["netvaluehistory"] + [
+            {"id": 20, "stock_id": "9", "date": "2026-09-29", "close": 1.0},
+            # est（KWEB）09-29 的净值 —— 末列取的就是它
+            {"id": 21, "stock_id": "10", "date": "2026-09-29", "close": 42.1234},
+        ]
+        tables["fundest"] = [
+            {"id": 1, "stock_id": "9", "date": "2026-09-29", "close": 1.0,
+             "time": "04:00:00"},
+        ]
+        client = self._client(
+            tables,
+            stocks={"SZ164906": "9", "KWEB": "10"},
+            names={"SZ164906": "中概互联网LOF", "KWEB": "中概互联网ETF"},
+            profiles={
+                "SZ164906": FundProfile(
+                    symbol="SZ164906",
+                    stock_id="9",
+                    position=0.95,
+                    official_date="2026-09-29",
+                    cny_est=6.705,
+                    is_lof=True,
+                    est_symbol="KWEB",
+                ),
+            },
+        )
+        cells = client.get("/api/history/fundhistory/SZ164906").get_json()["rows"][0]["cells"]
+        #: 42.1234 四位全显示；3 位精度会成 42.123
+        self.assertEqual(cells[7][0], "42.1234")
+
+    def test_fundhistory_last_column_falls_back_to_price_at_est_precision(self):
+        """末列：est 没有净值记录 -> 取行情价，精度用 est 符号自身的（指数 2 位）。"""
+        tables = self._qdii_tables(
+            [{"id": 1, "stock_id": "2", "date": "2026-10-15", "close": 3.1548}],
+            fundest_rows=[{"id": 1, "stock_id": "2", "date": "2026-10-15",
+                           "close": 3.15348, "time": "11:37:50"}],
+            stock_id="2",
+        )
+        client = self._client(
+            tables,
+            stocks={"SZ161125": "2", "^GSPC": "7"},
+            names={"SZ161125": "易方达标普500LOF", "^GSPC": "标普500指数"},
+            profiles={
+                "SZ161125": FundProfile(
+                    symbol="SZ161125",
+                    stock_id="2",
+                    position=0.95,
+                    official_date="2026-10-15",
+                    cny_est=6.725,
+                    is_lof=True,
+                    est_symbol="^GSPC",
+                ),
+            },
+            #: ^GSPC 没有净值记录 -> PHP GetNetValue() 第三支取行情价。
+            #: 7744.0625 故意给四位：2 位精度应显示成 7744.06（不是 7744.063）。
+            history_close={("7", "2026-10-15"): 7744.0625},
+        )
+        data = client.get("/api/history/fundhistory/SZ161125").get_json()
+        # est 无净值记录 -> 列头是「价格」不是「净值」
+        self.assertEqual([c["text"] for c in data["columns"]][-1], "^GSPC价格")
+        cells = data["rows"][0]["cells"]
+        self.assertEqual(cells[2][0], "3.1548")           # 基金净值四位
+        self.assertEqual(cells[7][0], "7744.06")          # est 行情价、指数精度 2 位
+
+    def test_fundhistory_last_column_empty_when_est_netvalue_misses_date(self):
+        """est 有净值记录但 EST 日期上没值 -> 末列空（PHP false -> ''）。
+
+        原实现不区分"没有净值记录"和"有记录但缺该日期"，两种情况都回退到
+        行情价 —— 后者与 PHP 相反（PHP 是空格）。
+        """
+        tables = dict(TABLES)
+        tables["stockhistory"] = TABLES["stockhistory"] + [
+            {"id": 3, "stock_id": "9", "date": "2026-09-30", "close": 1.0,
+             "volume": 1000, "adjclose": 1.0},
+            {"id": 4, "stock_id": "9", "date": "2026-09-29", "close": 0.99,
+             "volume": 900, "adjclose": 0.99},
+        ]
+        tables["netvaluehistory"] = TABLES["netvaluehistory"] + [
+            {"id": 20, "stock_id": "9", "date": "2026-09-29", "close": 1.0},
+            # KWEB 只有 09-28 的净值 —— EST 记录在 09-29，取不到
+            {"id": 21, "stock_id": "10", "date": "2026-09-28", "close": 42.1234},
+        ]
+        tables["fundest"] = [
+            {"id": 1, "stock_id": "9", "date": "2026-09-29", "close": 1.0,
+             "time": "04:00:00"},
+        ]
+        client = self._client(
+            tables,
+            stocks={"SZ164906": "9", "KWEB": "10"},
+            names={"SZ164906": "中概互联网LOF", "KWEB": "中概互联网ETF"},
+            profiles={
+                "SZ164906": FundProfile(
+                    symbol="SZ164906",
+                    stock_id="9",
+                    position=0.95,
+                    official_date="2026-09-29",
+                    cny_est=6.705,
+                    is_lof=True,
+                    est_symbol="KWEB",
+                ),
+            },
+            #: 有行情价也不该出现（PHP 在"有净值记录"分支里缺日期即 false）
+            history_close={("10", "2026-09-29"): 42.5},
+        )
+        cells = client.get("/api/history/fundhistory/SZ164906").get_json()["rows"][0]["cells"]
+        #: TableRow.add 会把空颜色归一成纯文本，所以空格子是 "" 不是 ("", "")
+        self.assertEqual(cells[7], "")
+
+    def test_netvaluehistory_est_column_falls_back_to_history_close(self):
+        """净值记录的「标的净值」列：est 是指数（无净值记录）时显示行情价。
+
+        PHP ``GetNetValue()`` 第三支（``mysqlref.php:72``）。原来没有这条
+        回退，演示库里 ^GSPC / ^NDX 这类指数 est 的该列永远是空的，
+        而生产端有值（指数收盘价，2 位精度）。
+        """
+        tables = dict(TABLES)
+        tables["stockhistory"] = [
+            {"id": 1, "stock_id": "2", "date": "2026-10-16", "close": 3.299,
+             "volume": 1, "adjclose": 3.299},
+            {"id": 2, "stock_id": "2", "date": "2026-10-15", "close": 3.266,
+             "volume": 1, "adjclose": 3.266},
+        ]
+        tables["netvaluehistory"] = [
+            {"id": 1, "stock_id": "2", "date": "2026-10-16", "close": 3.1548},
+            {"id": 2, "stock_id": "2", "date": "2026-10-15", "close": 3.1448},
+            {"id": 3, "stock_id": "8", "date": "2026-10-16", "close": 6.725},
+            {"id": 4, "stock_id": "8", "date": "2026-10-15", "close": 6.7301},
+        ]
+        client = self._client(
+            tables,
+            stocks={"SZ161125": "2", "^GSPC": "7", "USCNY": "8"},
+            names={"SZ161125": "易方达标普500LOF", "^GSPC": "标普500指数"},
+            profiles={
+                "SZ161125": FundProfile(
+                    symbol="SZ161125",
+                    stock_id="2",
+                    position=0.95,
+                    official_date="2026-10-16",
+                    cny_est=6.725,
+                    is_lof=True,
+                    est_symbol="^GSPC",
+                ),
+            },
+            history_close={("7", "2026-10-16"): 7744.0625,
+                           ("7", "2026-10-15"): 7718.9375},
+        )
+        rows = client.get("/api/history/netvaluehistory/SZ161125").get_json()["rows"]
+        cells = rows[0]["cells"]
+        # 日期 | 净值 | 涨幅 | USCNY | 涨幅 | 标的净值 | 涨幅 | 仓位
+        self.assertEqual(cells[0], "2026-10-16")
+        self.assertEqual(cells[1][0], "3.1548")           # 净值四位
+        self.assertEqual(cells[5][0], "7744.06")          # est 行情价、指数精度 2 位
 
 
 class FakeCnyRef:

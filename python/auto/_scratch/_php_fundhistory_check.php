@@ -11,7 +11,7 @@
 // （`fundhistoryparagraph.php:31`），本版也照这个复用来接详情页
 // （`detail_sections.build_fund_history`），所以对照一次就够两边用。
 //
-// ## 两个值得单独对照的点
+// ## 三个值得单独对照的点
 //
 // 1. **净值日期要不要往前挪一天** —— `$bSameDay = UseSameDayNetValue($ref)`
 //    （`php/stock.php:381`）：QDII 用**前一交易日**的净值（当天净值要等当晚
@@ -19,6 +19,14 @@
 //    一个错的值 —— 这种错在页面上表现为"这段不见了"，很难自查。
 // 2. **行过滤**：`if ($strNetValue = $net_sql->GetClose($strStockId, $strDate))`
 //    —— 净值取不到就整行不出。所以"有没有行"取决于净值与行情的日期交集。
+// 3. **净值列的精度** —— `GetNetValueDisplay()`（`mysqlref.php:75`）在
+//    `iNetValueCount > 0` 时取 `NETVALUE_PRECISION`（**4 位**），否则退回
+//    `GetPrecision()`。行能出来就意味着命中了净值表，所以正常恒 4 位。
+//    **替身的 `$ref->iNetValueCount` 曾经恒为 0**，于是 PHP 侧也退到 3 位、
+//    与 Python 的 3 位"一致地错"（生产端 sz161125cn.php 是 3.1548 四位）。
+//    现在按例装配（默认 1），case.8 专门钉四位净值。
+//    末列（est 标的净值）同一套两档：est 有净值行 4 位，否则 est 符号自身
+//    精度（^GSPC 这类指数 2 位，见 case.9/case.10）。
 //
 // ## 手法
 //
@@ -162,16 +170,26 @@ class RefStub
     public $iPrecision = 3;
     public $iNetValueCount = 0;
     public $strSymbol;
-    public $netValues = array();    // date => close，给 est_ref 用
+    public $netValues = array();        // date => close，给"有净值记录"那支用
+    public $historyCloses = array();    // date => close，GetVal() 的回落（行情史）
 
     public function GetSymbol() { return $this->strSymbol; }
     public function GetPrecision() { return $this->iPrecision; }
     public function IsYahooNetValue() { return false; }
     public function IsSinaFutureExceptGoldCN() { return false; }
-    // mysqlref::GetVal($strDate) —— 这里只被 GetNetValue() 用到，替身成查数组
+    // mysqlref::GetNetValue($strDate)（mysqlref.php:60）的**三支**语义：
+    //   1. 新浪期货（黄金除外）-> 复权价（本对照用不到）；
+    //   2. 有净值记录 -> 该日期的净值，缺日期返回 false；
+    //   3. 没有净值记录 -> GetVal() -> GetClose() 取行情收盘价。
+    // 只被 est_ref 走到（基金自己的净值走 $net_sql->GetClose），但三支
+    // 必须齐：第 3 支决定"est 无净值行时末列显示行情价还是空格"。
     public function GetNetValue($strDate)
     {
-        return isset($this->netValues[$strDate]) ? floatval($this->netValues[$strDate]) : false;
+        if ($this->iNetValueCount > 0)
+        {
+            return isset($this->netValues[$strDate]) ? floatval($this->netValues[$strDate]) : false;
+        }
+        return isset($this->historyCloses[$strDate]) ? floatval($this->historyCloses[$strDate]) : false;
     }
 STUBS;
 
@@ -233,7 +251,8 @@ $cases = array(
             '2026-10-01' => array('id' => '11', 'date' => '2026-10-01',
                                   'close' => '2.040', 'time' => '00:40:06'),
         )),
-        'est_ref' => array('symbol' => 'QQQ', 'net' => array('2026-10-01' => '740.0')),
+        'est_ref' => array('symbol' => 'QQQ', 'net' => array('2026-10-01' => '740.0'),
+                           'history' => array(), 'nav_count' => 1, 'precision' => 2),
     ),
     array(
         'name' => '有 EST 但没有标的引用：末列不出现',
@@ -309,6 +328,83 @@ $cases = array(
         'est' => array(),
         'est_ref' => false,
     ),
+    // -- 净值列精度（2026-10-19 用户对照生产端 sz161125cn.php 发现少一位） --
+    array(
+        'name' => '净值四位：3.1548 不四舍五入成 3.155',
+        'qdii' => array('SZ161125'),
+        'symbol' => 'SZ161125',
+        'stock_id' => '2',
+        'history' => array('2' => array(
+            array('date' => '2026-10-16', 'close' => '3.299'),
+            array('date' => '2026-10-15', 'close' => '3.266'),
+        )),
+        'netvalue' => array('2' => array('2026-10-15' => '3.1548')),
+        'est_count' => 0,
+        'est' => array(),
+        'est_ref' => false,
+    ),
+    array(
+        'name' => 'est 无净值行：末列取行情价、精度用 est 符号的（指数 2 位）',
+        'qdii' => array('SZ161125'),
+        'symbol' => 'SZ161125',
+        'stock_id' => '2',
+        'history' => array('2' => array(
+            array('date' => '2026-10-16', 'close' => '3.299'),
+            array('date' => '2026-10-15', 'close' => '3.266'),
+        )),
+        'netvalue' => array('2' => array('2026-10-15' => '3.1548')),
+        'est_count' => 1,
+        'est' => array('2' => array(
+            '2026-10-15' => array('id' => '64', 'date' => '2026-10-15',
+                                  'close' => '3.15348', 'time' => '11:37:50'),
+        )),
+        //: ^GSPC 没有净值记录 -> GetNetValue() 第三支 GetVal() 取行情价；
+        //: 7744.0625 给四位，2 位精度应显示成 7744.06
+        'est_ref' => array('symbol' => '^GSPC', 'net' => array(),
+                           'history' => array('2026-10-15' => '7744.0625'),
+                           'nav_count' => 0, 'precision' => 2),
+    ),
+    array(
+        'name' => 'est 有净值行：末列四位',
+        'qdii' => array('SZ161130'),
+        'symbol' => 'SZ161130',
+        'stock_id' => '1',
+        'history' => array('1' => array(
+            array('date' => '2026-10-02', 'close' => '2.041'),
+            array('date' => '2026-10-01', 'close' => '2.033'),
+        )),
+        'netvalue' => array('1' => array('2026-10-01' => '2.037898')),
+        'est_count' => 1,
+        'est' => array('1' => array(
+            '2026-10-01' => array('id' => '11', 'date' => '2026-10-01',
+                                  'close' => '2.040', 'time' => '00:40:06'),
+        )),
+        //: 740.1234 四位全显示；3 位精度会成 740.123
+        'est_ref' => array('symbol' => 'QQQ', 'net' => array('2026-10-01' => '740.1234'),
+                           'history' => array(), 'nav_count' => 1, 'precision' => 2),
+    ),
+    array(
+        'name' => 'est 有净值行但缺 EST 日期：末列空（不回落行情价）',
+        'qdii' => array('SZ161130'),
+        'symbol' => 'SZ161130',
+        'stock_id' => '1',
+        'history' => array('1' => array(
+            array('date' => '2026-10-02', 'close' => '2.041'),
+            array('date' => '2026-10-01', 'close' => '2.033'),
+        )),
+        'netvalue' => array('1' => array('2026-10-01' => '2.037898')),
+        'est_count' => 1,
+        'est' => array('1' => array(
+            '2026-10-01' => array('id' => '11', 'date' => '2026-10-01',
+                                  'close' => '2.040', 'time' => '00:40:06'),
+        )),
+        //: 净值只有 09-30 的，EST 记录在 10-01 -> GetNetValue 返回 false
+        //: -> GetNetValueDisplay(false) = ''。**即使有行情价也不该出现**：
+        //: "有净值记录"分支里缺日期就是空格，只有"没有净值记录"才回落行情价。
+        'est_ref' => array('symbol' => 'QQQ', 'net' => array('2026-09-30' => '740.0'),
+                           'history' => array('2026-10-01' => '740.5'),
+                           'nav_count' => 1, 'precision' => 2),
+    ),
 );
 
 $out = array('cases' => array(), 'traps' => array());
@@ -332,13 +428,23 @@ foreach ($cases as $index => $case) {
     $ref->strPrice = isset($case['history'][$case['stock_id']][0]['close'])
         ? $case['history'][$case['stock_id']][0]['close'] : '0';
     $ref->strPrevPrice = $ref->strPrice;
+    //: 行能出来就说明 netvaluehistory 命中了 —— 即 PHP 的 iNetValueCount > 0
+    //: 必然成立，所以基金 ref 的净值计数按"有"装配（默认 1）。
+    //: **这个字段曾经恒为 0**：GetNetValueDisplay() 于是退到 GetPrecision()(3)，
+    //: Python 侧同样 3 位，逐例对照"一致"地错 —— 生产端是 4 位。
+    //: 净值列精度的对照全靠它，见文件头「三个值得单独对照的点」。
+    $ref->iNetValueCount = isset($case['fund_nav_count']) ? $case['fund_nav_count'] : 1;
 
     $estRef = false;
     if ($case['est_ref'] !== false) {
         $estRef = new Harness\RefStub();
         $estRef->strSymbol = $case['est_ref']['symbol'];
         $estRef->netValues = $case['est_ref']['net'];
-        $estRef->iNetValueCount = 1;
+        $estRef->historyCloses = $case['est_ref']['history'];
+        $estRef->iNetValueCount = $case['est_ref']['nav_count'];
+        //: est 符号自身精度：没有净值记录时 GetNetValueDisplay() 用它
+        //: （指数/美股 2 位；有净值记录时走 NETVALUE_PRECISION 4 位）。
+        $estRef->iPrecision = $case['est_ref']['precision'];
     }
 
     $GLOBALS['outRows'] = array();

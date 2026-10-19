@@ -76,7 +76,15 @@ class _Cursor:
         stock_id = str(params[0]) if params else ""
 
         if "COUNT(*)" in text:
-            self._rows = [{"n": case["est_count"]}] if table == "fundest" else [{"n": 0}]
+            if table == "fundest":
+                self._rows = [{"n": case["est_count"]}]
+            elif table == "netvaluehistory":
+                #: ``_est_has_netvalue()`` 按 stock_id 数 est 的净值行 ——
+                #: 决定末列精度档（4 位还是 est 符号自身精度）。
+                stock_id = str(params[0]) if params else ""
+                self._rows = [{"n": case.get("nav_counts", {}).get(stock_id, 0)}]
+            else:
+                self._rows = [{"n": 0}]
             return
         #: ``date <`` 必须先判：它也带 ``ORDER BY date DESC``（get_record_prev），
         #: 放后面会被当成分页查询，于是把日期当成了 ``start``（实测踩过）。
@@ -151,8 +159,12 @@ class _Source:
         return self._case["ids"].get(symbol)
 
     def get_history_close(self, stock_id, date):
-        """中间层没有净值记录时的回落（本版比 PHP 多的一条路）。"""
-        return None
+        """中间层没有净值记录时的回落（PHP ``GetNetValue()`` 第三支）。
+
+        est 有净值记录但缺该日期时**不回落**（PHP 返回 false -> 空格），
+        由 ``est_has_netvalue`` 把着门，这里只按例数据回答。
+        """
+        return self._case.get("est_history", {}).get(str(stock_id), {}).get(str(date))
 
 
 def _render(cell) -> str:
@@ -233,6 +245,9 @@ CASES = [
         "est": {"1": {"2026-10-01": {"id": "11", "date": "2026-10-01",
                                      "close": "2.040", "time": "00:40:06"}}},
         "est_ref_symbol": "QQQ",
+        #: QQQ 有净值记录 -> 末列走 NETVALUE_PRECISION(4)
+        "nav_counts": {"4": 1},
+        "est_history": {},
     },
     {
         "name": "有 EST 但没有标的引用：末列不出现",
@@ -295,6 +310,69 @@ CASES = [
         "est_count": 0,
         "est": {},
         "est_ref_symbol": None,
+    },
+    # -- 净值列精度（2026-10-19 用户对照生产端 sz161125cn.php 发现少一位） --
+    {
+        "name": "净值四位：3.1548 不四舍五入成 3.155",
+        "symbol": "SZ161125",
+        "stock_id": "2",
+        "ids": {"SZ161125": "2"},
+        "start": 0, "num": 0,
+        "history": _history("2", [("2026-10-16", "3.299"), ("2026-10-15", "3.266")]),
+        "netvalue": {"2": {"2026-10-15": "3.1548"}},
+        "est_count": 0,
+        "est": {},
+        "est_ref_symbol": None,
+    },
+    {
+        "name": "est 无净值行：末列取行情价、精度用 est 符号的（指数 2 位）",
+        "symbol": "SZ161125",
+        "stock_id": "2",
+        "ids": {"SZ161125": "2", "^GSPC": "7"},
+        "start": 0, "num": 0,
+        "history": _history("2", [("2026-10-16", "3.299"), ("2026-10-15", "3.266")]),
+        "netvalue": {"2": {"2026-10-15": "3.1548"}},
+        "est_count": 1,
+        "est": {"2": {"2026-10-15": {"id": "64", "date": "2026-10-15",
+                                     "close": "3.15348", "time": "11:37:50"}}},
+        "est_ref_symbol": "^GSPC",
+        #: ^GSPC 没有净值记录 -> 末列回落行情价，7744.0625 按 2 位成 7744.06
+        "nav_counts": {},
+        "est_history": {"7": {"2026-10-15": "7744.0625"}},
+    },
+    {
+        "name": "est 有净值行：末列四位",
+        "symbol": "SZ161130",
+        "stock_id": "1",
+        "ids": {"SZ161130": "1", "QQQ": "4"},
+        "start": 0, "num": 0,
+        "history": _history("1", [("2026-10-02", "2.041"), ("2026-10-01", "2.033")]),
+        "netvalue": {"1": {"2026-10-01": "2.037898"},
+                     "4": {"2026-10-01": "740.1234"}},
+        "est_count": 1,
+        "est": {"1": {"2026-10-01": {"id": "11", "date": "2026-10-01",
+                                     "close": "2.040", "time": "00:40:06"}}},
+        "est_ref_symbol": "QQQ",
+        "nav_counts": {"4": 1},
+        "est_history": {},
+    },
+    {
+        "name": "est 有净值行但缺 EST 日期：末列空（不回落行情价）",
+        "symbol": "SZ161130",
+        "stock_id": "1",
+        "ids": {"SZ161130": "1", "QQQ": "4"},
+        "start": 0, "num": 0,
+        "history": _history("1", [("2026-10-02", "2.041"), ("2026-10-01", "2.033")]),
+        "netvalue": {"1": {"2026-10-01": "2.037898"},
+                     #: QQQ 只有 09-30 的净值，EST 记录在 10-01
+                     "4": {"2026-09-30": "740.0"}},
+        "est_count": 1,
+        "est": {"1": {"2026-10-01": {"id": "11", "date": "2026-10-01",
+                                     "close": "2.040", "time": "00:40:06"}}},
+        "est_ref_symbol": "QQQ",
+        "nav_counts": {"4": 1},
+        #: 即使有行情价也不该出现（"有净值记录"分支里缺日期即 false）
+        "est_history": {"4": {"2026-10-01": "740.5"}},
     },
 ]
 
@@ -373,7 +451,7 @@ def _wrong_no_filter(case: dict) -> list:
         netvalue = hs.NetValueHistorySql(self.connection)
         rows = []
         for record in history.get_all(stock_id, start, num):
-            rows.append(self._row_fundhistory(record, "1.0", None, None, netvalue))
+            rows.append(self._row_fundhistory(record, "1.0", None, None, netvalue, False))
         return hs._columns_fundhistory(None), rows, history.count(stock_id)
 
     hs.HistoryService._build_fundhistory = patched
@@ -389,7 +467,7 @@ def _wrong_est_gate(case: dict) -> list:
 
     original = hs.HistoryService._row_fundhistory
 
-    def patched(self, record, net_value, estimate, est_symbol, netvalue):
+    def patched(self, record, net_value, estimate, est_symbol, netvalue, est_has_netvalue=False):
         row = hs.TableRow()
         row.add(str(record["date"]))
         row.add(hs.format_price_display(record["close"], net_value))
@@ -400,6 +478,28 @@ def _wrong_est_gate(case: dict) -> list:
             row.add(hs.format_price_display(close, net_value))
             row.add(hs.format_hm(estimate.get("time")))
             row.add(hs.format_percentage_display(net_value, close))
+        return row
+
+    hs.HistoryService._row_fundhistory = patched
+    try:
+        return _python_side(case)
+    finally:
+        hs.HistoryService._row_fundhistory = original
+
+
+def _wrong_netvalue_precision(case: dict) -> list:
+    """净值列退回默认 3 位 —— 2026-10-19 修掉的那个 bug。
+
+    只把净值格（下标 2）换回 ``format_price_display(net_value)``，
+    其余格子仍走真实现，确保对照抓到的是精度本身。
+    """
+    import web.services.history_service as hs
+
+    original = hs.HistoryService._row_fundhistory
+
+    def patched(self, record, net_value, estimate, est_symbol, netvalue, est_has_netvalue=False):
+        row = original(self, record, net_value, estimate, est_symbol, netvalue, est_has_netvalue)
+        row.cells[2] = hs.format_price_display(net_value)
         return row
 
     hs.HistoryService._row_fundhistory = patched
@@ -432,6 +532,7 @@ def _selftest() -> int:
         ("净值取不到也出行", _wrong_no_filter),
         ("EST 的 0 不做假值判断", _wrong_est_gate),
         ("溢价方向搞反", _wrong_premium_direction),
+        ("净值列退回 3 位", _wrong_netvalue_precision),
     ]
     caught = 0
     print("=== 自检：注入错误，看对照抓不抓得到 ===")
