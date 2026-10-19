@@ -558,6 +558,74 @@ USCNY 历史（外汇管理局真实中间价）：
 项目运行不依赖 akshare，需要的接口已用 `requests` 自行实现，
 以保持"汇率源可替换"的设计。若以后升级到 Python 3.11+，可以选择直接依赖它。
 
+## 四点五、参考数据表外汇实时快照的更新链路（2026-10-19）
+
+### 4.6 问题现象
+
+用户对照生产端 `sz161130cn.php` 发现参考数据表里两行外汇停在 10-15：
+
+| 行 | 生产端 | 本地（修复前） |
+| --- | --- | --- |
+| USDCNH 离岸 | 6.6813 −0.06% **2026-10-19** 00:15 | 6.6911 −0.07% **2026-10-15** 06:24 |
+| USDCNY 在岸 | 6.6919 −0.07% **2026-10-19** 00:15 | 6.6919 −0.09% **2026-10-15** 06:23 |
+| USCNY 中间价 | 6.7208 −0.02% 2026-10-19 09:15 | 6.722 0 2026-10-16 09:15 |
+
+同时**五档交易表少了「参考溢价」列**（生产端有官方/参考/实时三列）。
+用户早上跑过 `forexcli.py --backfill`，输出只有「汇率源」一行就没了
+（外汇管理局慢，没等完；重跑实测写入 236 条、耗时约 1-2 分钟）。
+
+### 4.7 根因：两条链路，只修了一半
+
+外汇数据在 PHP 里本来就是**两条独立的链路**，迁移时第二条没有接线：
+
+1. **USCNY 中间价** → `netvaluehistory`（PHP `chinamoney.php` 的正路，
+   `forexcli` 主路径已覆盖）—— 用户跑 backfill 后这条已经到 10-19；
+2. **USDCNH / USDCNY 实时价** → 只进内存/快照（PHP `LoadSinaForexData`，
+   `stockref.php:493`，对应 `IsSinaForex` 即 `fx_` 前缀符号）。
+
+第二条在 Python 侧没有常驻更新：`quoteupdater` 的符号集合从
+`stockhistory` 反推，**外汇没有日线历史 → 永远进不去列表**，快照一直停在
+`seed_sh_hedge.py` 手写那天（10-15）。参考数据表的「日期/时间」列直接读
+`realtimequote.quote_date/quote_time`（README §0.5 的映射表），于是比
+生产端落后 4 天。
+
+「参考溢价」列不显示也与本数据相关：PHP 的放行条件是
+`IsEtfA() || cny_date != official_date || mid_date != official_date`
+（`qdiiref.php:161-172`）。USCNY 中间价补到 10-19 后
+`cny_date(10-19) != official(10-16)` 条件成立，fair 有值、参考列自然恢复
+—— **不用改任何估值代码**（实测 `EST4.365|4.364|4.419` 三列齐）。
+
+### 4.8 修法
+
+* `updater/forexupdater.py`：新增 `PAGE_FOREX_SYMBOLS = ("fx_susdcny",
+  "fx_susdcnh")` 与 `update_page_forex()` —— 直接走新浪（crosscheck 的
+  对照源没有离岸/在岸实时代码），写 `realtimequote` 快照；
+* `source/forexsource.py`：`SinaForexSource.fetch_rate()` 增加返回 `prev`
+  字段（`fields[3]`，照 PHP `$ar[3]`）。页面「涨幅」列靠
+  `(price - prev) / prev` —— 之前快照的 `prev_price` 恒为空串，涨幅常年为 0。
+  **注意 PHP 时代的 `[3]` 是昨收、当前新浪布局里 `[3]` 是当日最高**，
+  生产端 USDCNH 的 −0.06% 正是 `(6.6809−6.685)/6.685` 算的，照抄不"纠正"；
+* `cli/forexcli.py`：默认 `update()` 之后顺手调 `update_page_forex()`；
+  新增 `--fx-only` 只刷实时快照（不碰中间价历史）；`--check` 增加
+  `sina(rt)` 两行便于诊断。
+
+### 4.9 每日例程中的位置
+
+* **凌晨窗口**（quotecli 之后）：`forexcli.py --fx-only` —— 只刷两个实时
+  快照，快（两次 HTTP），不重复跑中间价那套慢请求；
+* **晚间窗口**（backfill_nav_history 之后）：完整 `forexcli.py`。
+
+### 4.10 验证
+
+* 单测：`test_forexsource.py` 新增 18 字段布局解析（prev=6.685）与
+  `ForexPageForexUpdateTest` 6 例（快照写入含 prev、缺符号报错、
+  源异常不抛、无快照存储报错、dry-run 只计数、不进 netvaluehistory）；
+  全量 auto 1257 例 OK；
+* 端到端：`--fx-only` 写入 2 条；页面三行外汇全部变为 10-19
+  （USDCNH 6.6812 −0.06% / USDCNY 6.6829 −0.06% / USCNY 6.7208 09:15），
+  五档表恢复「官方 | 参考 | 实时」三列溢价。数字与生产端的微小差异是
+  **抓取时点**（本地 12:42 vs 生产端凌晨 00:15），量级与口径一致。
+
 ## 五、命令与测试
 
 ```powershell
@@ -565,6 +633,7 @@ cd F:\woody\woodyweb\python
 
 python -B auto\cli\forexcli.py --compare              # 双源汇率对比
 python -B auto\cli\forexcli.py                        # 抓当日汇率写库（主路径）
+python -B auto\cli\forexcli.py --fx-only              # 只刷参考数据表 USDCNH/USDCNY 实时快照
 python -B auto\cli\forexcli.py --purge-fake           # 清掉手工占位汇率
 python -B auto\cli\forexcli.py --fill-official-dates  # 给官方日期补汇率
 python -B auto\cli\forexcli.py --backfill             # 历史回补（外汇管理局，可用）
@@ -578,11 +647,12 @@ python -B -m unittest discover -s auto -p "test_*.py"       # 377 个
 python -B -m unittest discover -s web\tests -p "test_*.py"  # 36 个
 ```
 
-`test_forexsource.py`（51 个）覆盖：汇率源注册与递归防护、新浪两种字段布局、
+`test_forexsource.py`（58 个）覆盖：汇率源注册与递归防护、新浪两种字段布局、
 中国货币网 `100JPY` 除 100、日期不能把数字当日期、双源一致/超容差告警、
 主源回落、**汇率周末可写**、官方日期补汇率的 **5 天阈值**、清占位、
-汇率**陈旧度警告**，以及**外汇管理局表格解析**（四币种 ÷100、行序排序、
-单次请求四币种共享）。
+汇率**陈旧度警告**、**外汇管理局表格解析**（四币种 ÷100、行序排序、
+单次请求四币种共享）、**18 字段布局的 prev 字段**（`fields[3]`，照 PHP），
+以及 `update_page_forex()` 的 6 个用例（见 §四点五）。
 
 ## 六、仍未完成
 

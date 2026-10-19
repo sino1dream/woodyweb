@@ -25,6 +25,14 @@ SINA_TEXT_RAW = (
     'var hq_str_USDCNY="03:00:00,6.7050,6.7072,6.7085,51,6.7050,6.7072,6.7021,'
     '6.7050,美元人民币,2026-10-01";'
 )
+# 2026-10-19 实测的 18 字段布局（fx_susdcnh）：[8] 最新价、[3] prev、
+# [2] 昨收、[17] 日期 —— 旧 11 字段样本没有 prev 概念，见
+# SinaForexSource.fetch_rate 的字段注释
+SINA_TEXT_FX18 = (
+    'var hq_str_fx_susdcnh="12:37:00,6.680900,6.681300,6.685000,61,'
+    '6.685300,6.686100,6.680000,6.680900,离岸人民币（香港）,'
+    '-0.060000,-0.004100,0.0009124,,6.995700,6.680900,,2026-10-19";'
+)
 # 中国货币网（PHP chinamoney.php 的源）
 CHINAMONEY_PAYLOAD = {
     "data": {"lastDate": "2026-09-30 9:15"},
@@ -189,6 +197,20 @@ class SinaForexSourceTest(unittest.TestCase):
 
         self.assertAlmostEqual(record["rate"], 6.705, places=4)
         self.assertEqual(record["date"], "2026-10-01")
+
+    def test_returns_prev_price_field(self):
+        """prev 取 [3]（PHP ``$ar[3]``），页面涨幅列 (price-prev)/prev 用它。
+
+        18 字段实测布局：[3] 是当日最高、[2] 才是昨收 —— 与 PHP 时代不同，
+        但生产端 USDCNH 的 -0.06% 正是 (6.6809-6.685)/6.685 算的，照抄不纠正。
+        """
+        session = FakeSession(FakeResponse(content=SINA_TEXT_FX18.encode("gb18030")))
+        record = forexsource.SinaForexSource(session=session).fetch_rate("fx_susdcnh")
+
+        self.assertAlmostEqual(record["rate"], 6.6809, places=4)
+        self.assertAlmostEqual(record["prev"], 6.685, places=4)
+        self.assertEqual(record["date"], "2026-10-19")
+        self.assertEqual(record["name"], "离岸人民币（香港）")
 
     def test_sends_referer(self):
         session = FakeSession(FakeResponse(content=SINA_TEXT.encode("gb18030")))
@@ -385,6 +407,126 @@ class ForexUpdaterTest(unittest.TestCase):
 
         self.assertEqual(info["source"]["name"], "fake")
         self.assertEqual(info["last_updated"], 1)
+
+
+class _FakeSnapshotStore:
+    """假 realtimequote 写入器：记录每次 save 的参数。"""
+
+    def __init__(self):
+        self.saved = []
+
+    def save(self, stock_id, symbol, source_symbol, price, prev_price="", name="",
+             quote_date=None, quote_time=None, source="sina", fetched_at=None,
+             orderbook=None):
+        self.saved.append({
+            "stock_id": stock_id,
+            "symbol": symbol,
+            "source_symbol": source_symbol,
+            "price": price,
+            "prev_price": prev_price,
+            "name": name,
+            "quote_date": quote_date,
+            "quote_time": quote_time,
+        })
+
+
+class _FakePageForexSource:
+    """按符号返回预置记录的假源（update_page_forex 注入用）。"""
+
+    name = "fake"
+
+    def __init__(self, records=None, error=None):
+        self.records = dict(records or {})
+        self.error = error
+
+    def fetch_rate(self, symbol):
+        if self.error is not None:
+            raise self.error
+        return self.records.get(symbol)
+
+
+class ForexPageForexUpdateTest(unittest.TestCase):
+    """参考数据表的 USDCNH/USDCNY 实时快照（update_page_forex）。"""
+
+    def _updater(self, ids, snapshot):
+        store = MemoryQuoteStore()
+        store.connection = _FakeConnection(ids)
+        return ForexUpdater(source=FakeForexSource(), store=store,
+                            snapshot_store=snapshot)
+
+    def test_writes_snapshots_with_prev_price(self):
+        snapshot = _FakeSnapshotStore()
+        updater = self._updater({"fx_susdcny": "40", "fx_susdcnh": "41"}, snapshot)
+
+        written = updater.update_page_forex(source=_FakePageForexSource({
+            "fx_susdcny": {"symbol": "fx_susdcny", "date": "2026-10-19",
+                           "rate": 6.6829, "prev": 6.687, "name": "在岸人民币",
+                           "time": "12:42:00", "source": "sina"},
+            "fx_susdcnh": {"symbol": "fx_susdcnh", "date": "2026-10-19",
+                           "rate": 6.6812, "prev": 6.685, "name": "离岸人民币（香港）",
+                           "time": "12:43:14", "source": "sina"},
+        }))
+
+        self.assertEqual(written, 2)
+        self.assertEqual([s["symbol"] for s in snapshot.saved],
+                         ["fx_susdcny", "fx_susdcnh"])
+        # prev_price 必须落进快照 —— 页面涨幅列靠它算
+        self.assertEqual(snapshot.saved[0]["prev_price"], 6.687)
+        self.assertEqual(snapshot.saved[0]["stock_id"], "40")
+        self.assertEqual(snapshot.saved[1]["stock_id"], "41")
+        # 实时快照**不进** netvaluehistory（那是 USCNY 中间价的路）
+        self.assertEqual(updater.store.net_values, {})
+
+    def test_missing_symbol_is_reported(self):
+        snapshot = _FakeSnapshotStore()
+        updater = self._updater({"fx_susdcny": "40"}, snapshot)  # 库里缺 usdcnh
+
+        written = updater.update_page_forex(source=_FakePageForexSource({
+            "fx_susdcny": {"symbol": "fx_susdcny", "date": "2026-10-19", "rate": 6.6829},
+            "fx_susdcnh": {"symbol": "fx_susdcnh", "date": "2026-10-19", "rate": 6.6812},
+        }))
+
+        self.assertEqual(written, 1)
+        self.assertIn("fx_susdcnh", updater.last_error)
+
+    def test_source_failure_is_reported_not_raised(self):
+        updater = self._updater({"fx_susdcny": "40", "fx_susdcnh": "41"},
+                                _FakeSnapshotStore())
+
+        written = updater.update_page_forex(
+            source=_FakePageForexSource(error=RuntimeError("boom")))
+
+        self.assertEqual(written, 0)
+        self.assertIn("RuntimeError", updater.last_error)
+
+    def test_source_without_rate_is_reported(self):
+        updater = self._updater({"fx_susdcny": "40", "fx_susdcnh": "41"},
+                                _FakeSnapshotStore())
+
+        written = updater.update_page_forex(source=_FakePageForexSource())
+
+        self.assertEqual(written, 0)
+        self.assertIn("没有返回行情", updater.last_error)
+
+    def test_requires_snapshot_store(self):
+        store = MemoryQuoteStore()
+        store.connection = _FakeConnection({"fx_susdcny": "40", "fx_susdcnh": "41"})
+        updater = ForexUpdater(source=FakeForexSource(), store=store)  # 无快照存储
+
+        self.assertEqual(updater.update_page_forex(source=_FakePageForexSource()), 0)
+        self.assertIn("快照存储", updater.last_error)
+
+    def test_dry_run_counts_without_writing(self):
+        snapshot = _FakeSnapshotStore()
+        updater = self._updater({"fx_susdcny": "40", "fx_susdcnh": "41"}, snapshot)
+
+        written = updater.update_page_forex(apply=False, source=_FakePageForexSource({
+            "fx_susdcny": {"symbol": "fx_susdcny", "date": "2026-10-19", "rate": 6.6829},
+            "fx_susdcnh": {"symbol": "fx_susdcnh", "date": "2026-10-19", "rate": 6.6812},
+        }))
+
+        self.assertEqual(written, 2)
+        self.assertEqual(snapshot.saved, [])
 
 
 class NormalizeDateTest(unittest.TestCase):

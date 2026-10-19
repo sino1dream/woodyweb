@@ -8,14 +8,22 @@
 
     python -B auto\\cli\\forexcli.py --check          # 只看各源能取到什么，不写库
     python -B auto\\cli\\forexcli.py                  # 抓取并写入 netvaluehistory
+                                                    # （同时更新参考数据表的
+                                                    #  USDCNH/USDCNY 实时快照）
     python -B auto\\cli\\forexcli.py --api            # 打印汇率源接口说明（换源参考）
     python -B auto\\cli\\forexcli.py --list-sources   # 列出已注册的汇率源
     python -B auto\\cli\\forexcli.py --compare        # 只做双源对比，不写库
+    python -B auto\\cli\\forexcli.py --fx-only        # 只更新 USDCNH/USDCNY 实时快照
 
 环境变量：
 
 * ``PALMMICRO_FOREX_SOURCE``      汇率源名字（默认 ``crosscheck``）
 * ``PALMMICRO_FOREX_TOLERANCE``   相对容差（默认 0.01，即 1%）
+
+两类数据别混：``netvaluehistory`` 里是 USCNY 等**中间价历史**（货币网源，
+``CnyReference`` 读它）；参考数据表里的 USDCNH/USDCNY 是**实时行情快照**
+（新浪源，落 ``realtimequote``）—— 后者曾经没有更新链路，快照会停在
+很久以前（见 ``forexupdater.update_page_forex`` 的说明）。
 """
 
 from __future__ import annotations
@@ -37,7 +45,11 @@ for _path in (AUTO_DIR, PYTHON_DIR):
         sys.path.insert(0, _path)
 
 from source import forexsource  # noqa: E402
-from updater.forexupdater import ForexUpdater, build_default_updater  # noqa: E402
+from updater.forexupdater import (  # noqa: E402
+    PAGE_FOREX_SYMBOLS,
+    ForexUpdater,
+    build_default_updater,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -49,6 +61,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--compare", action="store_true", help="只做双源对比，不写库")
     parser.add_argument("--backfill", action="store_true",
                         help="尝试回补历史汇率（上游不稳定，尽力而为）")
+    parser.add_argument("--fx-only", action="store_true",
+                        help="只更新参考数据表的 USDCNH/USDCNY 实时快照，不写中间价")
     parser.add_argument("--fill-official-dates", action="store_true",
                         help="给基金官方日期补汇率（用相邻交易日真实值）")
     parser.add_argument("--purge-fake", action="store_true",
@@ -111,6 +125,14 @@ def show_check(source_name: str = None) -> int:
             print("%-12s %-8s %-12s %-16s %s" % (
                 name, record["symbol"], record.get("date"), record.get("rate"),
                 record.get("name") or ""))
+    # 参考数据表用的两个实时符号（只走新浪，别的源没有离岸/在岸实时代码）
+    sina = forexsource.SinaForexSource()
+    for symbol in PAGE_FOREX_SYMBOLS:
+        record = sina.fetch_rate(symbol)
+        if record:
+            print("%-12s %-8s %-12s %-16s %s" % (
+                "sina(rt)", symbol, record.get("date"), record.get("rate"),
+                record.get("name") or ""))
     return 0
 
 
@@ -154,6 +176,13 @@ def main() -> int:
 
     updater = build_default_updater(source=source)
 
+    if args.fx_only:
+        written = updater.update_page_forex(apply=True)
+        print("外汇实时快照：写入 %d 条（USDCNH/USDCNY）。" % written)
+        if updater.last_error:
+            print("注意：%s" % updater.last_error)
+        return 0
+
     if args.backfill:
         written = updater.backfill_history(apply=True)
         print("历史回补：写入 %d 条。" % written)
@@ -187,6 +216,13 @@ def main() -> int:
 
     updated = updater.update(apply=True)
     print("已写入 %d 条汇率。" % updated)
+    if updater.last_error:
+        print("注意：%s" % updater.last_error)
+
+    # 参考数据表的 USDCNH/USDCNY 走的是实时快照（另一条链路，见
+    # forexupdater.update_page_forex 的说明），这里顺手一起更新
+    fx_written = updater.update_page_forex(apply=True)
+    print("已写入 %d 条外汇实时快照（USDCNH/USDCNY）。" % fx_written)
     if updater.last_error:
         print("注意：%s" % updater.last_error)
 

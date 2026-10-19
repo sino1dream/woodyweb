@@ -249,13 +249,16 @@ class SinaForexSource(ForexSource):
         var hq_str_USDCNY="03:00:00,6.7050,6.7072,6.7085,51,6.7050,6.7072,6.7021,
                            6.7050,美元人民币,2026-10-01";
 
-    字段（与 PHP ``stockref.php`` 的 ``_onSinaDataForex`` 一致）：
+    字段（**以 2026-10 实测的 18 字段布局为准**，与 PHP 取的下标对照）：
 
-    * 0 时间、1 昨收/开盘、2 最高、3 最低、4 成交量、
-    * 5 最新价? 、6 买入、7 卖出、8 中间价、**9 名称、10 日期**
+    * 0 时间、1 今开、**2 昨收**、3 当日最高、4 成交量、
+    * 5 买入、6 卖出、7 最低、**8 最新价**、9 名称、17 日期
 
-    这里取 ``fields[8]``（中间价）作为汇率 —— 与 PHP 的用法一致，
-    它是买卖中间价，最接近"官方中间价"的口径。
+    这里取 ``fields[8]``（最新价）作为汇率 —— PHP 的 ``LoadSinaForexData``
+    同样取 ``$ar[8]``（php/stock/stockref.php:502）；``fields[3]`` 作为
+    prev（PHP 取 ``$ar[3]``，ibid:499），页面涨幅列用它。
+    旧版注释把 [8] 写成"中间价"、字段表整体错位，是照早期 11 字段布局逆推的，
+    已按实测纠正 —— 取数下标没有变，只是注释对上真实布局。
     """
 
     name = "sina"
@@ -313,6 +316,13 @@ class SinaForexSource(ForexSource):
                 # 用裸代码（USDCNY）时在最后一位。所以扫描识别而不是写死下标。
                 "date": _find_date(fields),
                 "rate": rate,
+                # "昨收"类字段：PHP ``LoadSinaForexData`` 取 ``$ar[3]`` 当
+                # ``strPrevPrice``（php/stock/stockref.php:500），页面"涨幅"列
+                # 由 (price - prev) / prev 得来。字段布局多年变迁——PHP 时代的
+                # [3] 是昨收、当前新浪布局里 [3] 是当日最高（[2] 才是昨收），
+                # 但**与生产端对齐优先**：生产端 USDCNH 显示 -0.06% 正是
+                # (6.6809 - 6.685) / 6.685 算出来的。照抄，不"纠正"。
+                "prev": _to_float(fields[3]),
                 "time": fields[0] or None,
                 "name": _find_name(fields),
                 "source": self.name,

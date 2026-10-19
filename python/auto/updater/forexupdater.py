@@ -18,7 +18,10 @@ QDII 估值会差 7 倍左右。本模块负责把汇率补上。
 ## 写哪两张表
 
 * ``netvaluehistory``：按日的汇率历史（PHP 就是写这里，``CnyReference`` 读它）；
-* ``realtimequote``：最新汇率快照，供页面直读与诊断。
+* ``realtimequote``：最新汇率快照，供页面直读与诊断。两类符号：
+  ``USCNY`` 等中间价符号（``update()`` 顺手写）与参考数据表用的
+  ``fx_susdcny`` / ``fx_susdcnh`` 实时价（``update_page_forex()`` 写，
+  对应 PHP 的 ``LoadSinaForexData``）。
 """
 
 from __future__ import annotations
@@ -27,6 +30,17 @@ import datetime as _datetime
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 from source import forexsource
+
+#: 参考数据表里的两个外汇页面符号：离岸 / 在岸人民币实时价。
+#: PHP 的对应物是 ``IsSinaForex``（``fx_`` 前缀，stocksymbol.php:771）：
+#: ``MyStockReference::LoadData()`` 抓新浪实时价只进内存、**不写库**
+#: （php/stock/stockref.php:493）。Python 侧按"web 只读快照"的架构
+#: （refquote.py）落到 ``realtimequote``，由 :meth:`ForexUpdater.update_page_forex`
+#: 负责写。
+#: 它们**不进 netvaluehistory** —— 那是 USCNY 等中间价符号的路
+#: （PHP ``chinamoney.php`` 的正路，见 :meth:`ForexUpdater.update`），
+#: 两张表两种语义，别混。
+PAGE_FOREX_SYMBOLS = ("fx_susdcny", "fx_susdcnh")
 
 
 class ForexUpdater:
@@ -101,6 +115,62 @@ class ForexUpdater:
         self.last_updated = updated
         self.comparisons = comparisons
         return updated
+
+    def update_page_forex(self, apply: bool = True, source: Any = None) -> int:
+        """抓参考数据表用的离岸/在岸人民币**实时快照**，写 ``realtimequote``。
+
+        为什么单独立一个方法，不并进 :meth:`update`：
+
+        * ``update()`` 写 ``netvaluehistory``（USCNY 中间价**历史**，
+          对应 PHP ``chinamoney.php``），数据源是货币网/外汇管理局；
+        * 本方法写 ``realtimequote``（USDCNH/USDCNY **实时行情**快照，
+          对应 PHP ``LoadSinaForexData``），数据源是新浪。
+
+        曾经的缺口：``quoteupdater`` 的符号集合从 ``stockhistory`` 反推，
+        外汇没有日线历史 → 这两个符号永远进不了更新列表，快照一直停在
+        种子手写那天（实测停演到 2026-10-15，生产端同日已是 10-19，
+        参考数据表里这两行的日期/时间因此比生产端落后 4 天）。
+
+        ``source`` 可注入假源（测试用）；默认建新浪源 —— crosscheck 的
+        对照源（货币网）没有离岸/在岸的实时代码，用不了。
+        """
+        connection = getattr(self.store, "connection", None)
+        if connection is None and apply:
+            self.last_error = "没有可用的数据库连接"
+            return 0
+        if self.snapshot_store is None and apply:
+            self.last_error = "没有可用的快照存储（realtimequote 写不进去）"
+            return 0
+
+        source = source or forexsource.SinaForexSource()
+        written = 0
+        errors = []
+        for symbol in PAGE_FOREX_SYMBOLS:
+            try:
+                record = source.fetch_rate(symbol)
+            except Exception as exc:
+                errors.append("%s: %s: %s" % (symbol, type(exc).__name__, exc))
+                continue
+            if not record or record.get("rate") in (None, ""):
+                errors.append("%s: 新浪没有返回行情" % symbol)
+                continue
+            if not apply:
+                written += 1
+                continue
+            stock_id = self._stock_id(connection, symbol)
+            if stock_id is None:
+                errors.append("%s: stock 表里没有这个符号（先建名录）" % symbol)
+                continue
+            try:
+                self._write_snapshot(stock_id, record)
+            except Exception as exc:
+                errors.append("%s: 写快照失败: %s" % (symbol, exc))
+                continue
+            written += 1
+        if errors:
+            self.last_error = "; ".join(errors)
+        self.last_updated = written
+        return written
 
     def backfill_history(self, apply: bool = True, limit: int = 400, days: int = 90) -> int:
         """回补历史汇率序列，返回写入条数。
@@ -293,7 +363,13 @@ class ForexUpdater:
             cursor.close()
 
     def _write_snapshot(self, stock_id: Any, record: Mapping[str, Any]) -> None:
-        """顺手写一份 realtimequote 快照，方便页面/诊断直接读最新汇率。"""
+        """顺手写一份 realtimequote 快照，方便页面/诊断直接读最新汇率。
+
+        ``prev_price`` 取自 ``record["prev"]``（新浪 ``$ar[3]``，见
+        ``SinaForexSource.fetch_rate``）—— 页面参考数据表的"涨幅"列要
+        用它算 ``(price - prev) / prev``。早期这里恒传空串，涨幅列因此
+        常年空白/为零。
+        """
         if self.snapshot_store is None:
             return
         try:
@@ -302,7 +378,7 @@ class ForexUpdater:
                 str(record.get("symbol")),
                 str(record.get("symbol")),
                 record.get("rate"),
-                "",
+                record.get("prev") or "",
                 str(record.get("name") or ""),
                 record.get("date"),
                 record.get("time") or "00:00:00",
