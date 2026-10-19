@@ -131,11 +131,11 @@ SH513100   2.0379     2.037900     2.037900     两者都一致
 
 ```powershell
 # 默认：东财为主 + 新浪对照 + 差异告警
-python -B auto\navcli.py
+python -B auto\cli\navcli.py
 
 # 退回单源
 $env:PALMMICRO_NAV_SOURCE = "eastmoney"     # 或 sina / szse
-python -B auto\navcli.py
+python -B auto\cli\navcli.py
 
 # 调整容差（元）与"缺失也告警"
 $env:PALMMICRO_NAV_TOLERANCE = "0.01"
@@ -158,12 +158,12 @@ source = CrossCheckNavSource(alert=lambda level, msg: logging.warning("%s %s", l
 source = CrossCheckNavSource(secondary=None)
 ```
 
-自查：`python -B auto\navcli.py --api`（打印完整接口契约与当前生效配置）。
+自查：`python -B auto\cli\navcli.py --api`（打印完整接口契约与当前生效配置）。
 
 ### 2.5 实测
 
 ```text
-$ python -B auto\navcli.py --all-sources 161130
+$ python -B auto\cli\navcli.py --all-sources 161130
 源            日期           单位净值    累计净值    结果
 eastmoney    2026-09-29   4.5452     4.5452     OK
 sina         2026-09-29   4.5452     4.5452     OK

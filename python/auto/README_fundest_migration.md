@@ -185,7 +185,7 @@ if (abs($fPercentage) > 1.0)
 ## 六、实测结果
 
 ```text
-$ python -B auto\fundestcli.py
+$ python -B auto\cli\fundestcli.py
 闸门：跳过 20:55，只要求当天真实净值未到
 
 已写入 3 只：
@@ -225,15 +225,15 @@ stockhistory 最新日期   = 2026-09-30
 ```powershell
 cd F:\woody\woodyweb\python
 
-python -B auto\fundestcli.py                  # 记录一批基金的官方 EST
-python -B auto\fundestcli.py --symbol SZ161130
-python -B auto\fundestcli.py --strict         # 启用 PHP 的 20:55 闸门
-python -B auto\fundestcli.py --list           # 看已记录了哪些
-python -B auto\fundestcli.py --list SZ161130  # 看某只的全部记录
-python -B auto\fundestcli.py --check          # 扫描误差并告警
-python -B auto\fundestcli.py --est            # 并排显示三个 EST + 溢价
-python -B auto\fundestcli.py --est --symbol SZ161130
-python -B auto\fundestcli.py --api            # 打印口径说明
+python -B auto\cli\fundestcli.py                  # 记录一批基金的官方 EST
+python -B auto\cli\fundestcli.py --symbol SZ161130
+python -B auto\cli\fundestcli.py --strict         # 启用 PHP 的 20:55 闸门
+python -B auto\cli\fundestcli.py --list           # 看已记录了哪些
+python -B auto\cli\fundestcli.py --list SZ161130  # 看某只的全部记录
+python -B auto\cli\fundestcli.py --check          # 扫描误差并告警
+python -B auto\cli\fundestcli.py --est            # 并排显示三个 EST + 溢价
+python -B auto\cli\fundestcli.py --est --symbol SZ161130
+python -B auto\cli\fundestcli.py --api            # 打印口径说明
 ```
 
 ## 八、参考 EST 与实时 EST（同一批迁移）

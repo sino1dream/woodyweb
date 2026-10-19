@@ -82,7 +82,7 @@ QdiiGetVal($strEst, $strCNY, $this->fFactor)  // = est_value * cny / fFactor
 交叉验证命令与实测结果：
 
 ```powershell
-python -B auto\navcli.py --all-sources 161130
+python -B auto\cli\navcli.py --all-sources 161130
 
 源            日期           单位净值    累计净值    结果
 eastmoney    2026-09-29   4.5452     4.5452     OK
@@ -107,7 +107,7 @@ class NavSource:
 * 注册切换：`register_nav_source("mysource", ...)` + 环境变量
   `PALMMICRO_NAV_SOURCE`。
 
-自查接口：`python -B auto\navcli.py --api`
+自查接口：`python -B auto\cli\navcli.py --api`
 
 ### 4.3 中间层标的：新浪全覆盖
 
@@ -188,10 +188,10 @@ if not self.should_update(stock_id, today):   # 用今天判断
 cd F:\woody\woodyweb\python
 
 python -B dbtools\build_schema.py          # 新建 estquote 表
-python -B auto\navcli.py --check       # 只看源返回什么
-python -B auto\navcli.py               # 真实写入
-python -B auto\navcli.py --all-sources 161130   # 三源交叉验证
-python -B auto\quoteupdatercli.py --once        # 抓行情（顺带写 estquote）
+python -B auto\cli\navcli.py --check       # 只看源返回什么
+python -B auto\cli\navcli.py               # 真实写入
+python -B auto\cli\navcli.py --all-sources 161130   # 三源交叉验证
+python -B auto\cli\quoteupdatercli.py --once        # 抓行情（顺带写 estquote）
 python -B dbtools\verify_pages.py          # 页面复核
 ```
 

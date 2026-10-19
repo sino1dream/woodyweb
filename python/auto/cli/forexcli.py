@@ -6,11 +6,11 @@
 
     cd F:\\woody\\woodyweb\\python
 
-    python -B auto\\forexcli.py --check          # 只看各源能取到什么，不写库
-    python -B auto\\forexcli.py                  # 抓取并写入 netvaluehistory
-    python -B auto\\forexcli.py --api            # 打印汇率源接口说明（换源参考）
-    python -B auto\\forexcli.py --list-sources   # 列出已注册的汇率源
-    python -B auto\\forexcli.py --compare        # 只做双源对比，不写库
+    python -B auto\\cli\\forexcli.py --check          # 只看各源能取到什么，不写库
+    python -B auto\\cli\\forexcli.py                  # 抓取并写入 netvaluehistory
+    python -B auto\\cli\\forexcli.py --api            # 打印汇率源接口说明（换源参考）
+    python -B auto\\cli\\forexcli.py --list-sources   # 列出已注册的汇率源
+    python -B auto\\cli\\forexcli.py --compare        # 只做双源对比，不写库
 
 环境变量：
 

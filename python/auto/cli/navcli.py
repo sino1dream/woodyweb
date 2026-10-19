@@ -6,13 +6,13 @@
 
     cd F:\\woody\\woodyweb\\python
 
-    python -B auto\\navcli.py --check                    # 只看源能取到什么，不写库
-    python -B auto\\navcli.py                            # 抓取并写入 netvaluehistory
-    python -B auto\\navcli.py --code 161130 --force      # 强制重取某只
-    python -B auto\\navcli.py --history 162411           # 看某只的历史（前 10 条）
-    python -B auto\\navcli.py --api                      # 打印净值源接口说明（换源参考）
-    python -B auto\\navcli.py --list-sources             # 列出已注册净值源
-    python -B auto\\navcli.py --all-sources 161130       # 三个源交叉对比
+    python -B auto\\cli\\navcli.py --check                    # 只看源能取到什么，不写库
+    python -B auto\\cli\\navcli.py                            # 抓取并写入 netvaluehistory
+    python -B auto\\cli\\navcli.py --code 161130 --force      # 强制重取某只
+    python -B auto\\cli\\navcli.py --history 162411           # 看某只的历史（前 10 条）
+    python -B auto\\cli\\navcli.py --api                      # 打印净值源接口说明（换源参考）
+    python -B auto\\cli\\navcli.py --list-sources             # 列出已注册净值源
+    python -B auto\\cli\\navcli.py --all-sources 161130       # 三个源交叉对比
 
 环境变量：
 

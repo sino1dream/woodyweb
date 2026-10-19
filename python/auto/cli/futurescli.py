@@ -12,10 +12,10 @@
 
     cd F:\\woody\\woodyweb\\python
 
-    python -B auto\\futurescli.py                  # 抓期货 + 落快照 + 尝试校准
-    python -B auto\\futurescli.py --show           # 看当前期货行情与校准状态
-    python -B auto\\futurescli.py --est            # 三个 EST（含期货来源的实时 EST）
-    python -B auto\\futurescli.py --api            # 口径说明
+    python -B auto\\cli\\futurescli.py                  # 抓期货 + 落快照 + 尝试校准
+    python -B auto\\cli\\futurescli.py --show           # 看当前期货行情与校准状态
+    python -B auto\\cli\\futurescli.py --est            # 三个 EST（含期货来源的实时 EST）
+    python -B auto\\cli\\futurescli.py --api            # 口径说明
 """
 
 from __future__ import annotations

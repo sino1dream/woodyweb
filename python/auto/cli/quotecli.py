@@ -6,12 +6,12 @@
 用法：
 
     cd F:\\woody\\woodyweb\\python
-    python -B auto\\quotecli.py --check                     # 只抓不写，打印解析结果
-    python -B auto\\quotecli.py SZ161130 SZ161125 --check     # 指定符号
-    python -B auto\\quotecli.py SZ161130 SZ161125           # 抓取并落库
-    python -B auto\\quotecli.py --group qdiilof --check      # 按分组批量抓
-    python -B auto\\quotecli.py --all-qdii --check           # 清单里的全部符号
-    python -B auto\\quotecli.py --archive-snapshot ^NDX ^GSPC  # 把收盘快照归档进行情历史
+    python -B auto\\cli\\quotecli.py --check                     # 只抓不写，打印解析结果
+    python -B auto\\cli\\quotecli.py SZ161130 SZ161125 --check     # 指定符号
+    python -B auto\\cli\\quotecli.py SZ161130 SZ161125           # 抓取并落库
+    python -B auto\\cli\\quotecli.py --group qdiilof --check      # 按分组批量抓
+    python -B auto\\cli\\quotecli.py --all-qdii --check           # 清单里的全部符号
+    python -B auto\\cli\\quotecli.py --archive-snapshot ^NDX ^GSPC  # 把收盘快照归档进行情历史
 
 ## ``--archive-snapshot`` 是干什么的
 

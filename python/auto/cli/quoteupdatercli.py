@@ -149,7 +149,7 @@ def main() -> int:
     print("待抓符号 %d 个：%s" % (len(pairs), ", ".join(symbol for symbol, _source, _id in pairs)))
     if not pairs:
         print("没有可抓的符号：stockhistory 里还没有数据。先用 quotecli.py 落一次库，")
-        print("或运行 python -B auto\\chinastock.py 建立符号名录。")
+        print("或运行 python -B auto\\source\\chinastock.py 建立符号名录。")
         return 1
 
     # build_default_updater 会带上 realtimequote 表，这样本进程写的行情

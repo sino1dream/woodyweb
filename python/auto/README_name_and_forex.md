@@ -295,8 +295,8 @@ SH513100 -> 国泰纳斯达克100ETF
 **② 加机制**（这才治本）：`NavUpdater.sync_names()` 用权威源核对 `stock.name`。
 
 ```powershell
-python -B auto\navcli.py --check-names    # 只报告，不改库
-python -B auto\navcli.py --sync-names     # 不一致时改成权威全称
+python -B auto\cli\navcli.py --check-names    # 只报告，不改库
+python -B auto\cli\navcli.py --sync-names     # 不一致时改成权威全称
 ```
 
 **比对用的是"关键片段包含关系"而不是字符串相等**，因为：
@@ -310,7 +310,7 @@ python -B auto\navcli.py --sync-names     # 不一致时改成权威全称
 实测这个机制精确抓到了本次的错误，另两只判为一致：
 
 ```text
-$ python -B auto\navcli.py --check-names
+$ python -B auto\cli\navcli.py --check-names
 符号         代码       库里的名称              权威名称                       结果
 SZ161130   161130   易方达标普信息科技LOF       易方达纳斯达克100ETF联接(...)    不一致   ← 抓到了
 SZ161125   161125   易方达标普500LOF         易方达标普500指数(...)          一致
@@ -391,7 +391,7 @@ est_f = ... + p_f * est_value * cny / cal_f   ← 后面又乘回来
 绝对值（汇率是 6~7 量级的数）：
 
 ```text
-$ python -B auto\forexcli.py --compare
+$ python -B auto\cli\forexcli.py --compare
 符号       主源汇率           对照源汇率          相对差          结论
 USCNY    6.705          6.7351         0.4469%      一致
 HKCNY    0.8544890583   0.85842        0.4579%      一致
@@ -563,15 +563,15 @@ USCNY 历史（外汇管理局真实中间价）：
 ```powershell
 cd F:\woody\woodyweb\python
 
-python -B auto\forexcli.py --compare              # 双源汇率对比
-python -B auto\forexcli.py                        # 抓当日汇率写库（主路径）
-python -B auto\forexcli.py --purge-fake           # 清掉手工占位汇率
-python -B auto\forexcli.py --fill-official-dates  # 给官方日期补汇率
-python -B auto\forexcli.py --backfill             # 历史回补（外汇管理局，可用）
-python -B auto\forexcli.py --api                  # 汇率源接口说明（换源参考）
+python -B auto\cli\forexcli.py --compare              # 双源汇率对比
+python -B auto\cli\forexcli.py                        # 抓当日汇率写库（主路径）
+python -B auto\cli\forexcli.py --purge-fake           # 清掉手工占位汇率
+python -B auto\cli\forexcli.py --fill-official-dates  # 给官方日期补汇率
+python -B auto\cli\forexcli.py --backfill             # 历史回补（外汇管理局，可用）
+python -B auto\cli\forexcli.py --api                  # 汇率源接口说明（换源参考）
 
-python -B auto\navcli.py --check-names            # 名称核对
-python -B auto\estcalibration.py --diagnose       # 中间层尺度诊断
+python -B auto\cli\navcli.py --check-names            # 名称核对
+python -B auto\updater\estcalibration.py --diagnose       # 中间层尺度诊断
 python -B auto\_reset_est_scale.py --apply        # 重标定（含汇率与统一日期）
 
 python -B -m unittest discover -s auto -p "test_*.py"       # 377 个

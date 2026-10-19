@@ -78,8 +78,8 @@ register_quote_source("mysource", lambda **kw: MyQuoteSource(**kw))
 命令行也可以自查接口与已注册的源：
 
 ```powershell
-python -B auto\quoteupdatercli.py --api             # 打印接口契约与当前源自述
-python -B auto\quoteupdatercli.py --list-sources    # 列出已注册的源
+python -B auto\cli\quoteupdatercli.py --api             # 打印接口契约与当前源自述
+python -B auto\cli\quoteupdatercli.py --list-sources    # 列出已注册的源
 GET /api/quotes/source                              # Web 侧同样可查
 ```
 
@@ -194,13 +194,13 @@ cd F:\woody\woodyweb\python
 python -B dbtools\build_schema.py
 
 # 抓一轮
-python -B auto\quoteupdatercli.py --once --verbose
+python -B auto\cli\quoteupdatercli.py --once --verbose
 
 # 常驻定时抓取
-python -B auto\quoteupdatercli.py --daemon --interval 60 --only-open
+python -B auto\cli\quoteupdatercli.py --daemon --interval 60 --only-open
 
 # 换源参考
-python -B auto\quoteupdatercli.py --api
+python -B auto\cli\quoteupdatercli.py --api
 
 # 排查
 python -B auto\_quote_probe.py --realtime     # 看快照表与新鲜度

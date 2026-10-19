@@ -98,7 +98,7 @@ cd F:\woody\woodyweb\python
 python -B -m unittest discover -s auto -p "test_*.py"        # 245 个
 python -B -m unittest discover -s web\tests -p "test_*.py"   # 30 个
 
-python -B auto\quotecli.py SZ161130 --check                  # 真实抓取（需网络）
+python -B auto\cli\quotecli.py SZ161130 --check                  # 真实抓取（需网络）
 python -B auto\_quote_probe.py --parse                       # 离线走通"解析 -> 落库"
 python -B auto\_quote_probe.py                               # 查库里的市价/净值/溢价率
 python -B dbtools\sync_demo_netvalue.py                          # 对齐种子净值后重解校准值

@@ -169,10 +169,10 @@ SZ161130   4.586786    4.586786    4.587085    期货 hf_NQ
 cd F:\woody\woodyweb\python
 
 python -B dbtools\seed_futures_pair.py --apply     # 建配对（一次性）
-python -B auto\futurescli.py                    # 抓期货 + 落快照 + 尝试校准
-python -B auto\futurescli.py --show             # 看期货行情与校准状态
-python -B auto\futurescli.py --est              # 三个 EST（实时用期货）
-python -B auto\futurescli.py --api              # 口径说明
+python -B auto\cli\futurescli.py                    # 抓期货 + 落快照 + 尝试校准
+python -B auto\cli\futurescli.py --show             # 看期货行情与校准状态
+python -B auto\cli\futurescli.py --est              # 三个 EST（实时用期货）
+python -B auto\cli\futurescli.py --api              # 口径说明
 python -B dbtools\calibrate_futures.py --apply     # 写期货校准值
 ```
 

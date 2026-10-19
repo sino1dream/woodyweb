@@ -43,12 +43,12 @@
 
     cd F:\\woody\\woodyweb\\python
 
-    python -B auto\\autocalibrationcli.py --show
-    python -B auto\\autocalibrationcli.py                  # 预演（不写库）
-    python -B auto\\autocalibrationcli.py --apply          # 走闸门写入
-    python -B auto\\autocalibrationcli.py --force --apply  # 忽略闸门强制写入
-    python -B auto\\autocalibrationcli.py --funds          # 基金层 cal_f 预演
-    python -B auto\\autocalibrationcli.py --funds --apply  # 基金层写库
+    python -B auto\\cli\\autocalibrationcli.py --show
+    python -B auto\\cli\\autocalibrationcli.py                  # 预演（不写库）
+    python -B auto\\cli\\autocalibrationcli.py --apply          # 走闸门写入
+    python -B auto\\cli\\autocalibrationcli.py --force --apply  # 忽略闸门强制写入
+    python -B auto\\cli\\autocalibrationcli.py --funds          # 基金层 cal_f 预演
+    python -B auto\\cli\\autocalibrationcli.py --funds --apply  # 基金层写库
 """
 
 from __future__ import annotations

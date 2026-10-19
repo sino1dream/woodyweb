@@ -7,13 +7,13 @@
 
     cd F:\\woody\\woodyweb\\python
 
-    python -B auto\\fundestcli.py                     # 记录一批基金的官方 EST
-    python -B auto\\fundestcli.py --symbol SZ161130   # 只记录一只
-    python -B auto\\fundestcli.py --list              # 看已记录了哪些
-    python -B auto\\fundestcli.py --list SZ161130     # 看某只的全部记录
-    python -B auto\\fundestcli.py --check             # 扫描误差（真实净值 vs 当时估值）
-    python -B auto\\fundestcli.py --strict            # 启用 PHP 的 20:55 闸门
-    python -B auto\\fundestcli.py --api               # 说明这份工具的口径
+    python -B auto\\cli\\fundestcli.py                     # 记录一批基金的官方 EST
+    python -B auto\\cli\\fundestcli.py --symbol SZ161130   # 只记录一只
+    python -B auto\\cli\\fundestcli.py --list              # 看已记录了哪些
+    python -B auto\\cli\\fundestcli.py --list SZ161130     # 看某只的全部记录
+    python -B auto\\cli\\fundestcli.py --check             # 扫描误差（真实净值 vs 当时估值）
+    python -B auto\\cli\\fundestcli.py --strict            # 启用 PHP 的 20:55 闸门
+    python -B auto\\cli\\fundestcli.py --api               # 说明这份工具的口径
 """
 
 from __future__ import annotations
