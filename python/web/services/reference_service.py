@@ -598,6 +598,12 @@ def _build_one(symbol: str, source: Any = None, quote_loader: Any = None) -> Any
 
     优先用 ``refobj.MysqlReference``（它带净值/仓位/校准值，是详情页需要的）；
     ``refobj`` 不可用时退回 ``stockref.StockReference``（只有行情，字段更少）。
+
+    **中间价符号（USCNY/HKCNY/JPCNY/EUCNY）用 ``CnyReference``**：
+    PHP 的参考数据表对它们就是 ``new CnyReference(...)``（生产端该行时间
+    固定 09:15、取 ``netvaluehistory``）。统一用 ``MysqlReference`` 会让
+    ``realtimequote`` 的旧快照盖住净值口径 —— 实测演示库 USCNY 被盖成
+    10-14/6.6917，而净值表里明明是 10-16/6.722（2026-10-19 修）。
     """
     try:
         from ref.refobj import MysqlReference
@@ -605,7 +611,14 @@ def _build_one(symbol: str, source: Any = None, quote_loader: Any = None) -> Any
         return _build_one_via_stockref(symbol, quote_loader)
 
     try:
-        ref = MysqlReference(symbol, source=source)
+        from ref.refobj import QDII_REGIONS, CnyReference
+        mid_rate_symbols = {pair[0] for pair in QDII_REGIONS.values()}
+        factory = CnyReference if symbol in mid_rate_symbols else MysqlReference
+    except ImportError:
+        factory = MysqlReference
+
+    try:
+        ref = factory(symbol, source=source)
     except Exception:
         return _build_one_via_stockref(symbol, quote_loader)
 

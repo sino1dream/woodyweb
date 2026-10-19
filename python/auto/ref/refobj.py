@@ -248,6 +248,13 @@ class MysqlReference(StockReference):
     ```
     """
 
+    #: 构造期是否装填行情快照（见 :meth:`load_quote_data`）。
+    #: 默认 ``True``（PHP 的 ``LoadSinaData`` 子类都抓行情）。
+    #: **CnyReference 置 ``False``** —— PHP ``cnyref.php`` 的 ``LoadData()``
+    #: 只有 ``LoadSqlNetValueData()`` 一步，从不装行情：它的 strDate/strPrice
+    #: 必须留在净值表口径。
+    snapshot_quotes = True
+
     def __init__(self, symbol: str, source: Any = None, quote_loader: Callable[[str], Any] = None):
         super().__init__(symbol, quote_loader=quote_loader)
         self.source = source
@@ -269,7 +276,13 @@ class MysqlReference(StockReference):
         # ``has_data`` 按"有没有净值"设过一次，这里以行情为准覆盖。
         # 快照没有该符号时留空，联网兜底由请求期显式触发
         # （``refquote.refresh_quotes``）—— 构造期联网会让每个请求都慢一拍。
-        self.quote_source = self.load_quote_data()
+        #
+        # ``snapshot_quotes`` 为 ``False`` 的类（CnyReference）整步跳过：
+        # 它的净值口径会被 realtimequote 旧快照覆盖（实测 USCNY 被盖成
+        # 10-14/6.6917，而 netvaluehistory 里是 10-16/6.722），
+        # 接着 ``GetDate()`` 与官方日期比就出错，参考 EST 的放行条件
+        # 跟着误判（PHP 侧根本没有这一步）。
+        self.quote_source = self.load_quote_data() if self.snapshot_quotes else "none"
         # 外链：PHP 在 ``LoadSinaFundData()`` 里 ``SetExternalLink(GetSinaFundLink())``。
         # **必须有内容** —— 参考数据表首格就是它，为空会让整行少一格、列错位。
         # 取不到外链时 ``get_sina_fund_link()`` 会退回纯符号文本（与 PHP 一致）。
@@ -610,7 +623,16 @@ class CnyReference(MysqlReference):
     * 汇率**没有盘中价**，只有每天一个中间价，所以走 ``netvaluehistory``，
       并且把时间固定成 ``09:15:00``（中国外汇交易中心公布中间价的时点）；
     * ``GetClose()`` 覆盖成查**净值表**而不是行情表 —— 汇率压根不在行情表里。
+
+    第三点（``snapshot_quotes = False``）：PHP ``cnyref.php`` 的 ``LoadData()``
+    只调 ``LoadSqlNetValueData()``，**从不装行情**。所以本类拒绝
+    ``MysqlReference.__init__`` 里的快照装填 —— 否则 realtimequote 的旧快照
+    （演示库里 USCNY 是 10-14/6.6917）会盖掉净值表的新值（10-16/6.722），
+    ``GetDate()`` 与官方日期比较时误判，参考 EST 的放行条件跟着错。
     """
+
+    #: 不装行情快照（理由见类 docstring 第三点）。
+    snapshot_quotes = False
 
     def load_data(self) -> None:
         self.stock_id = self._call("get_stock_id", self.get_symbol())

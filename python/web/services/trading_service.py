@@ -170,45 +170,44 @@ class TradingService:
         默认那个值是给"短文本"的，QDII 那列要用
         :data:`qdii_trading_column.PAIR_ESTIMATE_WIDTH`。
 
-        溢价列的追加是**嵌套**的（不是并列）：有官方估值才加"官方溢价"列，
-        有参考估值才再加"参考溢价"，有实时估值才再加"实时溢价"。顺序拷自 PHP。
+        溢价列的追加：有官方估值才加"官方溢价"列；在此之下**参考与实时是
+        两个并列的分支**（PHP ``tradingparagraph.php:121`` 与 ``:127`` 是
+        两个同级 ``if``）—— 只要实时估值有值就加"实时溢价"列，哪怕参考
+        估值为空。顺序拷自 PHP。
         """
         ref = _stock_ref_of(fund)
         if ref is None:
             return None
 
         official = _invoke(fund, "get_official_net_value", "GetOfficialNetValue")
-        fair = False
-        realtime = False
         est_prices: list = []
         est_text = ""
+        columns = _base_columns()
 
         if _php_truthy(official):
+            # PHP：官方里嵌**两个并列** if（参考、实时互不依赖，只依赖官方存在）。
+            # 曾经误写成嵌套 —— fair 为空时 realtime 连读都不读，演示库
+            # SZ161130/SZ161125 实测把「实时溢价」列整列吞掉（2026-10-19，
+            # 用户对照生产端发现）。列与 est_prices 在这里同步 append，
+            # 保证「官方+实时」（缺参考）时也是两列对两格，不会错位。
             est_prices.append(official)
+            columns.append(column_premium(STOCK_DISP_OFFICIAL))
             prev = _floatval(_invoke(ref, "get_prev_price", "GetPrevPrice"))
             est_text = _text(_invoke(ref, "get_price_display", "GetPriceDisplay", official, prev))
 
             fair = _invoke(fund, "get_fair_net_value", "GetFairNetValue")
             if _php_truthy(fair):
                 est_prices.append(fair)
+                columns.append(column_premium(STOCK_DISP_FAIR))
                 est_text += "|" + _text(
                     _invoke(ref, "get_price_display", "GetPriceDisplay", fair, prev))
 
-                realtime = _invoke(fund, "get_realtime_net_value", "GetRealtimeNetValue")
-                if _php_truthy(realtime):
-                    est_prices.append(realtime)
-                    est_text += "|" + _text(
-                        _invoke(ref, "get_price_display", "GetPriceDisplay", realtime, prev))
-
-        columns = _base_columns()
-        # 注意：这三个分支是嵌套的，改成三个并列的 if 会多出「有实时估值但没参考
-        # 估值」那种 PHP 里不存在的列 —— 页面照样出得来，只是表头多一列、每行少一格。
-        if len(est_prices) > 0:
-            columns.append(column_premium(STOCK_DISP_OFFICIAL))
-        if len(est_prices) > 1:
-            columns.append(column_premium(STOCK_DISP_FAIR))
-        if len(est_prices) > 2:
-            columns.append(column_premium(STOCK_DISP_REALTIME))
+            realtime = _invoke(fund, "get_realtime_net_value", "GetRealtimeNetValue")
+            if _php_truthy(realtime):
+                est_prices.append(realtime)
+                columns.append(column_premium(STOCK_DISP_REALTIME))
+                est_text += "|" + _text(
+                    _invoke(ref, "get_price_display", "GetPriceDisplay", realtime, prev))
 
         base_title = self._title_of(ref)
         if est_text:

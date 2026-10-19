@@ -245,6 +245,24 @@ class MysqlReferenceTest(unittest.TestCase):
         ref = MysqlReference("SZ161130", source=FakeSource())
         self.assertEqual(ref.get_net_value_display(None), "")
 
+    def test_snapshot_still_fills_ordinary_refs(self):
+        """``snapshot_quotes`` 默认仍为 ``True`` —— 只有 CnyReference 关。
+
+        防的是将来有人图省事把开关默认改成 ``False``：那会让所有引用对象
+        都不读快照，实时 EST 与五档盘口会悄悄退化成历史收盘价。
+        """
+        from types import SimpleNamespace
+
+        class SnapshotSource(FakeSource):
+            def get_stored_quote(self, symbol):
+                return SimpleNamespace(price="4.884", prev_price="4.814",
+                                       date="2026-10-16", time="15:00:00",
+                                       name=None, orderbook=None)
+
+        ref = MysqlReference("SZ161130", source=SnapshotSource())
+        self.assertEqual(ref.get_date(), "2026-10-16")
+        self.assertEqual(ref.quote_source, "snapshot")
+
     def test_chinese_name_falls_back_to_english(self):
         """数据里常常只有一个名字，那时统一放在 strName。"""
         ref = MysqlReference("SZ161130", source=FakeSource())
@@ -488,6 +506,31 @@ class CnyReferenceTest(unittest.TestCase):
         source = FakeSource(netvalue={(8, "2026-10-01"): 6.71}, history={(8, "2026-10-01"): 1.0})
         ref = CnyReference("USCNY", source=source)
         self.assertEqual(ref.get_close("2026-10-01"), 6.71)
+
+    def test_snapshot_never_overrides_netvalue(self):
+        """**修复死用例（2026-10-19）**：CnyReference 不装行情快照。
+
+        PHP ``cnyref.php`` 的 ``LoadData()`` 只有 ``LoadSqlNetValueData()``
+        一步；本版若沿用 ``MysqlReference`` 的默认装填，realtimequote 的旧
+        快照（演示库 USCNY 就是 10-14/6.6917）会盖掉净值表的新值
+        （10-16/6.722），``GetDate()`` 与官方日期比较时误判，参考 EST 的
+        放行条件跟着错。
+        """
+        from types import SimpleNamespace
+
+        class SnapshotSource(FakeSource):
+            def get_stored_quote(self, symbol):
+                return SimpleNamespace(price="6.6917", prev_price=None,
+                                       date="2026-10-14", time="15:00:00",
+                                       name=None, orderbook=None)
+
+        source = SnapshotSource(netvalue={(8, "latest"): 6.722,
+                                          (8, "latest_date"): "2026-10-16"})
+        ref = CnyReference("USCNY", source=source)
+        # 净值表口径原样保留，快照那个 10-14/6.6917 没地方落脚
+        self.assertEqual(ref.get_date(), "2026-10-16")
+        self.assertEqual(ref.get_price(), "6.722")
+        self.assertEqual(ref.quote_source, "none")
 
 
 class QdiiRegionTest(unittest.TestCase):

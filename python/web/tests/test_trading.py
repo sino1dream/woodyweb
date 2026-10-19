@@ -329,7 +329,10 @@ class FundTradingTest(unittest.TestCase):
         self.assertEqual(table["title"],
                          "SZ161130当前5档交易价格相对于EST4.545的溢价")
 
-    def test_fair_and_realtime_append_in_nested_order(self):
+    def test_fair_and_realtime_append_side_by_side(self):
+        """PHP ``tradingparagraph.php:121`` 与 ``:127`` 是两个**同级** if ——
+        参考与实时互不依赖，只共同依赖官方估值存在。三档全有时三列齐全。
+        """
         table = TradingService().fund_table(self.FakeFund(
             official=4.545, fair=4.549, realtime=4.6))
         self.assertEqual([c["text"] for c in table["columns"]],
@@ -337,11 +340,21 @@ class FundTradingTest(unittest.TestCase):
         self.assertEqual(table["title"],
                          "SZ161130当前5档交易价格相对于EST4.545|4.549|4.600的溢价")
 
-    def test_realtime_without_fair_is_impossible(self):
-        """PHP 里 realtime 的取值嵌在 fair 的 if 里，所以不会出现"跳过参考、只有实时"。"""
+    def test_realtime_without_fair_still_shows_realtime_column(self):
+        """**修复死用例（2026-10-19）**：参考估值为空、实时估值有值时，
+        「实时溢价」列照样出现 —— PHP 那两个 if 是并列的。
+
+        曾经的误译把 realtime 的取值嵌进 fair 的 if 里，导致演示库
+        SZ161130/SZ161125 的实时溢价列被整列吞掉（用户对照生产端
+        sz161130cn.php 发现本地只有「官方溢价」一列）。
+        """
         table = TradingService().fund_table(self.FakeFund(official=4.545, realtime=4.6))
         self.assertEqual([c["text"] for c in table["columns"]],
-                         ["交易", "价格", "数量", "官方溢价"])
+                         ["交易", "价格", "数量", "官方溢价", "实时溢价"])
+        self.assertEqual(table["title"],
+                         "SZ161130当前5档交易价格相对于EST4.545|4.600的溢价")
+        # 两列对两格，不能错位
+        self.assertEqual(table["cell_count"], len(table["columns"]))
 
     def test_premium_cells_are_aligned_with_columns(self):
         table = TradingService().fund_table(self.FakeFund(official=4.545, fair=4.549))

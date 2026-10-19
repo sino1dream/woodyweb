@@ -177,6 +177,54 @@ PHP 是一串三分支，返回四个互斥的槽位而不是压成一个键，�
 同理 `fx_susdcny` / `hf_CL` 这类符号页面空，是因为它们的 `stockhistory`
 行数为 0（已查证：`^NDX`=800、`SPY`=3、这两个=0），不是渲染问题。
 
+### 6.6 修复：三档溢价列的**并列**结构（2026-10-19）
+
+用户对照生产端 `sz161130cn.php` 发现：本地 `/fund/qdiilof/SZ161130` 的五档表
+**只有「官方溢价」一列**，生产端有「官方 | 参考 | 实时」三列；参考数据表里
+NQ（hf_NQ）期货数据是新的，实时估值也算得出来（`4.413`），列就是不出现。
+
+**根因是迁移误译，不是数据问题**：PHP `EchoFundTradingParagraph()`
+（`php/ui/tradingparagraph.php:115/121/127`）的三个溢价列是
+
+```php
+if ($fOfficial = ...)                 { $arColumn[] = ... OFFICIAL; ...
+    if ($fFair = ...)                 { $arColumn[] = ... FAIR; ... }
+    if ($fRealtime = ...)             { $arColumn[] = ... REALTIME; ... }   // 与 FAIR 同级！
+}
+```
+
+参考与实时是**两个并列 if**（只共同依赖 official）。`trading_service.fund_table()`
+当初写成嵌套（fair 空 → realtime 连读都不读），docstring 还把「嵌套」当成
+特性记了下来（"改成三个并列的 if 会多出 PHP 里不存在的列"——恰好说反）。
+演示库这两只基金 `fair` 恒为空（原因见下），于是实时溢价列被整列吞掉。
+
+**修法**：列与 `est_prices` 在三个分支里**同步 append**（照 PHP 逐行同构），
+「官方+实时」（缺参考）时自然是两列对两格，不会错位。
+
+**连带修掉的一处**：`CnyReference` 原先继承 `MysqlReference.__init__` 的
+快照装填，被 `realtimequote` 旧快照盖住净值口径（演示库 USCNY 被盖成
+10-14/6.6917，净值表里明明是 10-16/6.722）—— PHP `cnyref.php` 的 `LoadData()`
+只有 `LoadSqlNetValueData()` 一步，从不装行情。现在 `snapshot_quotes = False`
+关掉这一步；参考数据表的 USCNY 行也改走 `CnyReference`（`reference_service._build_one`
+按符号分流），页面恢复成生产端的形态（09:15 + 净值表日期）。
+
+**本地为什么仍然没有「参考溢价」列**（生产端有）：PHP 的放行条件是
+「汇率日期 ≠ 官方日期 **或** 中间层日期 ≠ 官方日期」。本地 `fundest` 已到
+10-16、`^NDX` 与 USCNY 净值也都是 10-16 —— 三者同一天，参考 EST 等于官方
+EST，PHP 语义下**不显示**（没有信息量）。生产端官方日落后一天（10-15），
+所以参考列还在。今晚 `fundestcli` 跑完后生产端也会只剩两列。**这不是 bug。**
+
+**验证**：`auto/_scratch/_php_trading_check.php` + `_php_trading_compare.py`
+8 种组合（official/fair/realtime 各有或无）逐例比对列列表与标题，8/8 严格
+一致；`test_trading.py` 新增 `test_realtime_without_fair_still_shows_realtime_column`
+钉死「有实时无参考」；`test_refobj.py` 新增 CnyReference 不快照覆盖的死用例。
+端到端：SZ161130 `EST4.365|4.413`、SZ161125 `EST3.155|3.176`。
+
+**教训（pitfalls #86）**：PHP 的 if 嵌套关系是**语义**的一部分，"看起来
+等价"的重构（三个并列 if 改嵌套 + `len(est_prices)` 猜列）会把分支结构
+悄悄改掉，而功能测试只测「三档全有」这一种组合，完全不敏感。
+列追加这类逻辑要做**全组合**对照，不能只测 happy path。
+
 ## 7. CK2b 的两个缺口（跟踪表 / 基金溢价记录）
 
 CK3 之后 `/stock/<symbol>` 的第 2 分支（``_mystock.php:131-136``）还差两段，
