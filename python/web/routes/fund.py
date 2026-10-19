@@ -81,10 +81,12 @@ def _render_fund(symbol: str, group: str):
         stockhistory=_build_stock_history(symbol),
         netvalueclose=_build_netvalue_close(symbol),
         fundhistory=_build_fund_history(symbol),
-        sma=_build_sma(symbol),
+        # 均线三段默认隐藏（PALMMICRO_SHOW_SMA=1 恢复），原因见 _sma_enabled()。
+        # 传 None / [] 而不是在模板里判开关：顺带免掉 SmaService 的取数与计算。
+        sma=_build_sma(symbol) if _sma_enabled() else None,
         calibration=_build_calibration(symbol),
         fundlist=_build_fund_list(symbol),
-        fundpairsma=_build_fund_pair_sma(symbol),
+        fundpairsma=_build_fund_pair_sma(symbol) if _sma_enabled() else [],
     )
 
 
@@ -155,6 +157,28 @@ def _wants_live_refresh() -> bool:
     if request.args.get("live") in ("1", "true", "yes"):
         return True
     return os.getenv("PALMMICRO_TRADING_LIVE_QUOTES", "0") == "1"
+
+
+def _sma_enabled() -> bool:
+    """基金详情页的均线表是否显示（``PALMMICRO_SHOW_SMA``，默认 ``0`` = 隐藏）。
+
+    2026-10-19 用户要求"把所有具体基金详情页面的均线表格隐藏不显示"。
+    做法是**默认隐藏、置 1 恢复**，而不是删代码：``smaparagraph.php`` 那套
+    迁移（``EchoQdiiSmaParagraph`` + ``EchoFutureSmaParagraph`` + 各杠杆
+    均线，含 PHP 逐例对照与三十多个单测）都原样保留，置 1 即整段回来。
+
+    隐藏范围 = 模板里三处均线渲染（``sma.qdii`` 主表 / ``fundpairsma``
+    各杠杆表 / ``sma.future`` 期货表），以及 PHP 嵌套在
+    ``EchoFutureSmaParagraph`` 里的那张中间层校准记录（``sma.calibration``，
+    ``smaparagraph.php:218``）—— 它在生产端就没有独立标题，视觉上是均线段
+    的一部分，见 ``templates/fund_detail.html`` 与
+    ``README_sma_paragraph_migration.md`` 的偏差记录。
+
+    与 :func:`_wants_live_refresh` 同款：**每请求现读**（不在 import 时定死），
+    测试改环境变量就能验证两个方向。隐藏时路由连数据都不建 ——
+    ``SmaService`` 要读 ``stockhistory`` / ``stockema`` 算均线，能省则省。
+    """
+    return os.getenv("PALMMICRO_SHOW_SMA", "0") == "1"
 
 
 def _build_trading(symbol: str) -> dict[str, Any] | None:

@@ -36,7 +36,11 @@ from web.tests.test_calibration import (  # noqa: E402
     make_service,
 )
 from web.tests.test_sma import FakeHistory, make_sma  # noqa: E402
-from web.tests.test_sma_route import FakePremiumSource, FakeQdiiRef  # noqa: E402
+from web.tests.test_sma_route import (  # noqa: E402
+    FakePremiumSource,
+    FakeQdiiRef,
+    _force_sma_visible,
+)
 
 
 def _squeezed(html):
@@ -143,6 +147,9 @@ class EstCalibrationRouteTest(unittest.TestCase):
         from web.services.sma_service import SmaService
         from web.tests.test_web import make_source
 
+        # 这张表在 PHP 里嵌套于 EchoFutureSmaParagraph（smaparagraph.php:218），
+        # 2026-10-19 起随均线段一起默认隐藏；置 1 后接线不变，钉子继续有效。
+        _force_sma_visible(self)
         self.history = FakeHistoryService(
             records=[_record(date="2026-10-09", close="1.006", time="04:02:00",
                              num="2083")],

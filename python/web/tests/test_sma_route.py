@@ -6,12 +6,15 @@
 **不联网、不连库**：引用对象走 ``sma_refs_builder`` 注入，``StockHistory``
 走 ``sma_history_factory`` —— 两个口子都是为此新增的。
 
-钉的是三件事：
+钉的是四件事：
 
 1. 均线表真的出现在页面上（列头「均线」、行标题「5日」）；
 2. 期货那张表的**理论溢价**说明文字出现在页面上 —— 那是
    ``EchoFutureSmaParagraph`` 独有的，走 ``futurepremium`` 表；
-3. 没有历史数据时整段跳过，页面上不出现空表。
+3. 没有历史数据时整段跳过，页面上不出现空表；
+4. **默认（``PALMMICRO_SHOW_SMA`` 未设）整段不渲染** —— 2026-10-19
+   用户要求隐藏，``FundDetailSmaHiddenByDefaultTest`` 钉这一条；
+   其余用例都经 ``_force_sma_visible()`` 置 1 后跑，钉"隐藏不改接线"。
 
 ``SmaConfigBackendTest`` 另钉一件事：**配置后端默认不落盘**
 （``auto/smaconfig.py``，那三节设计取舍的开关就在这一处）。
@@ -46,6 +49,27 @@ def _squeezed(html: str) -> str:
 
 #: 对照列（``TableColumnStock``）的表头：``<span class="col-maroon">SH</span>``。
 _STOCK_HEAD_RE = re.compile(r'<span class="col-maroon">([^<]+)</span>')
+
+
+def _restore_env(name: str, saved: "str | None") -> None:
+    """把环境变量还原成 ``saved``（``None`` 表示原本没有，删掉）。"""
+    if saved is None:
+        os.environ.pop(name, None)
+    else:
+        os.environ[name] = saved
+
+
+def _force_sma_visible(test: unittest.TestCase) -> None:
+    """把 ``PALMMICRO_SHOW_SMA`` 置 1 并登记还原。
+
+    2026-10-19 起均线表**默认隐藏**（用户要求基金详情页不展示），
+    本文件的接线用例钉的是"置 1 之后一切不变" —— ``smaparagraph.php``
+    的迁移结论（列顺序、颜色、换算因子、理论溢价）不随默认值作废。
+    默认隐藏本身由 :class:`FundDetailSmaHiddenByDefaultTest` 钉。
+    """
+    saved = os.environ.get("PALMMICRO_SHOW_SMA")
+    test.addCleanup(_restore_env, "PALMMICRO_SHOW_SMA", saved)
+    os.environ["PALMMICRO_SHOW_SMA"] = "1"
 
 
 class FakeDailyRecord:
@@ -126,6 +150,7 @@ class FundDetailSmaRouteTest(unittest.TestCase):
         from web.services.sma_service import SmaService
         from web.tests.test_web import make_source
 
+        _force_sma_visible(self)
         self.history = FakeHistory(sma=make_sma(), ref=FakeQdiiRef())
         self.refs = [FakeQdiiRef()]
         self.app = create_app(
@@ -273,6 +298,7 @@ class FundPairSmaRouteTest(unittest.TestCase):
         from web.services.sma_service import SmaService
         from web.tests.test_web import make_source
 
+        _force_sma_visible(self)
         self.history = FakeHistory(sma=make_sma(value="1000.00"),
                                    next_values=make_sma(value="1010.00"),
                                    ref=_EstRef())
@@ -484,6 +510,9 @@ class SmaConfigBackendTest(unittest.TestCase):
         from web.services.sma_service import SmaService
         from web.tests.test_web import make_source
 
+        # 这条断言"渲染了均线表却一个文件都不写"—— 均线表默认隐藏后，
+        # 要先置 1 才渲染得出来（钉子本身不变）。
+        _force_sma_visible(self)
         app = create_app(
             {"TESTING": True},
             fund_service_factory=lambda: FundService(make_source()),
@@ -502,6 +531,55 @@ class SmaConfigBackendTest(unittest.TestCase):
 
         self.assertIn("sma-table", html, "先确认确实渲染了均线表")
         self.assertEqual(os.listdir(self.root), [])
+
+
+class FundDetailSmaHiddenByDefaultTest(unittest.TestCase):
+    """默认（不设 ``PALMMICRO_SHOW_SMA``）整段不渲染 —— 2026-10-19 用户要求。
+
+    与 :class:`FundDetailSmaRouteTest` 是**同一套注入**，只差环境变量：
+    那边置 1 钉"接线不变"，这边钉"默认真的不出现"，两个方向都要有人守。
+    """
+
+    def setUp(self):
+        from web.app import create_app
+        from web.services.fund_service import FundService
+        from web.services.sma_service import SmaService
+        from web.tests.test_web import make_source
+
+        # 防御性地确保变量不存在（别的用例泄漏时这条要还能红）
+        saved = os.environ.pop("PALMMICRO_SHOW_SMA", None)
+        self.addCleanup(_restore_env, "PALMMICRO_SHOW_SMA", saved)
+        self.history = FakeHistory(sma=make_sma(), ref=FakeQdiiRef())
+        self.refs = [FakeQdiiRef()]
+        self.app = create_app(
+            {"TESTING": True},
+            fund_service_factory=lambda: FundService(make_source()),
+            sma_service_factory=lambda: SmaService(
+                history_factory=lambda ref, wide: self.history),
+            sma_refs_builder=lambda symbols: self.refs,
+            reference_service_factory=lambda: type(
+                "FakeReferenceService", (), {"source": FakePremiumSource()})(),
+        )
+        self.client = self.app.test_client()
+
+    def test_no_sma_tables_by_default(self):
+        html = _squeezed(self.client.get("/fund/SZ162411").get_data(as_text=True))
+
+        self.assertNotIn("sma-table", html)
+        self.assertNotIn("sma-pair-table", html)
+        self.assertNotIn("sma-future-table", html)
+        self.assertNotIn("<h2>均线</h2>", html)
+        self.assertNotIn("理论溢价", html)
+        # 中间层校准记录（smaparagraph.php:218 嵌套在期货均线段里那张）
+        # 随整段一起隐藏 —— 已在 README 记为已知偏差
+        self.assertNotIn("calibration-est-table", html)
+
+    def test_the_flag_brings_the_tables_back(self):
+        """置 1 恢复 —— 与 :class:`FundDetailSmaRouteTest` 钉的是同一件事。"""
+        os.environ["PALMMICRO_SHOW_SMA"] = "1"
+        html = _squeezed(self.client.get("/fund/SZ162411").get_data(as_text=True))
+
+        self.assertIn('class="data-table sma-table"', html)
 
 
 if __name__ == "__main__":

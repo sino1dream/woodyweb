@@ -182,6 +182,26 @@ PHP 遇到"该标的没有历史数据"时表现很糟：`_calcStartDate()` 拿�
 * `sma_refs_builder` —— 顶替"按符号建 QDII 引用对象"；
 * `sma_history_factory` —— 顶替 `StockHistory` 的构造。
 
+### 9.1 默认隐藏：`PALMMICRO_SHOW_SMA`（2026-10-19，第二处有意偏离 PHP）
+
+用户要求"把所有具体基金详情页面的均线表格隐藏不显示"。做法是
+**默认隐藏、环境变量置 1 恢复**（`web/routes/fund.py::_sma_enabled()`，
+与 `PALMMICRO_TRADING_LIVE_QUOTES` 同款每请求现读），**不是删代码** ——
+本文记录的迁移结论与 `web/tests/test_sma_route.py` 的接线用例原样保留，
+置 1 即整段回来、逐例对照结论不变。
+
+隐藏范围 = 模板里三处均线渲染：`sma.qdii` 主表、`fundpairsma` 各杠杆表、
+`sma.future` 期货表。**连带影响一张**：PHP 把中间层标的的校准记录嵌套在
+`EchoFutureSmaParagraph` 里（`smaparagraph.php:218`，生产端无独立标题，
+视觉上是均线段的一部分），本版同一处模板位置，随整段一起隐藏 ——
+`EstCalibrationRouteTest`（`web/tests/test_calibration_route.py`）因此
+也置 1 后跑。基金**自己**的「校准记录」段（`fundestparagraph.php:157`）
+在模板另一处，不受影响。
+
+隐藏时路由连数据都不建（`sma=None` / `fundpairsma=[]`）——
+`SmaService` 要读 `stockhistory` / `stockema` 算均线，省掉是顺带。
+默认隐藏由 `FundDetailSmaHiddenByDefaultTest` 钉住。
+
 ## 十、PHP 逐项对照
 
 ```powershell
