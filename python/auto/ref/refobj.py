@@ -1985,13 +1985,38 @@ class QdiiReference(FundReference):
         $fFactor = QdiiGetCalibration($strEst, $strCNY, $this->GetPrice());
         ```
 
-        即 ``校准值 = 中间层值 × 汇率 / 基金价格``。取中间层值时**净值优先**，
+        即 ``校准值 = 中间层值 × 汇率 / 基金净值``。取中间层值时**净值优先**，
         净值没有才退回收盘价 —— 两条都取不到就返回 ``false``（不重算）。
+
+        ## 分母必须是**单位净值**，不是场内价
+
+        PHP 那个 ``$this->GetPrice()`` 对基金引用对象返回的是**单位净值**
+        （新浪 ``f_`` 行情给的就是净值）。本版的 ``get_price()`` 拿到的是
+        LOF/ETF 的**场内成交价**，两者差 5% 上下，直接拿来当分母会把校准值
+        算小同样的比例：
+
+        ```text
+        ^GSPC(10-16) × USCNY(10-16) ÷ 3.299  = 15606.78   ← 用场内价（错）
+        ^GSPC(10-16) × USCNY(10-16) ÷ 3.1206 = 16498.99   ← 用净值（生产端 16498.992）
+        ```
+
+        实测 ``SZ161125`` 2026-10-16 那条就是这么写歪的（库里 15606.776298）。
+
+        **它不影响页面估值**：``fundestcalc._qdii_value()`` 里
+        ``contribution = nv × cal_f / cny``，而 ``calc_with_calibration``
+        最后又除一次 ``cal_f``，两者正好约掉。所以错的是「校准记录」与
+        「对冲值」这两处展示，以及任何直接读 ``cal_f`` 的地方。
+
+        锚点日期同样跟着净值走（``est`` 与 ``cny`` 取**净值那天**的值），
+        这就是 ``_plan_a_recalibrate.py`` 说的"同锚一日"。
         """
         if not self.update_official_net_value():
             return None
 
-        date = self.get_date()
+        nav, date = self._anchor_nav()
+        if nav in (None, "") or date in (None, ""):
+            return None
+
         cny_ref = self.get_cny_ref()
         if cny_ref is None:
             return None
@@ -2011,11 +2036,39 @@ class QdiiReference(FundReference):
             return None
 
         try:
-            self.factor = qdii_get_calibration(float(est), float(cny), float(self.get_price()))
+            self.factor = qdii_get_calibration(float(est), float(cny), float(nav))
         except (TypeError, ValueError, ZeroDivisionError):
             return None
         self.insert_fund_calibration()
         return self.factor
+
+    def _anchor_nav(self) -> tuple:
+        """校准锚点：``(单位净值, 它的日期)``。
+
+        先看**当前行情日期**那天有没有净值（新净值刚到货时就是它），
+        没有就用最新一条 —— 对应 PHP ``$this->GetPrice()`` 取到的"最新净值"。
+        """
+        stock_id = self.get_stock_id()
+        if stock_id is None:
+            return None, None
+
+        current = self.get_date()
+        reader = getattr(self.source, "get_netvalue_close", None)
+        if callable(reader) and current not in (None, ""):
+            value = reader(stock_id, current)
+            if value not in (None, ""):
+                return value, current
+
+        reader = getattr(self.source, "get_latest_net_value_close", None)
+        if not callable(reader):
+            return None, None
+        value = reader(stock_id)
+        if value in (None, ""):
+            return None, None
+
+        date_reader = getattr(self.source, "get_latest_net_value_date", None)
+        date = date_reader(stock_id) if callable(date_reader) else current
+        return value, date
 
     # -- QDII 换算 --------------------------------------------------------
     def get_qdii_value(self, est: Any, cny: Any = None) -> float:

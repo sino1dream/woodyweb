@@ -42,12 +42,34 @@ from typing import Any, Dict, List, Mapping, Optional
 # 环境变量：汇率源名字
 ENV_SOURCE = "PALMMICRO_FOREX_SOURCE"
 
-#: 默认汇率源：``crosscheck``（新浪为主 + 中国货币网对照 + 差异告警）。
+#: 默认汇率源：``crosscheck``（中国货币网为主 + 新浪对照 + 差异告警）。
 #: 要退回单源就设 ``PALMMICRO_FOREX_SOURCE=sina``（或 chinamoney）。
 DEFAULT_FOREX_SOURCE = "crosscheck"
 
-#: 单源默认（crosscheck 没有拿到主源名字时用它，避免自我递归）
-DEFAULT_PRIMARY_FOREX = "sina"
+#: 单源默认（crosscheck 没有拿到主源名字时用它，避免自我递归）。
+#:
+#: ## 必须是 ``chinamoney``，不能是 ``sina``
+#:
+#: ``netvaluehistory`` 里存的是**中间价历史**（PHP ``CnyReference`` 读的就是它：
+#: ``SetForex('USCNY')`` → ``GetClose($date)``）。而新浪那个代码
+#: ``SINA_FOREX_CODES['USCNY'] = 'fx_susdcny'`` 是**即期**汇率，两者差 0.6% 左右：
+#:
+#: ==========  ==============  ==================
+#: 符号          新浪（即期）     货币网（中间价）
+#: ==========  ==============  ==================
+#: USCNY        6.679           6.72
+#: HKCNY        0.85113         0.85628
+#: ==========  ==============  ==================
+#:
+#: 曾经默认 ``sina``，于是**即期价被写进中间价历史**：``USCNY`` 的
+#: 2026-10-20 那条成了 ``6.6798``（与 ``fx_susdcny`` 快照逐位相同），
+#: 而当天真实中间价是 ``6.72``。后果是参考 EST / 实时 EST 系统性偏低
+#: 约 0.6%（实测 SZ161125 参考 EST 3.1145，生产端 3.132）。
+#:
+#: 中间价只有一个权威来源：**中国货币网**（每天 09:15 左右发布）。
+#: 新浪的即期价留给"参考数据表的实时快照"那条链（``forexcli --fx-only``），
+#: 两者的用途不同，不能混写。
+DEFAULT_PRIMARY_FOREX = "chinamoney"
 
 # 各币种对应的**库里符号**（与 PHP 的 CnyReference 符号一致）
 FOREX_SYMBOLS = ("USCNY", "HKCNY", "EUCNY", "JPCNY")
@@ -702,10 +724,20 @@ class CrossCheckForexSource(ForexSource):
 
     与 ``navsource.CrossCheckNavSource`` 的设计一致（那边是净值）：
 
-    * 主源默认**新浪**（实时性好，估值要的是"当下"的汇率）；
-    * 对照源默认**中国货币网**（PHP 原本的源，权威中间价）；
+    * 主源默认**中国货币网**（权威中间价，``netvaluehistory`` 里要的就是它）；
+    * 对照源默认**新浪**（即期，实时性好，用来交叉核对）；
     * 相对差异超容差 → ``ALERT``；
     * 主源取不到 → 自动用对照源，并 ``WARN``。
+
+    ## 主源为什么是货币网而不是新浪
+
+    详见 :data:`DEFAULT_PRIMARY_FOREX`：``netvaluehistory`` 存的是**中间价**，
+    而新浪 ``fx_susdcny`` 是**即期**，两者差约 0.6%。默认用新浪会把即期价
+    写进中间价历史（实测 ``USCNY`` 2026-10-20 被写成 6.6798，真值 6.72），
+    参考 EST / 实时 EST 因此系统性偏低。
+
+    ``WARN`` 那条"主源无数据改用对照源"仍然保留 —— 但要知道它意味着
+    **这一次写进去的是即期价**，所以 ``alert_on_missing`` 打开时能看见。
 
     注意容差用的是**相对比例**（默认 1%）：汇率是 6~7 量级的数，用绝对值不合适。
     """
@@ -715,7 +747,7 @@ class CrossCheckForexSource(ForexSource):
     def __init__(
         self,
         primary: Any = None,
-        secondary: Any = "chinamoney",
+        secondary: Any = "sina",
         tolerance: float = None,
         alert=None,
         alert_on_missing: bool = False,
@@ -814,7 +846,7 @@ class CrossCheckForexSource(ForexSource):
             "primary": self._name_of(self.primary),
             "secondary": self._name_of(self.secondary),
             "tolerance": self.tolerance,
-            "note": "默认新浪为主、中国货币网为对照；相对差超容差会告警",
+            "note": "中国货币网（中间价，入库）为主、新浪（即期）为对照；相对差超容差会告警",
         }
 
 

@@ -760,6 +760,49 @@ class QdiiAdjustFactorTest(unittest.TestCase):
         self.assertIsNone(ref.adjust_factor())
 
     def test_recalculates_when_net_value_is_new(self):
+        """校准值 = 中间层值 × 汇率 ÷ **基金单位净值**。
+
+        ## 分母曾经错用场内价
+
+        PHP 的 ``$this->GetPrice()`` 对基金引用对象返回的是**单位净值**
+        （新浪 ``f_`` 行情给的就是净值）。本版的 ``get_price()`` 拿到的是
+        LOF 的**场内成交价**，两者差 5% 上下。曾经直接拿它当分母，于是
+        ``SZ161125`` 2026-10-16 被写成 ``15606.78``（真值 ``16498.99``，
+        生产端 ``16498.992``）。
+
+        所以这里刻意让 ``str_price``（4.796，场内价）与净值（4.5452）**不同**：
+        结果必须用净值算，用场内价就错。
+        """
+        source = FakeSource(
+            netvalue={
+                (1, "2026-10-01"): 4.5452,        # 基金单位净值（锚点分母）
+                # 假数据源的"最新净值"走这两个键（见 FakeSource 的实现）
+                (1, "latest"): 4.5452,
+                (1, "latest_date"): "2026-10-01",
+                (6, "2026-10-01"): 31098.7787,    # ^NDX
+                (8, "2026-10-01"): 6.705,         # USCNY
+                (8, "latest"): 6.705,
+                (8, "latest_date"): "2026-10-01",
+            },
+        )
+        ref = QdiiReference("SZ161130", source=source, auto_estimate=False)
+        # 行情日 10-02 **还没有净值**，这正是"新净值到货"的判据；
+        # 锚点于是落到最近一条净值 10-01 上（est / cny 也取那一天）。
+        ref.str_date = "2026-10-02"
+        ref.str_price = "4.796"          # 场内价：**不该**当分母
+        ref.get_cny_ref().str_date = "2026-10-01"
+
+        factor = ref.adjust_factor()
+
+        expected = 31098.7787 * 6.705 / 4.5452
+        self.assertIsNotNone(factor)
+        self.assertAlmostEqual(factor, expected, places=6)
+        self.assertAlmostEqual(ref.get_factor(), expected, places=6)
+        # 用场内价会得到另一个值 —— 钉住"没有用它"
+        self.assertNotAlmostEqual(factor, 31098.7787 * 6.705 / 4.796, places=3)
+
+    def test_returns_none_without_any_net_value(self):
+        """没有基金净值就没有锚点，不该拿场内价顶替。"""
         source = FakeSource(
             netvalue={(6, "2026-10-02"): 31098.7787, (8, "2026-10-02"): 6.705},
         )
@@ -768,12 +811,7 @@ class QdiiAdjustFactorTest(unittest.TestCase):
         ref.str_price = "4.796"
         ref.get_cny_ref().str_date = "2026-10-01"
 
-        factor = ref.adjust_factor()
-
-        expected = 31098.7787 * 6.705 / 4.796
-        self.assertIsNotNone(factor)
-        self.assertAlmostEqual(factor, expected, places=6)
-        self.assertAlmostEqual(ref.get_factor(), expected, places=6)
+        self.assertIsNone(ref.adjust_factor())
 
     def test_returns_none_when_est_value_missing(self):
         source = FakeSource(netvalue={(8, "2026-10-02"): 6.705})

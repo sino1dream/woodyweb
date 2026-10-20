@@ -762,6 +762,61 @@ Flask 路由
   问题，要先决定参考表显示哪个）。详见    
   `python/auto/README_index_history_seed.md`。
 
+  ⑪ **EST 日期与估值口径对齐（2026-10-20）**：用户报本地
+  `/fund/qdiilof/SZ161125` 的 EST 日期是 `10-16`（生产端 `10-19`）、
+  估值 3.121/3.102/3.117（生产端 3.132/3.132/3.136）。查出**四个独立缺陷**：
+
+  1. **`mid_date` 取错表（主因）**：`_latest_date()` 先查 `netvaluehistory`，
+     于是中间层 `SPY` 的净值只到 `10-16` 就把 EST 日期定成 `10-16` ——
+     而 PHP 的 `$est_ref->GetDate()` 取的是**行情**日期（`10-19`）。
+     更糟的是 `est_value` 与 `est_quote_ref` 因此**撞成同一个值**，
+     比值退化成 1.0，**官方 EST 恒等于基金净值**（3.1206 就是这么来的）。
+     改成行情优先：`realtimequote` 快照 → `stockhistory` → `netvaluehistory`。
+  2. **中间价历史被即期汇率污染**：`DEFAULT_PRIMARY_FOREX` 原本是 `sina`，
+     而 `SINA_FOREX_CODES["USCNY"] = "fx_susdcny"` 是**即期**代码 ——
+     即期价被写进本该是中间价的 `netvaluehistory`（`USCNY` 10-20 =
+     `6.6798`，真值 `6.72`），参考/实时 EST 系统性偏低 0.6%。
+     改 `chinamoney` 为主、`sina` 为对照，并用 `forexcli` 重写。
+  3. **ETF/LOF 汇率口径没分**：PHP `GetForexRef()` 是
+     `IsEtfA() ? forex_ref : cny_ref`（**ETF 按盘中汇率实时申赎、
+     LOF 只能按当天中间价**），而 `GetQdiiValue($strEst)` 缺省就用它。
+     我们两档都用中间价，于是 ETF 的参考 EST 全高 0.6%
+     （`SH513100` 1.9778 / 生产端 1.965）。新增 `_fair_cny()`：
+     ETF 取 `fx_susdcny` 快照、LOF 取中间价；**官方 EST 仍恒用中间价**。
+  4. **校准值拿场内价当分母**：`adjust_factor()` 用了 `get_price()`
+     （LOF 场内价 3.299），而 PHP 的 `GetPrice()` 对基金返回**单位净值**
+     （3.1206）。验算：`7659.44 × 6.722 ÷ 3.299 = 15606.78`（库里那个值）、
+     `÷ 3.1206 = 16498.99`（生产端 16498.992，偏差 0.0000%）。
+     改成 `_anchor_nav()` 锚净值。**它不影响页面估值**（`cal_f` 在
+     `_qdii_value` 里会约掉），只影响「校准记录」「对冲值」的展示。
+
+  验收（对照生产端 `qdiicn.php` 2026-10-20 快照）：
+
+  ```
+  符号        EST日期       我们 官/参/实        生产端 官/参/实      偏差
+  SZ161130   2026-10-19   4.4197 4.4192 4.415  4.418 4.418 4.411  0.04/0.03/0.09%
+  SZ161125   2026-10-19   3.1326 3.1323 3.134  3.132 3.132 3.135  0.02/0.01/0.03%
+  SH513100   2026-10-19   1.9780 1.9657 1.9638 1.977 1.965 1.962  0.05/0.04/0.09%
+  SH513500   2026-10-19   2.4458 2.4306 2.4321 2.445 2.43  2.433  0.03/0.02/0.04%
+  SZ164906   2026-10-19   0.8679 0.8678 0.8678 0.873 0.859  -      0.58/1.02%（KWEB 数据源差异）
+  ```
+
+  **日期全部对齐**，前几档偏差 ≤0.12%。
+
+  数据修复：新增 `dbtools/verify_calibration_anchor.py`（逐条按
+  `est × cny ÷ 净值` 复核，默认只报告、`--apply` 才写）——
+  实测 85 条里 **1 条**写歪（`SZ161125` 10-16），修完复核 0 条。
+
+  测试：新增 `MiddleDateOrderTest`（5 例，快照日期压过净值日期）、
+  `FairCnyTest`（4 例，ETF 即期 / LOF 中间价）；**改写了三条断言"错误行为"
+  的旧测试**（`test_default_is_crosscheck_with_sina_primary`、
+  `test_recalculates_when_net_value_is_new`）—— 它们把 bug 当成了规格。
+
+  全量 `auto` **1267** / `web` **750**。详见
+  `python/auto/README_est_date_convention.md`。
+
+  ⚠️ **必须重启 `web/app.py`**：Flask 没有自动重载，5000 端口上跑的是旧代码。
+
 远端分支 `origin/devin/1780933111-migrate-php-core-to-python` 已有  
 `python/core/stock_symbol.py` 和 `python/core/sina_fetcher.py`：
 
@@ -775,9 +830,12 @@ Flask 路由
 
 ```powershell
 cd F:\woody\woodyweb\python
-python -B -m unittest discover -s auto -p "test_*.py"        # 911 个
-python -B -m unittest discover -s web\tests -p "test_*.py"   # 431 个
+python -B -m unittest discover -s auto -p "test_*.py"        # 1267 个
+python -B -m unittest discover -s web\tests -t . -p "test_*.py"   # 750 个
 ```
+
+> `web\tests` 要带 `-t .`：`auto/test_fundest.py` 与 `web/tests/test_fundest.py`
+> 同名，discover 会把两者当成同一个模块而报 ImportError（既有问题）。
 
 注意：Web 层测试需要 Flask 与 PyMySQL，当前只装在系统 Python 3.7 上。  
 `python/auto` 的测试在 3.7 与 3.12 上都通过；3.12 上 `test_stockdata.py` 有 2 个  

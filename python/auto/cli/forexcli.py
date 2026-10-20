@@ -95,7 +95,7 @@ def print_api() -> int:
        # 然后设置 PALMMICRO_FOREX_SOURCE=mysource
 
 4) 已注册的源：
-       crosscheck   **默认**：新浪为主 + 中国货币网对照 + 差异告警
+       crosscheck   **默认**：中国货币网（中间价）为主 + 新浪（即期）对照 + 差异告警
        sina         新浪外汇实时价（fx_susdcny 等）
        chinamoney   中国货币网中间价（PHP chinamoney.php 原本用的源）
        fixed        固定值，仅测试/离线用

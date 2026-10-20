@@ -131,19 +131,33 @@ class ForexSourceRegistryTest(unittest.TestCase):
         for expected in ("sina", "chinamoney", "crosscheck", "fixed"):
             self.assertIn(expected, forexsource.list_forex_sources())
 
-    def test_default_is_crosscheck_with_sina_primary(self):
-        # 默认：新浪为主（实时）+ 中国货币网对照
+    def test_default_is_crosscheck_with_chinamoney_primary(self):
+        """默认：**中国货币网为主**（中间价，入库）、新浪为对照（即期）。
+
+        ## 这条曾经断言反了，而反的正是 bug 本身
+
+        ``netvaluehistory`` 里存的是**中间价历史**（PHP ``CnyReference`` 读它），
+        而新浪 ``fx_susdcny`` 是**即期**，两者差约 0.6%。旧默认"新浪为主"
+        于是把即期价写进了中间价：
+
+        * ``USCNY`` 2026-10-20 被写成 ``6.6798``（与 ``fx_susdcny`` 快照逐位
+          相同），真实中间价是 ``6.72``；
+        * 参考 EST / 实时 EST 因此系统性偏低约 0.6%
+          （实测 ``SZ161125`` 参考 EST 3.1145，生产端 3.132）。
+
+        所以默认必须是 ``chinamoney``（唯一权威中间价源），新浪只做对照。
+        """
         self.assertEqual(forexsource.DEFAULT_FOREX_SOURCE, "crosscheck")
         source = forexsource.get_forex_source()
-        self.assertEqual(source.primary.name, "sina")
-        self.assertEqual(source.secondary.name, "chinamoney")
+        self.assertEqual(source.primary.name, "chinamoney")
+        self.assertEqual(source.secondary.name, "sina")
 
     def test_crosscheck_does_not_recurse(self):
         old = os.environ.get(forexsource.ENV_SOURCE)
         os.environ[forexsource.ENV_SOURCE] = "crosscheck"
         try:
             source = forexsource.get_forex_source()
-            self.assertEqual(source.primary.name, "sina")
+            self.assertEqual(source.primary.name, "chinamoney")
         finally:
             if old is None:
                 os.environ.pop(forexsource.ENV_SOURCE, None)

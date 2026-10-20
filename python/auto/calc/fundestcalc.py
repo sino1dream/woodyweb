@@ -148,7 +148,7 @@ class EstimateCalculator:
         if est_id is None:
             return None
 
-        mid_date = self._latest_date(est_id)
+        mid_date = self._latest_date(est_id, est_symbol)
         if mid_date is None:
             return None
 
@@ -168,6 +168,7 @@ class EstimateCalculator:
             "est_symbol": est_symbol,
             "est_id": est_id,
             "mid_date": mid_date,
+            "is_etf": self._is_etf_a(symbol),
             # 实时快照价（实时 EST 用）
             "realtime_quote": self._middle_quote(est_symbol, data),
             # 当日行情价（参考 EST 用，对应 $pair_ref->GetVal()）
@@ -185,6 +186,8 @@ class EstimateCalculator:
             "cny_date": cny_date,
             "cny_mid": cny_mid,
             "cny_current": cny_current,
+            # 参考/实时 EST 该用的汇率（对应 ``GetForexRef()``：ETF 即期、LOF 中间价）
+            "cny_fair": self._fair_cny(symbol, cny_current),
         }
 
     # -- 单个基金 ---------------------------------------------------------
@@ -271,7 +274,7 @@ class EstimateCalculator:
             quote = self._middle_day_quote(ctx["est_symbol"], ctx["mid_date"], ctx["data"])
         if quote is None:
             return None
-        value = self._qdii_value(ctx["calculator"], ctx["data"], quote, ctx["cny_current"],
+        value = self._qdii_value(ctx["calculator"], ctx["data"], quote, ctx["cny_fair"],
                                 est_quote_ref=ctx["est_quote_ref"])
         if not value:
             return None
@@ -337,7 +340,7 @@ class EstimateCalculator:
         quote = self._futures_realtime_quote(ctx) or ctx["realtime_quote"]
         if quote is None:
             return None
-        value = self._qdii_value(ctx["calculator"], ctx["data"], quote, ctx["cny_current"],
+        value = self._qdii_value(ctx["calculator"], ctx["data"], quote, ctx["cny_fair"],
                                 est_quote_ref=ctx["est_quote_ref"])
         if not value:
             return None
@@ -768,14 +771,136 @@ class EstimateCalculator:
         leverage_symbol = get_leverage_hedge_symbol(symbol)
         return leverage_symbol or hedge_symbol
 
-    def _latest_date(self, stock_id: Any) -> Any:
+    def _is_etf_a(self, symbol: str) -> bool:
+        """该标的是不是场内 ETF（``is_etf_a()``，``stocksymbol.py:803``）。
+
+        只用来决定"参考/实时 EST 用即期汇率还是中间价"（见 :meth:`_fair_cny`）。
+        取不到符号对象时按 ``False``（LOF 口径）处理 —— 宁可少算一点汇率差，
+        也不要因为判不出类别就让整张表空掉。
+        """
+        try:
+            from core.stocksymbol import StockSymbol
+        except ImportError:
+            return False
+        try:
+            return bool(StockSymbol(str(symbol)).is_etf_a())
+        except Exception:
+            return False
+
+    def _fair_cny(self, symbol: str, cny_current: Any) -> Any:
+        """参考/实时 EST 该用的汇率（对应 ``GetForexRef()``）。
+
+        ## ETF 用即期、LOF 用中间价
+
+        ``php/stock/fundref.php`` 的 ``GetForexRef()``::
+
+            return $this->IsEtfA() ? $this->forex_ref : $this->cny_ref;
+
+        原因（PHP 原注释）：**ETF 可以按盘中汇率实时申赎，LOF 只能按当天中间价**。
+        所以两者的"当下汇率"不是同一个数：
+
+        * ``USCNY``（中间价，货币网每天 09:15 发布）≈ ``6.72``；
+        * ``fx_susdcny``（即期，新浪实时）≈ ``6.679``。
+
+        差 0.6% —— 正好是之前参考 EST 对不上生产端的那 0.6%。实测
+        ``SH513100`` 我们 1.9778 / 生产端 1.965（ETF，该用即期）；
+        ``SZ161125`` 我们 3.1323 / 生产端 3.132（LOF，本来就用中间价）。
+
+        ## 官方 EST 不用它
+
+        官方 EST 走 ``strOfficialCNY = $cny_ref->GetClose($strDate)``，
+        **恒用中间价**，与 ETF/LOF 无关。别把这条规则套到官方那一档上。
+
+        即期取不到（快照缺失）时退回 ``cny_current`` —— 与 PHP
+        ``$cny_ref->GetPrice()`` 兜底同向。
+        """
+        if not self._is_etf_a(symbol):
+            return cny_current
+
+        spot = self._spot_cny()
+        return spot if spot not in (None, "") else cny_current
+
+    def _spot_cny(self) -> Any:
+        """即期美元人民币（``fx_susdcny``）的当前值。
+
+        第 1 优先行情快照（daemon 写的，角色同 PHP 的 sinajs 缓存），
+        没有快照再退回净值表 —— 即期外汇正常情况下只有快照。
+
+        符号取自 ``refobj.QDII_REGIONS``（延迟 import，避免 ``calc`` ↔ ``ref``
+        的循环依赖）：它把四个地区的中期价与即期外汇配在一起，
+        是"哪个即期配哪个中间价"的唯一出处。
+        """
+        try:
+            from ref.refobj import QDII_REGIONS
+        except ImportError:
+            return None
+
+        # 本模块的中间价固定用 USCNY（``_resolve`` 里就是这样取的），
+        # 所以即期也取同一地区的那个。
+        spot_symbol = QDII_REGIONS.get("us", (None, None))[1]
+        if not spot_symbol:
+            return None
+
+        reader = getattr(self.source, "get_stored_quote", None)
+        if reader is not None:
+            try:
+                quote = reader(spot_symbol)
+            except Exception:
+                quote = None
+            price = getattr(quote, "price", None) if quote is not None else None
+            if price not in (None, ""):
+                try:
+                    return float(price)
+                except (TypeError, ValueError):
+                    pass
+
+        spot_id = self.source.get_stock_id(spot_symbol)
+        if spot_id is None:
+            return None
+        return self._latest_net_value(spot_id)
+
+    def _latest_date(self, stock_id: Any, symbol: Any = None) -> Any:
         """中间层最新一条数据的日期（对应 ``$est_ref->GetDate()``）。
 
-        优先**净值表**（``netvaluehistory``），没有再退回**行情表**
-        （``stockhistory``）—— 因为 ``_getOfficialEstVal()`` 的取值顺序就是
-        "先净值、再行情"，日期也应与之同源，否则会拿行情日期去查不存在的净值。
+        ## 必须**行情优先**，不能净值优先
+
+        PHP 的 ``MyStockReference::GetDate()`` 返回的是引用对象**最后一次取到的
+        行情日期** —— 也就是新浪缓存里的那一天，与"净值表有没有那一天"无关。
+
+        所以取数顺序是：
+
+        1. ``realtimequote`` 快照日期 —— daemon 写的跨进程缓存，与 PHP 的
+           ``debug/sina/*.txt`` 同一个角色；
+        2. ``stockhistory`` 最新日期；
+        3. ``netvaluehistory`` 最新日期。
+
+        ## 曾经先取净值表，导致 EST 日期卡在旧的那天
+
+        实测 ``SZ161125``（2026-10-20）：中间层 ``SPY`` 的行情快照已经是
+        ``2026-10-19``，但它的**净值**只到 ``2026-10-16``。先取净值表就把
+        ``mid_date`` 定成 ``10-16``，于是：
+
+        * 页面「EST日期」显示 ``10-16``，而生产端是 ``10-19``
+          （PHP 取的就是 ``$est_ref->GetDate()`` = 行情日期）；
+        * 更糟的是 ``est_value``（取自 ``mid_date`` 的净值）与
+          ``est_quote_ref``（校准日的净值，恰好也是 10-16）**撞成同一个值**，
+          比值退化成 1.0，官方 EST 于是**恒等于基金净值**（3.1206），
+          而不是生产端的 3.132。
+
+        ``stock_id`` 与 ``symbol`` 都给：前者查两张历史表，后者查行情快照。
+        ``symbol`` 省略时跳过第 1 步（老调用方仍然可用）。
         """
-        for reader_name in ("get_latest_net_value_date", "get_latest_history_date"):
+        if symbol:
+            reader = getattr(self.source, "get_stored_quote_date", None)
+            if reader is not None:
+                try:
+                    date = reader(symbol)
+                except Exception:
+                    date = None
+                if date:
+                    return date
+
+        for reader_name in ("get_latest_history_date", "get_latest_net_value_date"):
             reader = getattr(self.source, reader_name, None)
             if reader is None:
                 continue

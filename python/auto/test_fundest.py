@@ -1016,5 +1016,122 @@ class HoldingsEstValueTest(unittest.TestCase):
         self.assertEqual(box["ref"].calls, ["2026-10-14"])
 
 
+class MiddleDateOrderTest(unittest.TestCase):
+    """``_latest_date()`` 必须**行情优先**，不能净值优先。
+
+    ## 这条守护的是一整串真实症状（2026-10-20 实测 SZ161125）
+
+    中间层 ``SPY`` 的行情快照已经到 ``2026-10-19``，但它的**净值**只到
+    ``2026-10-16``。旧实现先取净值表，于是：
+
+    * 页面「EST日期」显示 ``10-16``，生产端是 ``10-19``
+      （PHP 用 ``$est_ref->GetDate()``，那是**行情**日期）；
+    * ``est_value``（取 ``mid_date`` 的净值）与 ``est_quote_ref``
+      （校准日的净值，恰好也是 10-16）撞成同一个值 → 比值退化成 1.0 →
+      **官方 EST 恒等于基金净值**（3.1206），而生产端是 3.132。
+
+    修好后官方 EST 3.1326，与生产端 3.132 一致。
+    """
+
+    class _Quote:
+        def __init__(self, price):
+            self.price = price
+
+    class Source:
+        """最小数据源：只需回答"各表最新日期"与"即期快照"。"""
+
+        def __init__(self, quote_date=None, history_date=None, netvalue_date=None,
+                     spot=None):
+            self.quote_date = quote_date
+            self.history_date = history_date
+            self.netvalue_date = netvalue_date
+            self.spot = spot
+
+        def get_stored_quote_date(self, symbol):
+            return self.quote_date
+
+        def get_latest_history_date(self, stock_id):
+            return self.history_date
+
+        def get_latest_net_value_date(self, stock_id):
+            return self.netvalue_date
+
+        def get_stored_quote(self, symbol):
+            return MiddleDateOrderTest._Quote(self.spot) if self.spot else None
+
+        def get_stock_id(self, symbol):
+            return "20" if symbol == "fx_susdcny" else None
+
+        def get_latest_net_value_close(self, stock_id):
+            return self.spot
+
+    @staticmethod
+    def _calc(**kwargs):
+        from calc.fundestcalc import EstimateCalculator
+
+        return EstimateCalculator(MiddleDateOrderTest.Source(**kwargs), store=None)
+
+    def test_snapshot_date_wins_over_netvalue(self):
+        """快照日期（10-19）必须压过净值日期（10-16）—— 本次修复的核心。"""
+        calc = self._calc(quote_date="2026-10-19", history_date="2026-10-16",
+                          netvalue_date="2026-10-16")
+        self.assertEqual(calc._latest_date("5", "SPY"), "2026-10-19")
+
+    def test_history_beats_netvalue_without_snapshot(self):
+        """没有快照时行情表优先于净值表（同样是为了对齐 ``GetDate()``）。"""
+        calc = self._calc(quote_date=None, history_date="2026-10-16",
+                          netvalue_date="2026-10-16")
+        self.assertEqual(calc._latest_date("5", "SPY"), "2026-10-16")
+
+    def test_netvalue_is_the_last_resort(self):
+        calc = self._calc(quote_date=None, history_date=None,
+                          netvalue_date="2026-10-16")
+        self.assertEqual(calc._latest_date("5", "SPY"), "2026-10-16")
+
+    def test_returns_none_when_nothing_known(self):
+        calc = self._calc()
+        self.assertIsNone(calc._latest_date("5", "SPY"))
+
+    def test_symbol_is_optional(self):
+        """老调用方只给 stock_id 时跳过快照那一步，不应抛异常。"""
+        calc = self._calc(quote_date="2026-10-19", history_date="2026-10-16")
+        self.assertEqual(calc._latest_date("5"), "2026-10-16")
+
+
+class FairCnyTest(unittest.TestCase):
+    """``_fair_cny()``：**ETF 用即期、LOF 用中间价**（``GetForexRef()``）。
+
+    PHP 原注释的理由：**ETF 可以按盘中汇率实时申赎，LOF 只能按当天中间价**。
+    两者差约 0.6%（``USCNY`` 6.72 vs ``fx_susdcny`` 6.679），
+    正好是之前参考 EST 对不上生产端的那 0.6%。
+    """
+
+    @staticmethod
+    def _calc(spot=None):
+        from calc.fundestcalc import EstimateCalculator
+
+        return EstimateCalculator(MiddleDateOrderTest.Source(spot=spot), store=None)
+
+    def test_lof_uses_middle_rate(self):
+        """LOF（SZ161125）用中间价 —— 即期那 6.679 不该被用上。"""
+        calc = self._calc(spot=6.679)
+        self.assertEqual(calc._fair_cny("SZ161125", 6.72), 6.72)
+
+    def test_etf_uses_spot_rate(self):
+        """ETF（SH513100）用即期 —— 这正是参考 EST 偏低 0.6% 的来源。"""
+        calc = self._calc(spot=6.679)
+        self.assertEqual(calc._fair_cny("SH513100", 6.72), 6.679)
+
+    def test_etf_falls_back_to_middle_without_spot(self):
+        """即期取不到时退回中间价（对应 PHP ``GetPrice()`` 兜底）。"""
+        calc = self._calc(spot=None)
+        self.assertEqual(calc._fair_cny("SH513100", 6.72), 6.72)
+
+    def test_lof_never_reads_spot(self):
+        """LOF 分支不该碰即期表 —— 用即期会算错。"""
+        calc = self._calc(spot=6.679)
+        self.assertNotEqual(calc._fair_cny("SZ162411", 6.72), 6.679)
+
+
 if __name__ == "__main__":
     unittest.main()
