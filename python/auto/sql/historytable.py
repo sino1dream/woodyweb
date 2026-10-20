@@ -257,15 +257,45 @@ def format_turnover_display(volume: Any, shares: Any, precision: int = 2) -> str
     return format_number_display(100.0 * volume_value / shares_value, precision) + "%"
 
 
-def format_percentage_display(prev: Any, value: Any) -> str:
+def format_percentage_display(prev: Any, value: Any, precision: Any = None) -> str:
     """涨跌幅文本（不带符号前缀），对应 PHP ``GetPercentageDisplay()``。
 
     公式复用 ``quotestore.stock_get_percentage()``（即 PHP ``StockGetPercentage()``），
     只有一处实现，避免各页面各写一遍。
+
+    **阈值归零**（PHP ``GetPercentageString()``，``php/stock/stockref.php:129``）::
+
+        if (abs($fPercentage * $fDivisor) < (50.0 / pow(10, $this->GetPrecision()])))
+            return '0';
+
+    即 ``|涨幅% × prev| < 50 / 10^precision`` 时整格显示 ``0``（不带 ``%``）。
+    数学上等价于 ``|value − prev| < 0.5 × 10^-precision`` —— 因为
+    ``涨幅% × prev = (value − prev) × 100``，两边同除 100 即得。含义是
+    "差值小于半个最小显示单位就不值得占一格"。
+
+    2026-10-20 对照生产端修掉的差异：SZ161130 的 10-19 / 10-08 两行误差
+    （净值 4.3704 vs EST 4.37015、4.5515 vs 4.551192）本地显示 ``-0.01%``，
+    生产端显示 ``0`` —— 就是缺这条阈值。
+
+    ``precision`` 是 **被调用 ref 自己的** ``GetPrecision()``
+    （``php/stock/stocksymbol.php:994`` / ``core/stocksymbol.py:981``）：
+    基金 3 / 外汇 4 / 其余 2，**不是**净值列的 ``NETVALUE_PRECISION(4)``。
+    传 ``None`` 表示不做阈值判定（旧调用兼容）；页面调用点都应显式传。
+
+    PHP 那边 ``$fDivisor == false`` 时会回落 ``strPrevPrice`` 再比；
+    这里 ``prev`` 恒由调用方显式传入，无效时 ``percentage_change()`` 已
+    返回 ``None``（页面留空），不会走到阈值这一步。
     """
     change = percentage_change(prev, value)
     if change is None:
         return ""
+    if precision is not None:
+        try:
+            divisor = float(prev)
+        except (TypeError, ValueError):
+            divisor = None
+        if divisor is not None and abs(change * divisor) < 50.0 / (10.0 ** precision):
+            return "0"
     text = "%.2f" % change
     text = text.rstrip("0").rstrip(".")
     if text in ("", "-0", "0"):

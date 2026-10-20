@@ -27,6 +27,12 @@
 //    现在按例装配（默认 1），case.8 专门钉四位净值。
 //    末列（est 标的净值）同一套两档：est 有净值行 4 位，否则 est 符号自身
 //    精度（^GSPC 这类指数 2 位，见 case.9/case.10）。
+// 4. **百分比的阈值归零** —— `GetPercentageString()`（`stockref.php:129`）：
+//    `|涨幅% × 基准| < 50/10^GetPrecision()` 时整格显示 `0`。精度取**被调用
+//    ref 自己的** `GetPrecision()`（基金 3 / 外汇 4 / 其余 2，`stocksymbol.php:994`），
+//    所以 `$ref->iPrecision` 按例装配（默认 3；QQQ 这类美股 `fund_precision => 2`）。
+//    case.12 用 sz161130cn.php 的真实误差列钉它：10-19 / 10-08 两行该显 0，
+//    10-13 行（刚好在阈外）保留 -0.01%。
 //
 // ## 手法
 //
@@ -224,6 +230,7 @@ $cases = array(
         'name' => '非 QDII：净值取同一天',
         'qdii' => array(),
         'symbol' => 'QQQ',
+        'fund_precision' => 2,   // 美股：GetPrecision()=2（stocksymbol.php:994）
         'stock_id' => '4',
         'history' => array('4' => array(
             array('date' => '2026-10-01', 'close' => '742.03'),
@@ -292,6 +299,7 @@ $cases = array(
         'name' => '净值缺失的行情日整行不出现',
         'qdii' => array(),
         'symbol' => 'QQQ',
+        'fund_precision' => 2,   // 美股：GetPrecision()=2（stocksymbol.php:994）
         'stock_id' => '4',
         'history' => array('4' => array(
             array('date' => '2026-10-01', 'close' => '742.03'),
@@ -319,6 +327,7 @@ $cases = array(
         'name' => '溢价方向：价格低于净值 -> 溢价为负',
         'qdii' => array(),
         'symbol' => 'QQQ',
+        'fund_precision' => 2,   // 美股：GetPrecision()=2（stocksymbol.php:994）
         'stock_id' => '4',
         'history' => array('4' => array(
             array('date' => '2026-10-01', 'close' => '735.0'),
@@ -405,6 +414,38 @@ $cases = array(
                            'history' => array('2026-10-01' => '740.5'),
                            'nav_count' => 1, 'precision' => 2),
     ),
+    // -- 百分比阈值归零（2026-10-20 对照生产端 sz161130cn.php 修掉的差异） --
+    //: 误差列三行实数（净值 / 官方 EST 都取自演示库原值）：
+    //:   10-19 行 4.3704 vs 4.37015 -> |change×prev| = 0.025 < 0.05 -> 显 0
+    //:   10-16 行 4.5714 vs 4.571504 -> +0.0023% 自然舍成 0（不经阈值）
+    //:   10-13 行 4.586 vs 4.585471 -> 0.0529 > 0.05 -> 阈外，保留 -0.01%
+    //: 生产端正是 10-13 显 -0.01%、其余显 0；缺阈值时 10-19 会显 -0.01%。
+    array(
+        'name' => '阈值归零：误差小于半个末位显示 0',
+        'qdii' => array('SZ161130'),
+        'symbol' => 'SZ161130',
+        'stock_id' => '1',
+        'history' => array('1' => array(
+            array('date' => '2026-10-19', 'close' => '4.796'),
+            array('date' => '2026-10-16', 'close' => '4.827'),
+            array('date' => '2026-10-13', 'close' => '4.923'),
+            //: 10-12 只为给 10-13 提供前一交易日（QDII 净值日往前挪）
+            array('date' => '2026-10-12', 'close' => '4.953'),
+        )),
+        'netvalue' => array('1' => array(
+            '2026-10-16' => '4.3704', '2026-10-13' => '4.5714', '2026-10-12' => '4.586',
+        )),
+        'est_count' => 3,
+        'est' => array('1' => array(
+            '2026-10-16' => array('id' => '101', 'date' => '2026-10-16',
+                                  'close' => '4.37015', 'time' => '04:01:00'),
+            '2026-10-13' => array('id' => '7', 'date' => '2026-10-13',
+                                  'close' => '4.571504', 'time' => '04:04:00'),
+            '2026-10-12' => array('id' => '140', 'date' => '2026-10-12',
+                                  'close' => '4.585471', 'time' => '04:02:00'),
+        )),
+        'est_ref' => false,
+    ),
 );
 
 $out = array('cases' => array(), 'traps' => array());
@@ -428,6 +469,10 @@ foreach ($cases as $index => $case) {
     $ref->strPrice = isset($case['history'][$case['stock_id']][0]['close'])
         ? $case['history'][$case['stock_id']][0]['close'] : '0';
     $ref->strPrevPrice = $ref->strPrice;
+    //: GetPrecision()（stocksymbol.php:994）按符号分三支：基金 3 / 外汇 4 /
+    //: 其余 2。百分比阈值归零（GetPercentageString）用它。默认 3 = A 股基金
+    //: （SZ161130 / SZ161125）；QQQ 这类美股是 2，由用例 fund_precision 显式给。
+    $ref->iPrecision = isset($case['fund_precision']) ? $case['fund_precision'] : 3;
     //: 行能出来就说明 netvaluehistory 命中了 —— 即 PHP 的 iNetValueCount > 0
     //: 必然成立，所以基金 ref 的净值计数按"有"装配（默认 1）。
     //: **这个字段曾经恒为 0**：GetNetValueDisplay() 于是退到 GetPrecision()(3)，

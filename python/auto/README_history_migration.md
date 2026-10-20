@@ -86,6 +86,34 @@ PyMySQL 取回是 `datetime.timedelta`（`17:30:00` → `timedelta(seconds=63000
 直接 `str()` 得到 `"17:30:00"` 看着没问题，但跨天会变成 `1 day, 0:00:00`。
 所以先规范化成 `HH:MM:SS` 再截前 5 个字符。
 
+### 2.5 涨跌幅的阈值归零（`GetPercentageString`，`php/stock/stockref.php:129`）
+
+```php
+if (abs($fPercentage * $fDivisor) < (50.0 / pow(10, $this->GetPrecision()])))
+    return '0';
+```
+
+即 `|涨幅% × prev| < 50 / 10^precision` 时整格显示 `0`（不带 `%`）。
+数学上等价于 `|value − prev| < 0.5 × 10^-precision`（因
+`涨幅% × prev = (value − prev) × 100`）—— "差值小于半个最小显示单位
+就不值得占一格"。
+
+**精度取被调用 ref 自己的 `GetPrecision()`**（`stocksymbol.php:994`）：
+基金 3 / 外汇 4 / 其余 2，**不是**净值列的 `NETVALUE_PRECISION(4)`。
+7 个调用点各按自己的 ref 取精度（对照 `fundhistoryparagraph.php:14/23`、
+`netvaluehistoryparagraph.php:72/78/90`、`netvaluecloseparagraph.php:16/17`）。
+
+**实测钉住的差异**（2026-10-20 对照生产端 sz161130cn.php，见 §7.7）：
+SZ161130 误差列 10-19 行（净值 4.3704 vs EST 4.37015）与 10-08 行
+（4.5515 vs 4.551192）本地显示 `-0.01%`、生产端显示 `0`；10-13 行
+（4.586 vs 4.585471，`|change×prev| = 0.0529 > 0.05`）两边都保留 `-0.01%`。
+
+`format_percentage_display(prev, value, precision=None)` 的 `precision`
+传 `None` 时不做阈值判定（旧调用兼容）；页面调用点都应显式传。
+PHP 那边 `$fDivisor == false` 会回落 `strPrevPrice` 再比；Python 侧
+`prev` 恒显式传入，无效时 `percentage_change()` 返回 `None`（页面留空），
+不会走到阈值这一步。
+
 ## 三、取数语义（容易错的几条）
 
 ### 3.1 "上一个交易日"是查出来的，不是日期减一天
@@ -359,14 +387,52 @@ est 有净值行四位 / est 有净值行缺日期为空），自检注入"净�
 生产端有的 EST 三列本地不全。按每日例程（`README_p0_data_layer.md` §十）
 重跑即可，不需要改代码。
 
+### 7.7 误差列的阈值归零（2026-10-20）
+
+**现象**（用户对照生产端 `sz161130cn.php`）：「基金溢价记录」误差列
+10-19 / 10-08 两行本地显示 `-0.01%`，生产端显示 `0`；10-13 行两边都显示
+`-0.01%`。净值 / 价格 / 溢价 / 官方EST / 时间各列此前已对齐（§7.6 + fundest
+重算），误差列是最后一处差异。
+
+**根因**：`format_percentage_display()` 没有实现 PHP
+`GetPercentageString()` 的阈值归零（`stockref.php:129`，口径见 §2.5）。
+按库里原值验算（精度 3 = 基金符号）：
+
+```text
+日期        净值      官方EST     |change%×prev|   阈值 50/10³   生产端
+2026-10-19  4.3704    4.37015    0.0250 < 0.05     归零        0       ✓
+2026-10-13  4.586     4.585471   0.0529 > 0.05     保留       -0.01%   ✓
+2026-10-08  4.5515    4.551192   0.0308 < 0.05     归零        0       ✓
+```
+
+**修法**：`format_percentage_display(prev, value, precision=None)` 加
+`precision` 参数与阈值；`history_service` 7 个调用点各按 PHP 对应 ref
+传自己的 `GetPrecision()`（基金 3 / 汇率 4 / est 符号 2，见 §2.5 的表）。
+`_row_fundhistory` 增收 `symbol` 参数（溢价与误差两格都用基金自己的精度，
+PHP `$ref->GetStockRef()` 的 `GetPrecision()`）。
+
+**对照面同步**：`_php_fundhistory_compare.py` 的 monkeypatch 签名随
+`symbol` / `precision` 参数更新；新增 case.12（阈值归零三行实数）与
+第 6 个自检注入「百分比不做阈值归零」（1 例抓到）；`_php_fundhistory_check.php`
+的 `$ref->iPrecision` 改为按例装配（默认 3，QQQ 这类美股
+`fund_precision => 2`）—— 原来恒 3 是替身失真，只是既有 QQQ 用例的百分比
+都远大于阈值没暴露出来。
+
+**实测**（本地 vs 生产端 `sz161130cn.php`，2026-10-20）：9 行误差列
+逐格一致 —— 10-19 `0`、10-16 `0`、10-15 `0`、10-14 `0`、10-13 `-0.01%`、
+10-12 `0`、10-09 `0`、10-08 `0`、09-30 `0`。至此「基金溢价记录」七列
+与生产端全部对齐。
+
 ## 八、测试
 
 `python/auto/test_historytable.py` + `web/tests/test_history.py`。
 2026-10-19 净值精度轮新增 `web/tests/test_history.py::
 NetValueDisplayPrecisionTest`（8 例：三张表的净值四位 + est 末列精度两档
-+ est 缺日期为空 + 净值记录的 `GetVal()` 回退）。
-全量：`auto` **1257 个**、`web` **743 个**；PHP 逐例对照
-`_php_fundhistory_compare.py` **12/12**，自检 **5/5**。
++ est 缺日期为空 + 净值记录的 `GetVal()` 回退）；2026-10-20 阈值轮新增
+`test_historytable.py::PercentageTest` 的 3 个阈值用例（取自
+sz161130cn.php 误差列实数）。
+全量（2026-10-20 实测）：`auto` **1278 个**、`web` **759 个**；
+PHP 逐例对照 `_php_fundhistory_compare.py` **13/13**，自检 **6/6**。
 
 ## 九、已知缺口
 

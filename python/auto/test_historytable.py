@@ -203,6 +203,31 @@ class PercentageTest(unittest.TestCase):
     def test_zero_change_displays_zero(self):
         self.assertEqual(format_percentage_display(1.0, 1.0), "0")
 
+    def test_threshold_zeroes_below_half_of_last_digit(self):
+        # PHP GetPercentageString()（stockref.php:129）的阈值归零：
+        #   |涨幅% × 基准| < 50 / 10^precision  ->  '0'
+        # 等价 |值差| < 0.5×10^-precision（涨幅% × 基准 = 值差 × 100）。
+        # 三组实数取自 SZ161130「基金溢价记录」误差列（2026-10-20 对照生产端
+        # sz161130cn.php 修掉的差异，精度 3 = 基金符号 GetPrecision()）：
+        # 10-19 行 |change×prev| = 0.025 < 0.05 -> 归零
+        self.assertEqual(format_percentage_display(4.3704, 4.37015, 3), "0")
+        # 10-08 行 0.0308 < 0.05 -> 归零
+        self.assertEqual(format_percentage_display(4.5515, 4.551192, 3), "0")
+        # 10-13 行 0.0529 > 0.05 -> 阈外，保留 -0.01%
+        self.assertEqual(format_percentage_display(4.586, 4.585471, 3), "-0.01%")
+
+    def test_threshold_uses_the_ref_precision(self):
+        # 同一组数值，精度决定阈值松紧：精度 2（50/10^2 = 0.5）连 10-13 行也归零。
+        # 生产端上基金是 3 位（stocksymbol.php:994），所以那一行才显示 -0.01%。
+        self.assertEqual(format_percentage_display(4.586, 4.585471, 3), "-0.01%")
+        self.assertEqual(format_percentage_display(4.586, 4.585471, 2), "0")
+        # 外汇精度 4（阈值 0.005）更松，0.025 的积不归零
+        self.assertEqual(format_percentage_display(4.3704, 4.37015, 4), "-0.01%")
+
+    def test_no_precision_keeps_legacy_behaviour(self):
+        # precision=None 不做阈值判定（旧调用兼容）：10-19 行那种小误差照旧显示
+        self.assertEqual(format_percentage_display(4.3704, 4.37015), "-0.01%")
+
     def test_zero_divisor_returns_none_not_zero_percent(self):
         # PHP 在 |divisor| <= MIN_FLOAT_VAL 时返回 0.0；
         # 这里返回 None 让页面留白 —— 显示 '0%' 会被误读成真的没涨跌

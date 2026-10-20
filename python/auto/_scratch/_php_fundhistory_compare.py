@@ -374,6 +374,31 @@ CASES = [
         #: 即使有行情价也不该出现（"有净值记录"分支里缺日期即 false）
         "est_history": {"4": {"2026-10-01": "740.5"}},
     },
+    # -- 百分比阈值归零（2026-10-20 对照生产端 sz161130cn.php 修掉的差异） --
+    {
+        "name": "阈值归零：误差小于半个末位显示 0",
+        "symbol": "SZ161130",
+        "stock_id": "1",
+        "ids": {"SZ161130": "1"},
+        "start": 0, "num": 0,
+        #: 10-12 只为给 10-13 提供前一交易日（QDII 净值日往前挪）
+        "history": _history("1", [("2026-10-19", "4.796"), ("2026-10-16", "4.827"),
+                                  ("2026-10-13", "4.923"), ("2026-10-12", "4.953")]),
+        "netvalue": {"1": {"2026-10-16": "4.3704", "2026-10-13": "4.5714",
+                           "2026-10-12": "4.586"}},
+        "est_count": 3,
+        "est": {"1": {
+            #: 10-19 行：|change×prev| = 0.025 < 0.05（精度 3）-> 误差显 0
+            "2026-10-16": {"id": "101", "date": "2026-10-16",
+                           "close": "4.37015", "time": "04:01:00"},
+            #: 10-16 行：+0.0023% 自然舍成 0（不经阈值），顺带看舍入
+            "2026-10-13": {"id": "7", "date": "2026-10-13",
+                           "close": "4.571504", "time": "04:04:00"},
+            #: 10-13 行：0.0529 > 0.05 -> 阈外，保留 -0.01%
+            "2026-10-12": {"id": "140", "date": "2026-10-12",
+                           "close": "4.585471", "time": "04:02:00"}}},
+        "est_ref_symbol": None,
+    },
 ]
 
 
@@ -451,7 +476,8 @@ def _wrong_no_filter(case: dict) -> list:
         netvalue = hs.NetValueHistorySql(self.connection)
         rows = []
         for record in history.get_all(stock_id, start, num):
-            rows.append(self._row_fundhistory(record, "1.0", None, None, netvalue, False))
+            rows.append(self._row_fundhistory(record, "1.0", None, None, netvalue, False,
+                                              symbol))
         return hs._columns_fundhistory(None), rows, history.count(stock_id)
 
     hs.HistoryService._build_fundhistory = patched
@@ -467,17 +493,19 @@ def _wrong_est_gate(case: dict) -> list:
 
     original = hs.HistoryService._row_fundhistory
 
-    def patched(self, record, net_value, estimate, est_symbol, netvalue, est_has_netvalue=False):
+    def patched(self, record, net_value, estimate, est_symbol, netvalue,
+                est_has_netvalue=False, symbol=""):
+        precision = hs.StockSymbol(symbol).get_precision() if symbol else None
         row = hs.TableRow()
         row.add(str(record["date"]))
         row.add(hs.format_price_display(record["close"], net_value))
         row.add(hs.format_price_display(net_value))
-        row.add(hs.format_percentage_display(net_value, record["close"]))
+        row.add(hs.format_percentage_display(net_value, record["close"], precision))
         if estimate is not None:
             close = estimate.get("close")
             row.add(hs.format_price_display(close, net_value))
             row.add(hs.format_hm(estimate.get("time")))
-            row.add(hs.format_percentage_display(net_value, close))
+            row.add(hs.format_percentage_display(net_value, close, precision))
         return row
 
     hs.HistoryService._row_fundhistory = patched
@@ -497,8 +525,10 @@ def _wrong_netvalue_precision(case: dict) -> list:
 
     original = hs.HistoryService._row_fundhistory
 
-    def patched(self, record, net_value, estimate, est_symbol, netvalue, est_has_netvalue=False):
-        row = original(self, record, net_value, estimate, est_symbol, netvalue, est_has_netvalue)
+    def patched(self, record, net_value, estimate, est_symbol, netvalue,
+                est_has_netvalue=False, symbol=""):
+        row = original(self, record, net_value, estimate, est_symbol, netvalue,
+                       est_has_netvalue, symbol)
         row.cells[2] = hs.format_price_display(net_value)
         return row
 
@@ -515,8 +545,28 @@ def _wrong_premium_direction(case: dict) -> list:
 
     original = hs.format_percentage_display
 
-    def patched(prev, value):
-        return original(value, prev)
+    def patched(prev, value, precision=None):
+        return original(value, prev, precision)
+
+    hs.format_percentage_display = patched
+    try:
+        return _python_side(case)
+    finally:
+        hs.format_percentage_display = original
+
+
+def _wrong_no_threshold(case: dict) -> list:
+    """百分比不做阈值归零 —— 2026-10-20 修掉的那个显示差异。
+
+    只把 ``precision`` 吞掉（退回改动前的 ``format_percentage_display`` 行为），
+    公式与方向都不动，确保对照抓到的是阈值本身。case.12 专门钉它。
+    """
+    import web.services.history_service as hs
+
+    original = hs.format_percentage_display
+
+    def patched(prev, value, precision=None):
+        return original(prev, value)
 
     hs.format_percentage_display = patched
     try:
@@ -533,6 +583,7 @@ def _selftest() -> int:
         ("EST 的 0 不做假值判断", _wrong_est_gate),
         ("溢价方向搞反", _wrong_premium_direction),
         ("净值列退回 3 位", _wrong_netvalue_precision),
+        ("百分比不做阈值归零", _wrong_no_threshold),
     ]
     caught = 0
     print("=== 自检：注入错误，看对照抓不抓得到 ===")

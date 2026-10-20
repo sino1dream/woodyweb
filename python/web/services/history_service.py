@@ -555,14 +555,22 @@ class HistoryService:
             # 换成行情日期会一行都查不到（实测踩过）。
             estimate = fundest.get_record(stock_id, net_date) if has_est else None
             rows.append(self._row_fundhistory(record, net_value, estimate, est_symbol,
-                                              netvalue, est_has_netvalue))
+                                              netvalue, est_has_netvalue, symbol))
         return (_columns_fundhistory(est_symbol if has_est else None, est_has_netvalue),
                 rows, history.count(stock_id))
 
     def _row_fundhistory(self, record: Any, net_value: Any, estimate: Any, est_symbol: Any,
-                         netvalue: Any, est_has_netvalue: bool = False) -> TableRow:
+                         netvalue: Any, est_has_netvalue: bool = False,
+                         symbol: str = "") -> TableRow:
         date = str(record["date"])
         close = record["close"]
+
+        #: 溢价/误差两格的阈值精度 = **基金符号自身**的 GetPrecision()（基金 3），
+        #: 对应 PHP ``$ref->GetPercentageString()`` 里的 ``$this->GetPrecision()``
+        #: （stockref.php:129）。与净值列的 NETVALUE_PRECISION(4) 是两码事，
+        #: 别混用 —— 传错会让 10-19 / 10-08 那类小误差该归零的不归零
+        #: （2026-10-20 对照生产端修掉，见 format_percentage_display docstring）。
+        fund_precision = StockSymbol(symbol).get_precision() if symbol else None
 
         row = TableRow()
         row.add(date)
@@ -577,7 +585,7 @@ class HistoryService:
         #: 3.155 / 3.145 / 3.18 / 3.182 —— 2026-10-19 对照生产端发现，
         #: 库里存的就是 3.1548（东财/新浪同值），纯显示层取位错。
         row.add(format_price_display(net_value, precision=NETVALUE_PRECISION))
-        row.add(format_percentage_display(net_value, close))
+        row.add(format_percentage_display(net_value, close, fund_precision))
 
         if estimate is not None:
             estimate_close = estimate.get("close")
@@ -596,7 +604,7 @@ class HistoryService:
                 row.add(format_hm(estimate.get("time")))
                 # 误差：对应 PHP $ref->GetPercentageDisplay($fNetValue, $fEstValue)
                 # 即 (估算 / 真实 - 1) * 100，与 StockCompareEstResult() 同向
-                row.add(format_percentage_display(net_value, estimate_close))
+                row.add(format_percentage_display(net_value, estimate_close, fund_precision))
                 if est_symbol:
                     # 最后一列是**标的净值**：中间层在 EST 记录日期上的值，
                     # 供读者判断这次估算是基于哪个行情算出来的
@@ -740,6 +748,12 @@ class HistoryService:
         date = str(record["date"])
         net_value = record["close"]
 
+        #: 三个涨幅格的阈值精度各按**自己的 ref** 取 GetPrecision()：
+        #: 基金 3 / 汇率 4（外汇）/ est 符号 2（^NDX、QQQ 这类）。
+        #: PHP 侧分别是 $ref / $cny_ref / $est_ref 的 GetPercentageDisplay()
+        #: （netvaluehistoryparagraph.php:72/78/90），谁调用就用谁的精度。
+        fund_precision = StockSymbol(symbol).get_precision()
+
         row = TableRow()
         row.add(date)
         # PHP: $ref->GetNetValueDisplay() —— 有净值历史时精度取
@@ -747,7 +761,7 @@ class HistoryService:
         # 生产端 SH513050 那一格是 "1.0115"，四位；用默认的 3 位会成 "1.012"。
         row.add(format_price_display(net_value, precision=4))
         prev_net = netvalue.get_close(record["stock_id"], prev_date) if prev_date else None
-        row.add(format_percentage_display(prev_net, net_value))
+        row.add(format_percentage_display(prev_net, net_value, fund_precision))
 
         if not cny_symbol:
             return row
@@ -756,7 +770,9 @@ class HistoryService:
         cny = netvalue.get_close(cny_id, date) if cny_id else None
         cny_prev = netvalue.get_close(cny_id, prev_date) if (cny_id and prev_date) else None
         row.add(format_price_display(cny) if cny is not None else "")
-        row.add(format_percentage_display(cny_prev, cny) if cny is not None else "")
+        #: PHP: $cny_ref->GetPercentageDisplay(...) —— 汇率符号是外汇，精度 4
+        row.add(format_percentage_display(cny_prev, cny, StockSymbol(str(cny_symbol)).get_precision())
+                if cny is not None else "")
 
         #: PHP 的 ``$strOrgPos``：库里记的仓位，用来判断"反算值和登记值是否吻合"
         #: （吻合就把整行标黄，见 ``EchoMatchTableColumn``）。
@@ -781,7 +797,11 @@ class HistoryService:
                              else StockSymbol(str(est_symbol)).get_precision())
             row.add(format_price_display(est, precision=est_precision) if est is not None else "")
             if est is not None:
-                row.add(format_percentage_display(est_prev, est))
+                #: PHP: $est_ref->GetPercentageDisplay(...) —— 阈值精度恒用 est
+                #: **符号自身**的 GetPrecision()（^NDX/QQQ=2），与上面价格列的
+                #: 两档精度（有净值 4 位 / 无净值 2 位）是两码事，别复用 est_precision。
+                row.add(format_percentage_display(est_prev, est,
+                                                  StockSymbol(str(est_symbol)).get_precision()))
                 # 对应 PHP _QdiiGetStockPosition()：先用汇率变动把"净值涨幅"里的
                 # 汇率成分剥掉，剩下的比例才是真实仓位。
                 estimated = self._estimate_position(est, est_prev, prev_net, net_value, cny_prev, cny)
@@ -878,10 +898,13 @@ class HistoryService:
         #: 行能出来就必有净值记录，精度恒取 NETVALUE_PRECISION(4)。
         #: 3 位会把 3.1548 显示成 3.155（与「基金溢价记录」同一个坑）。
         row.add(format_price_display(net_value, precision=NETVALUE_PRECISION))
+        #: 溢价/涨幅两格都走 $ref（基金自己）的精度 ——
+        #: PHP ``$ref->GetPercentageDisplay()``（netvaluecloseparagraph.php:16/17）
+        fund_precision = StockSymbol(symbol).get_precision()
         # PHP: GetPercentageDisplay($fNetValue, $fClose) —— 溢价（价格相对净值）
-        row.add(format_percentage_display(net_value, close))
+        row.add(format_percentage_display(net_value, close, fund_precision))
         # PHP: GetPercentageDisplay($fClosePrev, $fClose) —— 涨幅
-        row.add(format_percentage_display(close_prev, close))
+        row.add(format_percentage_display(close_prev, close, fund_precision))
 
         share = shares.get_close(stock_id, date) if close_prev is not None else None
         if share is not None:
