@@ -40,7 +40,6 @@ from typing import Any
 from calc.fundcalc import PalmmicroFundCalculator
 from sql.fundeststore import FundEstStore, hour_minute_of
 from calc.futurescalib import build_futures_calibrator
-from core.stockdata import get_leverage_hedge_symbol
 
 
 # 对应 PHP ``StockCompareEstResult()``（php/stock.php:136）的阈值：
@@ -120,7 +119,8 @@ class EstimateCalculator:
         ``stock_id``        基金在 ``stock`` 表里的 id
         ``data``            基金行 + 中间层行的配置（见 :meth:`_build`）
         ``calculator``      对应的 ``PalmmicroFundCalculator``
-        ``est_symbol``      实际取中间层行情的符号（**已做杠杆替代解析**）
+        ``est_symbol``      实际取中间层行情的符号（= 基金档案的 ``est_symbol``，
+                            如 ``^NDX``，**不做杠杆替代**，见 :meth:`_est_symbol`）
         ``est_id``          上述符号的 stock_id
         ``mid_date``        中间层最新数据的日期（对应 ``$est_ref->GetDate()``）
         ``mid_quote``       中间层当前报价（对应 ``$pair_ref->GetVal()``）
@@ -535,8 +535,10 @@ class EstimateCalculator:
         if calibrator is None:
             return None
 
-        # 中间层是"杠杆替代"后的 ETF（QQQ），但期货挂在**指数**（^NDX）上，
-        # 所以要先从 profile 拿原始 est_symbol，不能直接用 ctx["est_symbol"]。
+        # 期货挂在**指数**（^NDX ← hf_NQ / ^GSPC ← hf_ES）上，
+        # 键就是基金档案里的 est_symbol（_est_symbol 已不再做杠杆替代，
+        # ctx["est_symbol"] 本身就是指数；这里走 _index_symbol 取，
+        # 语义上与"估值符号"分开，两处当前等价）。
         index_symbol = self._index_symbol(ctx)
         if not index_symbol:
             return None
@@ -557,8 +559,10 @@ class EstimateCalculator:
     def _index_symbol(self, ctx: dict) -> Any:
         """该基金跟踪的**指数**符号（``^NDX``），即期货配对的键。
 
-        ``ctx["est_symbol"]`` 是杠杆替代后的 ETF（``QQQ``）；
-        期货配对表用的是指数（``^NDX``）。所以这里从 profile 重新取。
+        取法与 :meth:`_est_symbol` 相同（profile 的 ``est_symbol`` /
+        ``pair_symbol``）。历史上 ``_est_symbol`` 曾做 QQQ/SPY 杠杆替代、
+        与此处不等价，所以单独立了这个口子；替代去掉后两者一致，
+        保留它是为了"期货挂在指数上"这一语义标注。
         """
         symbol = ctx.get("fund_symbol")
         if not symbol:
@@ -913,29 +917,40 @@ class EstimateCalculator:
             return 1.0
 
     def _est_symbol(self, symbol: str) -> Any:
-        """实际用来取中间层行情的符号。
+        """实际用来取中间层行情的符号 = 基金档案里的 ``est_symbol``（**不做杠杆替代**）。
 
-        **不能只用 ``est_symbol``**：真实库里 ``SZ161130`` 的 ``est_symbol``
-        是 **``^NDX``（指数）**，而 ``^NDX`` 在 ``netvaluehistory`` /
-        ``stockhistory`` 里都没有行 —— 指数点位是从新浪直接抓的、不落这两张表。
-        所以必须和构建器同顺序解析：
+        ## 曾经做 QQQ/SPY 杠杆替代，是相对 PHP 的偏离（已修）
 
-        1. ``est_symbol or pair_symbol``（如 ``^NDX``）；
-        2. 若该符号有**杠杆替代**（``get_leverage_hedge_symbol()``，
-           即 QQQ / SPY 这类真能拿到净值的 ETF），**用替代的那个**。
+        本方法旧实现拿 ``get_leverage_hedge_symbol(symbol)`` 把 ``^NDX`` 换成
+        ``QQQ``、``^GSPC`` 换成 ``SPY`` 再取数。**PHP 不是这样**：
 
-        对应 ``stockdata.py:279-284``：
+        * ``php/stock/qdiiref.php:243`` ``QdiiGetEstSymbol('SZ161130')`` 返回
+          **``^NDX``**（``QdiiGetQqqSymbolArray()`` 那一支，行尾注释
+          ``// 'QQQ'`` 只说明"对冲标的是 QQQ"），``SetEstRef(new
+          FundPairReference('^NDX'))``；
+        * 官方 EST 全链（``_getOfficialEstVal`` / ``EstNetValue`` /
+          ``AdjustFactor``）都走这个 ``^NDX`` 的 ``GetEstRef()``；
+        * QQQ 只出现在 ``stockdataarray.php`` 的 ``symbol_hedge``（对冲展示）
+          与 ``GetStockHedge()``，**不进估值式子**。
 
-        ```python
-        hedge_symbol = profile.est_symbol or profile.pair_symbol
-        leverage_symbol = get_leverage_hedge_symbol(symbol)
-        if hedge_symbol and leverage_symbol:
-            ...
-            hedge_symbol = leverage_symbol
-        ```
+        实测铁证（2026-10-20，SZ161130）：本地 ``fundest[10-19] = 4.41972``
+        只有 QQQ 模型（718.36 / QQQ 净值[10-16] 709.8）能精确复现；
+        ^NDX 模型给 4.41813 → 显示 **4.418 = 生产端估值表官方 EST**
+        （生产端校准记录 cal=44892.619 是 ``^NDX × 汇率 / 净值``，
+        与 QQQ 尺度不匹配，用 QQQ 做比值分子分母必然偏离）。
 
-        只取 ``est_symbol`` 会让 ``_latest_date()`` 返回 ``None``，
-        官方 EST 就静默算不出来（实测踩过，表现为"0 只写入"）。
+        杠杆替代唯一该出现的地方是 ``stockdata.StockDataArrayBuilder``
+        （``symbol_hedge``，对应 ``GetLeverageHedgeSymbol()``）与
+        ``GetStockHedge()``；本类的 ``est_symbol`` 语义是"估值标的"，
+        与 ``autocalibration.calibrate_fund``（取 ``qdii_est_symbol`` 原始值）、
+        ``history_service._est_symbol``（溢价表 ^NDX 价格列）保持一致。
+
+        ## est_symbol 与 pair_symbol 的取值顺序
+
+        1. ``est_symbol``（如 ``^NDX`` / ``XOP`` / ``KWEB``）；
+        2. ``pair_symbol``（配对型基金的配对标的，无 est_symbol 时才用）。
+
+        取不到返回 ``None``，调用方跳过该基金。
         """
         reader = getattr(self.source, "get_fund_profile", None)
         if reader is None:
@@ -946,11 +961,7 @@ class EstimateCalculator:
             return None
         if profile is None:
             return None
-        hedge_symbol = getattr(profile, "est_symbol", None) or getattr(profile, "pair_symbol", None)
-        if not hedge_symbol:
-            return None
-        leverage_symbol = get_leverage_hedge_symbol(symbol)
-        return leverage_symbol or hedge_symbol
+        return getattr(profile, "est_symbol", None) or getattr(profile, "pair_symbol", None)
 
     def _is_etf_a(self, symbol: str) -> bool:
         """该标的是不是场内 ETF（``is_etf_a()``，``stocksymbol.py:803``）。

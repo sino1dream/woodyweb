@@ -1680,8 +1680,16 @@ class FundReference(MysqlReference):
                 pass
         return True
 
-    def insert_fund_calibration(self) -> bool:
+    def insert_fund_calibration(self, date: Any = None) -> bool:
         """对应 ``InsertFundCalibration()``：把当前校准值写进 ``calibrationhistory``。
+
+        **日期必须用校准锚点那天（净值日）**，不是 ``self.get_date()`` ——
+        PHP 的 ``$this->GetDate()`` 对基金返回的是**净值日期**（``LoadSinaFundData``
+        的 ``$ar[4]``），而本版 ``get_date()`` 拿到的是**场内行情日期**，
+        两者会差一两天。实测踩过：2026-10-20 页面加载时净值日是 10-16、
+        校准值 44892.62 算得没错，却按行情日写成了 ``date=2026-10-20`` 的
+        假行（与 10-16 同值、生产端没有），而且行情日每天推进、天天新写一行。
+        所以 :meth:`adjust_factor` 把 :meth:`_anchor_nav` 的日期传进来。
 
         走 ``WriteDaily`` 语义（**已有就不动**），与 ``autocalibration._write()``
         用的是同一条 SQL —— 那里已经踩过 ``time`` 列 NOT NULL 的坑，这里照抄。
@@ -1689,7 +1697,8 @@ class FundReference(MysqlReference):
         数据源自带 ``write_calibration`` 时优先用它（便于测试与替换存储）。
         """
         stock_id = self.get_stock_id()
-        date = self.get_date()
+        if date is None:
+            date = self.get_date()
         if stock_id is None or date in (None, ""):
             return False
 
@@ -2039,7 +2048,8 @@ class QdiiReference(FundReference):
             self.factor = qdii_get_calibration(float(est), float(cny), float(nav))
         except (TypeError, ValueError, ZeroDivisionError):
             return None
-        self.insert_fund_calibration()
+        # 日期用**锚点净值日**（PHP GetDate() 的语义），不是场内行情日
+        self.insert_fund_calibration(date)
         return self.factor
 
     def _anchor_nav(self) -> tuple:

@@ -127,21 +127,38 @@ QQQ 播成 `0.008945`（= 汇率/报价）。2026-10-13 按生产端口径重算
 比值放大 **4648 倍**，`/qdii` 与 `/fund` 页官方 EST 显示成 9625（应约 2.05）。
 详见 pitfalls #61。
 
-### 3.3 中间层符号要用「杠杆替代」解析，不能只用 `est_symbol`
+### 3.3 中间层符号 = 基金档案的 `est_symbol`，**不做杠杆替代**（2026-10-20 修偏）
 
-真实库里 `SZ161130` 的 `est_symbol` 是 **`^NDX`（指数）**，而 `^NDX` 在
-`netvaluehistory` / `stockhistory` 里**都没有行** —— 指数点位是从新浪直接抓的、
-不落这两张表。必须与构建器同顺序解析（`stockdata.py:279-284`）：
+`_est_symbol()` 返回 `profile.est_symbol or profile.pair_symbol`（如
+`SZ161130` → **`^NDX`**、`SZ161125` → `^GSPC`、`SZ159518` → `XOP`）。
 
-```python
-hedge_symbol = profile.est_symbol or profile.pair_symbol   # ^NDX
-leverage_symbol = get_leverage_hedge_symbol(symbol)        # QQQ
-if hedge_symbol and leverage_symbol:
-    hedge_symbol = leverage_symbol                          # -> QQQ
-```
+**曾经做过 QQQ/SPY 杠杆替代，是相对 PHP 的偏离**，本节旧版甚至把它写成了
+"正解"。核对 PHP 源后确认：
 
-**踩过的错**：只用 `est_symbol` 会让日期取不到 → 官方 EST 静默算不出来，
-表现为"0 只写入"，很难查。
+* `qdiiref.php:243` `QdiiGetEstSymbol('SZ161130')` 返回 **`^NDX`**
+  （`QdiiGetQqqSymbolArray()` 那一支，行尾注释 `// 'QQQ'` 只表示"对冲标的是
+  QQQ"），随后 `SetEstRef(new FundPairReference('^NDX'))`；
+* 官方 EST 全链（`_getOfficialEstVal` / `EstNetValue` / `AdjustFactor`）
+  都用这个 `^NDX` 的 `GetEstRef()`；
+* QQQ 只出现在 `stockdataarray.php` 的 `symbol_hedge`（`GetLeverageHedgeSymbol()`，
+  对冲展示）与 `GetStockHedge()`，**不进估值式子**。
+
+**实测铁证（2026-10-20，SZ161130）**：本地 `fundest[10-19] = 4.41972` 只有
+QQQ 模型（718.36 / QQQ 净值[10-16] 709.8）能精确复现；^NDX 模型给 4.41813
+→ 显示 **4.418 = 生产端估值表官方 EST**。根因是校准值 `cal_f = 44892.619`
+本身是 `^NDX × 汇率 / 净值`（指数尺度），比值 `est/est_cal` 的分子分母必须
+**同一标的一对**，换成 QQQ 就错位。
+
+杠杆替代唯一该出现的地方是 `core/stockdata.py:279-284`
+（`StockDataArrayBuilder`，对应 `GetLeverageHedgeSymbol()`）与
+`GetStockHedge()`；`fundestcalc` / `autocalibration.calibrate_fund` /
+`history_service._est_symbol`（溢价表 ^NDX 价格列）三处口径一致取原始
+est 符号。回归钉子见 `test_fundest.EstSymbolNoLeverageSubstitutionTest`。
+
+顺带澄清旧版的一个错误前提："`^NDX` 在 `stockhistory` 里没有行" ——
+那是 P0 数据层之前的老黄历。现在 `^NDX`/`^GSPC` 落 `stockhistory`（历史）
++ `estquote` 快照（daemon 每日 `--archive-snapshot`），`_latest_date()` 行情
+优先的三级取数（快照 → stockhistory → netvaluehistory）直接可用。
 
 ### 3.4 汇率有三层兜底
 

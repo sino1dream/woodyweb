@@ -503,7 +503,6 @@ class ThreeEstTest(unittest.TestCase):
                      cny_date="2026-10-01", cny_current=6.705,
                      cny_on_mid_date=None, nav_date="2026-10-01",
                      cny_on_cal_date=None):
-            self._ids = {"SZ161130": "1", "QQQ": "4", "USCNY": "8"}
             self._mid_date = mid_date
             self._mid_net_value = mid_net_value
             self._day_quote = day_quote
@@ -521,6 +520,9 @@ class ThreeEstTest(unittest.TestCase):
                 ]
             )
             self._calibrations = {"1": self.CAL_FUND, "4": self.CAL_MIDDLE}
+            # 中间层符号 = profile.est_symbol（^NDX，**不做杠杆替代**，
+            # 见 fundestcalc._est_symbol 修偏记录）；QQQ 保留仅为兼容。
+            self._ids = {"SZ161130": "1", "^NDX": "4", "QQQ": "4", "USCNY": "8"}
 
         # -- 数据源接口 ---------------------------------------------------
         def get_stock_id(self, symbol):
@@ -1217,6 +1219,53 @@ class ExplainTest(unittest.TestCase):
                 return None if stock_id == "8" else super().get_latest_net_value(stock_id)
 
         self.assertIsNone(self._calculator(NoCny()).explain("SZ161130"))
+
+
+class EstSymbolNoLeverageSubstitutionTest(unittest.TestCase):
+    """``_est_symbol()`` 必须返回基金档案的原始 est 符号，**不做杠杆替代**。
+
+    回归钉子（2026-10-20 修偏）：旧实现拿 ``get_leverage_hedge_symbol()``
+    把 ``^NDX`` 换成 ``QQQ`` 再取数，与 PHP ``QdiiGetEstSymbol()``
+    （``qdiiref.php:243`` → ``FundPairReference('^NDX')``）不一致。
+    生产端 SZ161130 官方 EST 4.418 只有 ^NDX 模型能复现，QQQ 模型给 4.420。
+    """
+
+    def test_returns_the_index_symbol_not_the_leverage_etf(self):
+        from core.stockdata import get_leverage_hedge_symbol
+
+        source = ThreeEstTest.Source()
+        calculator = EstimateCalculator(source, FundEstStore(source.connection),
+                                        now_provider=lambda: "2026-10-06 04:00:00")
+
+        # 前提：SZ161130 的杠杆替代确实是 QQQ；档案里 est_symbol 是 ^NDX
+        self.assertEqual(get_leverage_hedge_symbol("SZ161130"), "QQQ")
+        self.assertEqual(calculator._est_symbol("SZ161130"), "^NDX")
+
+    def test_resolve_uses_the_index_id(self):
+        source = ThreeEstTest.Source()
+        calculator = EstimateCalculator(source, FundEstStore(source.connection),
+                                        now_provider=lambda: "2026-10-06 04:00:00")
+
+        ctx = calculator._resolve("SZ161130")
+        self.assertIsNotNone(ctx)
+        self.assertEqual(ctx["est_symbol"], "^NDX")
+        self.assertEqual(ctx["est_id"], "4")
+
+    def test_profile_without_est_symbol_falls_back_to_pair_symbol(self):
+        class PairProfile(ThreeEstTest.Source):
+            def get_fund_profile(self, symbol):
+                class P:
+                    stock_id = "1"
+                    position = 0.95
+                    est_symbol = None
+                    pair_symbol = "^GSPC"
+
+                return P() if symbol == "SZ161130" else None
+
+        source = PairProfile()
+        calculator = EstimateCalculator(source, FundEstStore(source.connection),
+                                        now_provider=lambda: "2026-10-06 04:00:00")
+        self.assertEqual(calculator._est_symbol("SZ161130"), "^GSPC")
 
 
 if __name__ == "__main__":
