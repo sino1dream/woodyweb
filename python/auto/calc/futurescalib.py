@@ -507,51 +507,50 @@ class FuturesCalibrator:
 
     # -- 实时 EST 的取值 --------------------------------------------------
     def realtime_source_value(self, index_symbol: str, future_quote: Any) -> Any:
-        """算出"实时 EST 该用的中间层数值"。
+        """算出"实时 EST 该用的中间层数值" —— **指数点位空间**。
 
-        对应 PHP ``FundPairReference::GetRealtimeNetValue()``：
+        对应 PHP ``_QdiiReference::EstRealtimeNetValue()``
+        （``php/stock/qdiiref.php:172-175``）：
 
         ```php
-        if ($this->realtime_callback)
+        if ($this->GetRealtimeRef())
         {
-            $fCny = $this->cny_ref ? $this->cny_ref->GetVal() : false;
-            return $this->EstFromPair(call_user_func($this->realtime_callback), $fCny);
+            $this->fRealtimeNetValue = $this->GetQdiiValue(strval($est_ref->EstFromPair()));
         }
         ```
 
-        ## 量纲换算（这里踩过**两次**坑，两次都是同一类错误）
-
-        换算要分两步，每一步都用**当时**的校准口径定义：
+        ``$est_ref`` 是 ``FundPairReference``，``EstFromPair()`` **无参**调用时
+        （``fundpairref.php:86``）取 ``pair_ref->GetPrice()`` —— 即配对期货
+        （hf_ES / hf_NQ）的实时价，走 ``($fPairVal / $fCny) / $this->fFactor``
+        （``fundpairref.php:90``）。``fFactor`` 是 ``LoadCalibration()`` 载入的
+        **期货校准值**（期货 / 指数，见 :meth:`_calibration_of`），``fCny`` 对
+        美股这一对恒为 1.0（两端都不是 A 股），所以结果是**指数点位空间**：
 
         ```text
-        指数点位 = 期货价 / cal_futures          （cal_futures = 期货 / 指数）
-        ETF价   = 指数点位 / cal_m               （生产口径：cal_m = 指数 / ETF净值）
-        ⇒ ETF价 = 期货价 / (cal_futures × cal_m)
+        指数点位 = 期货价 / cal_futures        （cal_futures = 期货 / 指数 ≈ 1.007）
         ```
 
-        **第一次坑**：直接把期货价当中间层值用 —— 期货价是指数点位（三万多），
-        中间层值在"ETF 价"空间里（约七百多），实时 EST 大了 100 倍。
+        外层 ``GetQdiiValue()`` 再 ``× 汇率 / 基金校准值`` 换成净值空间。
 
-        **第二次坑（P0.6 实测）**：式子写成了 ``ETF价 = 期货价 × cal_m / cal_futures``
-        —— 那是 ``cal_m = ETF / 指数``（**旧的归一化尺度**，0.008945）下的写法。
-        P0.5 把中间层校准值按生产口径改成 ``指数 / 净值``（QQQ = 41.111）之后，
-        同一个式子给出 ``30255 × 41.11 / 1.007 = 123 万``，比应有的
-        ``730`` 大 **1660 倍**，实时 EST 显示成 3414 而不是 2.05。
+        ## 为什么必须停在指数空间（2026-10-20 修过一次，10 倍的错）
 
-        教训：`cal_m` 的**方向**变了（分子分母互换），所有用到它的换算都要跟着翻。
-        这类"某个比值到底是谁除谁"的问题，最稳的写法是把中间量显式算出来
-        （先算出指数点位、再换成 ETF 价），而不是合成一个会随定义翻转的式子。
+        ``est_cal``（``fundestcalc._est_quote_ref``）是**中间层在指数空间的锚点**
+        （^GSPC 的净值 / 当日收盘价，7690.73），``est / est_cal`` 才是
+        "标的相对变化"。本方法曾经换算完指数点位又**多除了一次 ``cal_m``**
+        （≈10.03，指数 / ETF 净值），把值压到 ETF 价空间
+        （7700 / 10.03 = 767），于是 ``est / est_cal`` 退化成
+        "ETF 价 / 指数点位" ≈ 0.0998 —— 实时 EST 从 3.12 掉到 0.45、
+        溢价显示成 620%（对照 sz161125cn.php 实测）。
+        **est 与 est_cal 必须同空间**，这是本方法唯一的硬约束。
 
         ## 一道量级保险
 
-        换算完还要**与中间层已知的价格对一下**（ETF 实时快照价 / 最新收盘价）。
-        偏离超过 :data:`MIDDLE_VALUE_TOLERANCE` 就返回 ``None`` ——
-        宁可让实时 EST 回落到中间层快照（旧行为，值是对的），
-        也不要把一个大了三个数量级的数送进估值。
-        ``nav_matches_price`` 那把"净值 vs 价格"的尺子在这里也能用：
-        中间层值与它的价格本来就是同一量级。
-
-        没有校准值、没有期货价时返回 ``None``，调用方回落到中间层快照。
+        换算完与**指数自身的实时快照价**对一下（``realtimequote`` 里
+        ^GSPC / ^NDX 有 daemon 写的快照），偏离超过
+        :data:`MIDDLE_VALUE_TOLERANCE` 就返回 ``None`` —— 调用方回落到
+        中间层快照（值是对的，只是不带期货信息）。
+        这把尺子同时能抓住上面那个 bug 的变体：767 对 7690 偏离 90%，
+        一测就出来。
         """
         if future_quote is None:
             return None
@@ -563,24 +562,39 @@ class FuturesCalibrator:
         except (TypeError, ValueError):
             return None
 
-        # 中间层的校准值（cal_m），用来把"指数点位"换到中间层空间
-        middle_calibration = self._proxy_calibration(index_symbol)
-        if not middle_calibration:
-            return None
-
         index_price = price / float(factor)                     # 期货 -> 指数点位
-        value = index_price / float(middle_calibration)         # 指数 -> ETF 价
 
-        proxy = self.proxy_symbol_of(index_symbol)
-        reference = self._proxy_price(proxy) if proxy else None
+        reference = self._index_reference_price(index_symbol)
         try:
             reference = float(reference) if reference not in (None, "") else None
         except (TypeError, ValueError):
             reference = None
-        if reference and abs(value / reference - 1.0) > MIDDLE_VALUE_TOLERANCE:
-            # 量级不对就别用 —— 详见上面"第二次坑"
+        if reference and abs(index_price / reference - 1.0) > MIDDLE_VALUE_TOLERANCE:
+            # 量级不对就别用 —— 详见上面"2026-10-20 修过一次"
             return None
-        return value
+        return index_price
+
+    def _index_reference_price(self, index_symbol: str) -> Any:
+        """指数自身的实时快照价（量级保险的尺子），没有返回 ``None``。
+
+        与 :meth:`_proxy_price` 同一套取数（快照优先、收盘价兜底），
+        只是对象换成**指数自己** —— 尺子必须与被量的值同空间。
+        """
+        quote = self._proxy_quote(index_symbol)
+        if quote is not None:
+            price = getattr(quote, "price", None)
+            if price not in (None, ""):
+                return price
+        stock_id = self.source.get_stock_id(index_symbol)
+        if stock_id is None:
+            return None
+        reader = getattr(self.source, "get_latest_history_close", None)
+        if reader is None:
+            return None
+        try:
+            return reader(stock_id)
+        except Exception:
+            return None
 
     def _proxy_calibration(self, index_symbol: str) -> Any:
         """中间层 ETF 的校准值（``cal_m``）。

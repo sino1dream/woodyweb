@@ -485,62 +485,56 @@ class FuturesCalibratorTest(unittest.TestCase):
 
 
 class RealtimeSourceValueTest(unittest.TestCase):
-    """``realtime_source_value()`` 的**量纲换算**。
+    """``realtime_source_value()`` 的**量纲换算** —— 结果停在**指数点位空间**。
 
-    两步走，每步都用**当前的**校准口径定义：
+    对应 PHP ``_QdiiReference::EstRealtimeNetValue()``
+    （``qdiiref.php:172-175``）→ ``FundPairReference::EstFromPair()``
+    （``fundpairref.php:86-91``）：
 
     ```text
-    cal_futures = 期货 / 指数          （期货校准值）
-    cal_m       = 指数 / ETF净值        （生产口径的中间层校准值，QQQ = 41.111）
-
-    指数点位 = 期货价 / cal_futures
-    ETF价    = 指数点位 / cal_m
-    ⇒  ETF价 = 期货价 / (cal_futures × cal_m)
+    指数点位 = 期货价 / cal_futures        （cal_futures = 期货 / 指数 ≈ 1.007）
     ```
 
-    ## 这条式子翻过一次方向（P0.6 实测踩到）
+    到这里就停：``est_cal``（``fundestcalc._est_quote_ref``）在**指数空间**
+    （^NDX 的净值 / 收盘价），``est / est_cal`` 才是"标的相对变化"。
+    PHP 外层 ``GetQdiiValue()`` 再 ``× 汇率 / 基金校准值`` 换成净值。
 
-    P0.5 之前 ``cal_m`` 是"ETF / 指数"的归一化尺度（0.008945），那时的写法是
-    ``ETF价 = 期货价 × cal_m / cal_futures``。P0.5 把中间层校准值按生产口径
-    改成"指数 / 净值"（QQQ = 41.111）之后，**分子分母互换了**，同一个式子给出
-    ``30255 × 41.11 / 1.007 = 123 万`` —— 比应有的 730 大 **1660 倍**，
-    实时 EST 显示成 3414 而不是 2.05。
+    ## 这里修过一次 10 倍的错（2026-10-20）
 
-    教训：`cal_m` 的方向一变，所有用到它的换算都要跟着翻。所以现在写成
-    **先算指数点位、再换成 ETF 价**两步，而不是合成一个会随定义翻转的式子。
+    旧实现换算完指数点位又除了一次 ``cal_m``（指数 / ETF 净值 ≈ 41.11），
+    把值压到 ETF 价空间（7700 / 10.03 = 767），``est / est_cal`` 退化成
+    "ETF 价 / 指数点位" ≈ 0.0998 —— 实时 EST 从 3.12 掉到 0.45、
+    溢价 620%（对照 sz161125cn.php 实测）。
+    ``test_guard_rejects_extra_cal_m_division`` 钉住尺子能抓住这个变体。
     """
 
     #: 一组自洽的数：^NDX 30807.93 / QQQ净值 749.3773 = 41.111（= cal_m，生产口径）
     INDEX_PRICE = 30807.93
     FUTURE_PRICE = 31369.43
-    QQQ_NAV = 749.3773
     CAL_FUTURES = FUTURE_PRICE / INDEX_PRICE      # 期货 / 指数
-    CAL_MIDDLE = INDEX_PRICE / QQQ_NAV            # 指数 / 净值
-    QQQ_QUOTE = 749.3773                          # 中间层快照价
+    INDEX_QUOTE = 30807.93                         # ^NDX 实时快照价（量级保险的尺子）
 
     class Source:
-        """最小数据源：``^NDX``(6) 有期货校准值、``QQQ``(4) 有中间层校准值。
+        """最小数据源：``^NDX``(6) 有期货校准值与实时快照，``QQQ``(4) 占位。
 
         三个常量从**外层测试类**取 —— 嵌套类的类体**看不到**外层类的命名空间，
         直接写 ``CAL_FUTURES`` 只能拿到自己类体里那份，曾经这里就残留了一份
         旧口径的副本（0.370904 / 0.008945），于是"常量改了、测试用的还是旧的"，
         表现得像是换算写错了。现在统一走 ``RealtimeSourceValueTest`` 全名。
 
-        子类想改口径（比如把 ``cal_m`` 写反）覆盖同名类属性即可，``None`` 表示用默认。
+        子类想改口径覆盖同名类属性即可，``None`` 表示用默认。
         """
 
         CAL_FUTURES = None
-        CAL_MIDDLE = None
-        QQQ_QUOTE = None
+        INDEX_QUOTE = None
 
         def __init__(self):
             outer = RealtimeSourceValueTest
             self._ids = {"^NDX": 6, "hf_NQ": 13, "QQQ": 4}
             self._calibrations = {
                 6: self.CAL_FUTURES or outer.CAL_FUTURES,
-                4: self.CAL_MIDDLE or outer.CAL_MIDDLE,
             }
-            self._quote = self.QQQ_QUOTE or outer.QQQ_QUOTE
+            self._quote = self.INDEX_QUOTE or outer.INDEX_QUOTE
             self.connection = FakeConnection(stock=self._ids)
 
         def get_stock_id(self, symbol):
@@ -553,8 +547,8 @@ class RealtimeSourceValueTest(unittest.TestCase):
             return DailyRecord(date="2026-10-07", close=value) if value else None
 
         def get_stored_quote(self, symbol):
-            if symbol == "QQQ":
-                return FuturesQuote("QQQ", "gb_qqq", price=str(self._quote), date="2026-10-07")
+            if symbol == "^NDX":
+                return FuturesQuote("^NDX", "gb_ndx", price=str(self._quote), date="2026-10-07")
             return None
 
         def get_latest_history_close(self, stock_id):
@@ -564,8 +558,8 @@ class RealtimeSourceValueTest(unittest.TestCase):
         source = self.Source()
         return FuturesCalibrator(source, connection=source.connection)
 
-    def test_value_lands_in_the_middle_layer_space(self):
-        """换算结果应当与"中间层快照价"同量级（而不是指数点位的三万）。"""
+    def test_value_lands_in_the_index_space(self):
+        """换算结果应当与"指数实时快照价"同量级（而不是 ETF 价的七百多）。"""
         calibrator = self._calibrator()
         quote = FuturesQuote("hf_NQ", "hf_NQ", price=str(self.FUTURE_PRICE),
                              date="2026-10-07", time="11:48:00")
@@ -573,37 +567,38 @@ class RealtimeSourceValueTest(unittest.TestCase):
         value = calibrator.realtime_source_value("^NDX", quote)
 
         self.assertIsNotNone(value)
-        # 换算后应当非常接近 QQQ 的快照价
-        self.assertAlmostEqual(value, self.QQQ_QUOTE, delta=1.0)
-        # 量级检查：绝不能是三万这种指数点位
-        self.assertLess(value, 10000)
+        # 换算后应当非常接近 ^NDX 的快照价（指数点位空间）
+        self.assertAlmostEqual(value, self.INDEX_QUOTE, delta=1.0)
+        # 量级检查：必须是指数点位的三万，不能是 ETF 价的七百多
+        self.assertGreater(value, 10000)
 
     def test_matches_formula(self):
         calibrator = self._calibrator()
         quote = FuturesQuote("hf_NQ", "hf_NQ", price=str(self.FUTURE_PRICE))
-        expected = self.FUTURE_PRICE / (self.CAL_FUTURES * self.CAL_MIDDLE)
+        expected = self.FUTURE_PRICE / self.CAL_FUTURES
         self.assertAlmostEqual(
             calibrator.realtime_source_value("^NDX", quote), expected, places=9)
-        # 两步拆解：期货 -> 指数 -> ETF
-        self.assertAlmostEqual(self.FUTURE_PRICE / self.CAL_FUTURES, self.INDEX_PRICE, places=6)
-        self.assertAlmostEqual(self.INDEX_PRICE / self.CAL_MIDDLE, self.QQQ_NAV, places=6)
+        self.assertAlmostEqual(expected, self.INDEX_PRICE, places=6)
 
-    def test_magnitude_guard_rejects_flipped_convention(self):
+    def test_guard_rejects_extra_cal_m_division(self):
         """量级对不上时宁可返回 None（让调用方回落中间层快照）。
 
-        盯的就是上面那次 1660 倍事故：把 ``× cal_m`` 写成 ``/ cal_m``
-        （或反过来）会得到三个数量级偏移的值，不该送进估值。
+        盯的是 2026-10-20 那次 10 倍事故：换算完指数点位**又除了 cal_m**
+        （≈41.11），值掉到 ETF 价空间（767 对指数 7690，偏离 90%）。
+        这里把 ^NDX 的期货校准值污染成 ``cal_futures × cal_m``
+        （等价位地把值压进 ETF 空间），尺子必须拒收。
         """
-        class FlippedSource(self.Source):
-            CAL_MIDDLE = 1.0 / RealtimeSourceValueTest.CAL_MIDDLE   # 方向写反
+        class PollutedSource(self.Source):
+            CAL_MIDDLE = 30807.93 / 749.3773                  # 指数 / ETF 净值
+            CAL_FUTURES = RealtimeSourceValueTest.CAL_FUTURES * CAL_MIDDLE
 
-        source = FlippedSource()
+        source = PollutedSource()
         calibrator = FuturesCalibrator(source, connection=source.connection)
         quote = FuturesQuote("hf_NQ", "hf_NQ", price=str(self.FUTURE_PRICE))
         self.assertIsNone(calibrator.realtime_source_value("^NDX", quote))
 
     def test_without_reference_price_no_guard_but_value_returned(self):
-        """拿不到中间层参考价时没有尺子 —— 放行，不把"查不到"变成"算不出来"。"""
+        """拿不到指数参考价时没有尺子 —— 放行，不把"查不到"变成"算不出来"。"""
         class NoQuote(self.Source):
             def get_stored_quote(self, symbol):
                 return None
@@ -618,9 +613,6 @@ class RealtimeSourceValueTest(unittest.TestCase):
             def get_calibration_now(self, stock_id):
                 from core.stockdata import DailyRecord
 
-                # 只有中间层有校准值，指数没有 -> 无法换算
-                if stock_id == 4:
-                    return DailyRecord(date="2026-10-07", close=self.CAL_MIDDLE)
                 return None
 
         source = NoCalibration()

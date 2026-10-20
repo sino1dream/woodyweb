@@ -190,7 +190,9 @@ python -B dbtools\calibrate_futures.py --apply     # 写期货校准值
 * `calc_factor()` 与 `implied_index_price()`；
 * `calibrate()` 的时刻对齐写入与**同一天取平均**；
 * `calibrate_from_proxy()` 的日期闸门；
-* **`realtime_source_value()` 的量纲换算**（断言结果落在中间层空间、绝不可能是三万）。
+* **`realtime_source_value()` 的量纲换算**（断言结果落在**指数点位空间**，
+  与 `est_cal` 同空间，绝不可能是 ETF 价空间的七百多；含"多除一次 cal_m"
+  被量级保险拒收的用例，2026-10-20 pitfalls #91）。
 
 全量：`auto` **496 个**、`web` **59 个**。
 
