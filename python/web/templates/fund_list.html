@@ -1,5 +1,9 @@
 {% extends "base.html" %}
 {% block title %}{{ group.title }} - 基金估值{% endblock %}
+{# 19 列宽表（含 2026-10-19 接的 EST 七列）：把 .site-main 从 980px 放宽，
+   否则各列 white-space:nowrap 后的实际宽度溢出容器，浏览器把溢出部分
+   整体推向右侧 —— 页面表现就是「表格偏右、右侧几列要横向滚动才看到」 #}
+{% block main_class %}wide{% endblock %}
 {% block content %}
   <h1>{{ group.title }}</h1>
   <p class="group-description">{{ group.description }}（共 {{ group.count }} 只）</p>

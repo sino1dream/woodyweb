@@ -4,6 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}Palmmicro Python Web{% endblock %}</title>
+  {# 页面覆盖此 block 即可给主容器加类：fund_list.html 填 "wide" 放宽 980px #}
+  {% block main_class %}{% endblock %}
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
@@ -27,7 +29,10 @@
       <a href="{{ url_for('status.status_page') }}">状态</a>
     </nav>
   </header>
-  <main class="site-main">
+  {# 宽表格页（分组列表 19 列等）通过 main_class 把容器放宽，
+      否则表格溢出 980px 容器后被浏览器整体推向右侧 #}
+  {% set main_class = self.main_class() | trim %}
+  <main class="site-main {% if main_class %}{{ main_class }}{% endif %}">
     {# flash 反馈（后台页的新建/编辑/删除结果）。PHP 那边用 trigger_error
        记日志、页面无反馈；这里给用户一个可见的结果提示。 #}
     {% with messages = get_flashed_messages() %}
@@ -39,7 +44,7 @@
     {% endwith %}
     {% block content %}{% endblock %}
   </main>
-  <footer class="site-footer">
+  <footer class="site-footer {% if main_class == 'wide' %}wide{% endif %}">
     Python 迁移第一版，仅展示已迁移的基金估值数据。
   </footer>
 </body>

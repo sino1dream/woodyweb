@@ -1133,5 +1133,91 @@ class FairCnyTest(unittest.TestCase):
         self.assertNotEqual(calc._fair_cny("SZ162411", 6.72), 6.679)
 
 
+class ExplainTest(unittest.TestCase):
+    """``EstimateCalculator.explain()`` —— 页面「算法说明」那一段的数据源。
+
+    ## 为什么值得单独钉住
+
+    那段说明是**写给用户核对数值**的。它一旦与实现不一致（公式写错、
+    或者标错哪个数是哪一档用的），危害比没有说明更大 —— 用户会按错误的
+    公式去验算，然后得出"实现是对的"这个错误结论。
+
+    所以这里最重要的一条是 :meth:`test_values_match_documented_formula`：
+    **按说明里那行公式手算，必须等于实现给出的 EST**。
+
+    替身复用 :class:`ThreeEstTest.Source`（三个 EST 的输入各不相同 ——
+    输入相同的话三档会算出同一个值，测不出差别）。
+    """
+
+    def _calculator(self, source):
+        return EstimateCalculator(source, FundEstStore(source.connection),
+                                  now_provider=lambda: "2026-10-06 04:00:00")
+
+    def test_three_tiers_named_in_order(self):
+        raw = self._calculator(ThreeEstTest.Source()).explain("SZ161130")
+
+        self.assertIsNotNone(raw)
+        self.assertEqual([t["name"] for t in raw["tiers"]],
+                         ["官方EST", "参考EST", "实时EST"])
+
+    def test_values_match_documented_formula(self):
+        """页面上写给用户看的公式，必须就是实现用的那条。
+
+        ``EST = (1 − p) × nv + p × nv × (est ÷ est_cal) × (cny ÷ cny_cal)``
+
+        三个 EST 共用 nv / est_cal / cny_cal，差别只在 (est, cny) 这一对 ——
+        这条测试同时钉住"三档同源"这件事。
+        """
+        raw = self._calculator(ThreeEstTest.Source()).explain("SZ161130")
+        position = raw["position"]
+        netvalue = raw["netvalue"]
+        est_cal = raw["est_cal"]
+        cny_cal = raw["cny_cal"]
+        self.assertIsNotNone(est_cal)
+        self.assertIsNotNone(cny_cal)
+
+        checked = 0
+        for tier in raw["tiers"]:
+            if tier["est"] is None or tier["cny"] is None or tier["value"] is None:
+                continue
+            expected = ((1.0 - position) * netvalue
+                        + position * netvalue
+                        * (tier["est"] / est_cal) * (tier["cny"] / cny_cal))
+            self.assertAlmostEqual(tier["value"], expected, places=6,
+                                   msg="%s 与页面公式不符" % tier["name"])
+            checked += 1
+        self.assertGreaterEqual(checked, 2, "至少官方与实时两档要能验算")
+
+    def test_official_and_realtime_differ_on_the_underlying_price(self):
+        """官方用中间层当日价、实时用实时快照 —— 输入不同，值就该不同。"""
+        raw = self._calculator(ThreeEstTest.Source()).explain("SZ161130")
+        official = raw["tiers"][0]
+        realtime = raw["tiers"][2]
+
+        self.assertNotEqual(official["est"], realtime["est"])
+        self.assertNotEqual(official["value"], realtime["value"])
+
+    def test_est_cal_date_is_the_date_actually_used(self):
+        """基准价的标签日期是**实际取到的那天**，不是"想取的那天"。
+
+        ``_est_quote_ref()`` 有四级兜底；若标签写的是校准日而实际取的是
+        中间层最新日，用户按标签去查那天的行情会对不上 —— 说明反而害人。
+        """
+        source = ThreeEstTest.Source()
+        raw = self._calculator(source).explain("SZ161130")
+
+        # 校准日 2026-09-29 那天中间层没有数据，实际取的是中间层最新日
+        self.assertEqual(str(raw["est_cal_date"]), str(source._mid_date))
+
+    def test_returns_none_without_any_rate(self):
+        """汇率完全取不到时整段不显示（页面据此跳过说明块）。"""
+
+        class NoCny(ThreeEstTest.Source):
+            def get_latest_net_value(self, stock_id):
+                return None if stock_id == "8" else super().get_latest_net_value(stock_id)
+
+        self.assertIsNone(self._calculator(NoCny()).explain("SZ161130"))
+
+
 if __name__ == "__main__":
     unittest.main()

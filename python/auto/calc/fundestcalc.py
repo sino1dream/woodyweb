@@ -160,6 +160,10 @@ class EstimateCalculator:
             # 汇率完全取不到就没法算任何一个 EST
             return None
 
+        cal_date = self._calibration_date_of(stock_id)
+        est_ref_value, est_ref_date = self._est_quote_ref_with_date(
+            est_symbol, cal_date, mid_date)
+
         return {
             "stock_id": stock_id,
             "fund_symbol": symbol,
@@ -180,9 +184,10 @@ class EstimateCalculator:
             # 曾经用恒等式 ``cny_ref / cal_m`` 反推，那条恒等式只对旧尺度的中间层
             # 校准值成立；2026-10-13 按生产端口径重算后（QQQ 41.58）基准价被算成
             # 0.16，比值放大 4648 倍，/qdii 与 /fund 页官方 EST 因此显示成 9625。
-            "est_quote_ref": self._est_quote_ref(est_symbol,
-                                                 self._calibration_date_of(stock_id),
-                                                 mid_date),
+            "est_quote_ref": est_ref_value,
+            #: 基准价**实际**取到的那天（可能是兜底后的日期，见
+            #: :meth:`_est_quote_ref_with_date`）。页面算法说明要显示它。
+            "est_quote_ref_date": est_ref_date,
             "cny_date": cny_date,
             "cny_mid": cny_mid,
             "cny_current": cny_current,
@@ -345,6 +350,170 @@ class EstimateCalculator:
         if not value:
             return None
         return EstRecord(ctx["mid_date"], value, None)
+
+    # -- 公式说明（供页面核对，不参与计算） -------------------------------
+    def explain(self, symbol: str) -> Any:
+        """把三档估值的**公式与代入值**摊开，给页面上「算法说明」那一段用。
+
+        纯读、不写库；任何一项取不到就返回 ``None``（页面整段不显示）。
+
+        这里**不复用** ``compute_*`` 的返回值 —— 那些只给结果，而说明要的是
+        "每个中间量分别是什么、从哪张表哪一天来的"，所以重新走一遍同样的
+        取数路径并记录口径标签。公式本身见 :meth:`_qdii_value` 的推导。
+        """
+        ctx = self._resolve(symbol)
+        if ctx is None:
+            return None
+
+        data = ctx["data"]
+        est_symbol = ctx["est_symbol"]
+        mid_date = ctx["mid_date"]
+        cny_cal = data.get("CNY")
+
+        official_est = self._official_est_value(est_symbol, mid_date, data)
+        official_label = self._official_est_label(est_symbol, mid_date, data)
+        official_cny = ctx["cny_mid"] if ctx["cny_mid"] is not None else ctx["cny_current"]
+        official_cny_label = ("USCNY 中间价 %s" % mid_date if ctx["cny_mid"] is not None
+                              else "USCNY 中间价 %s（最新，%s 无报价）" % (ctx["cny_date"], mid_date))
+
+        fair_est = ctx["day_quote"]
+        fair_label = "%s %s 当日收盘价" % (est_symbol, mid_date)
+        if fair_est is None:
+            fair_est = self._middle_day_quote(est_symbol, mid_date, data)
+            fair_label = "%s 当前报价（快照 / 最新收盘）" % est_symbol
+
+        realtime_est, realtime_label = self._realtime_quote_with_label(ctx)
+
+        return {
+            "symbol": symbol,
+            "mid_date": mid_date,
+            "position": data.get("position"),
+            "netvalue": data.get("netvalue"),
+            "calibration": data.get("calibration"),
+            "calibration_date": self._calibration_date_of(ctx["stock_id"]),
+            "est_symbol": est_symbol,
+            "est_cal": ctx["est_quote_ref"],
+            "est_cal_date": ctx.get("est_quote_ref_date") or self._calibration_date_of(ctx["stock_id"]),
+            "cny_cal": cny_cal,
+            "cny_symbol": "USCNY",
+            "cny_cal_date": data.get("CNY_date") or self._calibration_date_of(ctx["stock_id"]),
+            "price": self._market_price(symbol, ctx["stock_id"]),
+            "tiers": [
+                {
+                    "key": "official",
+                    "name": "官方EST",
+                    "est": official_est,
+                    "est_label": official_label,
+                    "cny": official_cny,
+                    "cny_label": official_cny_label,
+                    "value": self._value_or_none(official_est, ctx, official_cny),
+                },
+                {
+                    "key": "fair",
+                    "name": "参考EST",
+                    "est": fair_est,
+                    "est_label": fair_label,
+                    "cny": ctx["cny_fair"],
+                    "cny_label": self._fair_cny_label(symbol, ctx),
+                    "value": self._value_or_none(fair_est, ctx, ctx["cny_fair"]),
+                },
+                {
+                    "key": "realtime",
+                    "name": "实时EST",
+                    "est": realtime_est,
+                    "est_label": realtime_label or "%s 实时快照" % est_symbol,
+                    "cny": ctx["cny_fair"],
+                    "cny_label": self._fair_cny_label(symbol, ctx),
+                    "value": self._value_or_none(realtime_est, ctx, ctx["cny_fair"]),
+                },
+            ],
+        }
+
+    def _value_or_none(self, est_value: Any, ctx: dict, cny: Any) -> Any:
+        """``_qdii_value()`` 的包装：任一入参缺失就返回 ``None``。"""
+        if est_value is None or cny is None:
+            return None
+        try:
+            value = self._qdii_value(ctx["calculator"], ctx["data"], est_value, cny,
+                                     est_quote_ref=ctx["est_quote_ref"])
+        except Exception:
+            return None
+        return value if value else None
+
+    def _official_est_label(self, est_symbol: str, date: Any, data: dict) -> str:
+        """官方 EST 用的中间层值到底是什么口径（净值 / 持仓 / 行情价）。
+
+        顺序与 :meth:`_official_est_value` 一致，只是把"取到了哪一种"说出来 ——
+        用户核对数值时最想知道的就是这个。
+        """
+        est_id = self.source.get_stock_id(est_symbol)
+        if est_id is not None and self._net_value(est_id, date) is not None:
+            return "%s %s 净值" % (est_symbol, date)
+        if self._holdings_est_value(est_symbol, date) is not None:
+            return "%s %s 持仓加权估值" % (est_symbol, date)
+        return "%s %s 行情价" % (est_symbol, date)
+
+    def _fair_cny_label(self, symbol: str, ctx: dict) -> str:
+        """参考/实时 EST 用的汇率口径（ETF 即期、LOF 中间价）。"""
+        if not ctx.get("is_etf"):
+            return "USCNY 中间价 %s" % ctx["cny_date"]
+        if self._spot_cny() not in (None, ""):
+            return "fx_susdcny 即期（ETF 按盘中汇率申赎）"
+        return "USCNY 中间价 %s（即期缺失，退回中间价）" % ctx["cny_date"]
+
+    def _realtime_quote_with_label(self, ctx: dict) -> tuple:
+        """实时 EST 用的中间层值 + 它的口径标签。
+
+        与 :meth:`compute_realtime` 同一套优先级（期货 → 快照），
+        只是额外把"用的哪一个"说出来。
+        """
+        value = self._futures_realtime_quote(ctx)
+        if value is not None:
+            future_symbol = self._future_symbol_of(ctx)
+            index_symbol = self._index_symbol(ctx)
+            return value, "%s 期货实时价 → %s 同口径" % (future_symbol or "期货", index_symbol or "标的")
+        if ctx.get("realtime_quote") is not None:
+            return ctx["realtime_quote"], "%s 实时快照价" % ctx["est_symbol"]
+        return None, None
+
+    def _future_symbol_of(self, ctx: dict) -> Any:
+        """该基金配对的期货符号（只为说明文字服务）。"""
+        calibrator = getattr(self, "futures_calibrator", None)
+        if calibrator is None:
+            return None
+        index_symbol = self._index_symbol(ctx)
+        if not index_symbol:
+            return None
+        try:
+            return calibrator.future_symbol_of(index_symbol)
+        except Exception:
+            return None
+
+    def _market_price(self, symbol: str, stock_id: Any) -> Any:
+        """基金当前的场内价（算溢价用）。快照优先，退回最新收盘。"""
+        reader = getattr(self.source, "get_stored_quote", None)
+        if reader is not None:
+            try:
+                quote = reader(symbol)
+            except Exception:
+                quote = None
+            price = getattr(quote, "price", None) if quote is not None else None
+            if price not in (None, ""):
+                try:
+                    return float(price)
+                except (TypeError, ValueError):
+                    pass
+        reader = getattr(self.source, "get_latest_history_close", None)
+        if reader is None or stock_id is None:
+            return None
+        try:
+            value = reader(stock_id)
+        except Exception:
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
 
     def _futures_realtime_quote(self, ctx: dict) -> Any:
         """配对期货的实时价（换算成"中间层同口径"的数值）。
@@ -588,9 +757,12 @@ class EstimateCalculator:
         # ``cny / cny_cal``（贡献值那一项除的是**当前**汇率，见该方法 docstring）。
         # 缺了它就会回落到"传进来的当前汇率"，汇率那一项被约掉，参考 EST 反而与
         # 官方 EST 同向变化（实测把 4.4776 算成 4.5452）。
-        calibration_cny = self._calibration_cny(stock_id, symbol)
+        calibration_cny, cny_cal_date = self._calibration_cny_with_date(stock_id, symbol)
         if calibration_cny is not None:
             config["CNY"] = float(calibration_cny)
+            #: 基准汇率**实际**取到的那天（三级兜底后可能与校准日不同），
+            #: 页面算法说明要显示它，否则用户按校准日去查汇率会对不上。
+            config["CNY_date"] = str(cny_cal_date) if cny_cal_date else ""
         if est_symbol:
             est_id = self.source.get_stock_id(est_symbol)
             middle_calibration = self._calibration_of(est_id) if est_id else None
@@ -636,6 +808,38 @@ class EstimateCalculator:
             return None
         return getattr(record, "date", None)
 
+    def _calibration_cny_with_date(self, stock_id: Any, symbol: str) -> tuple:
+        """:meth:`_calibration_cny` 的带日期版本：``(值, 实际取到的日期)``。
+
+        三级兜底后真正取到的可能不是校准日 —— 页面算法说明要显示实际那天。
+        """
+        cny_id = self.source.get_stock_id("USCNY")
+        if cny_id is None:
+            return None, None
+
+        calibration_date = self._calibration_date_of(stock_id)
+        if calibration_date is None:
+            return None, None
+
+        value = self._net_value(cny_id, calibration_date)
+        if value is not None:
+            return value, calibration_date
+        # 该日期没有汇率（周末/假期）-> 退到之前最近一条。
+        # **取不到也要继续往下走**：这里曾经直接 `return fallback(...)`，
+        # 而汇率只写 netvaluehistory、stockhistory 里没有行，于是兜底永远
+        # 返回 None，最后那条"最新汇率"根本走不到 —— 校准时汇率因此恒为
+        # None，``cny/cny_cal`` 被约成 1，汇率相对变化整项消失。
+        fallback = getattr(self.source, "get_prev_history_close", None)
+        if fallback is not None:
+            try:
+                value = fallback(cny_id, calibration_date)
+            except Exception:
+                value = None
+            if value not in (None, ""):
+                return value, "%s 前" % calibration_date
+        # 最后退到"当前汇率"（与旧行为一致，作为兜底）
+        return self._latest_net_value(cny_id), self.source.get_latest_net_value_date(cny_id)
+
     def _calibration_cny(self, stock_id: Any, symbol: str) -> Any:
         """**校准发生那一刻**用的汇率（``cny_ref``）。
 
@@ -651,33 +855,10 @@ class EstimateCalculator:
         3. 最新一条 ``USCNY``（与旧行为一致的兜底）。
 
         三级都取不到才返回 ``None``，由调用方回落到"当前汇率"。
+
+        取数逻辑在 :meth:`_calibration_cny_with_date` 里（那份还返回实际取到的日期）。
         """
-        cny_id = self.source.get_stock_id("USCNY")
-        if cny_id is None:
-            return None
-
-        calibration_date = self._calibration_date_of(stock_id)
-        if calibration_date is None:
-            return None
-
-        value = self._net_value(cny_id, calibration_date)
-        if value is not None:
-            return value
-        # 该日期没有汇率（周末/假期）-> 退到之前最近一条。
-        # **取不到也要继续往下走**：这里曾经直接 `return fallback(...)`，
-        # 而汇率只写 netvaluehistory、stockhistory 里没有行，于是兜底永远
-        # 返回 None，最后那条"最新汇率"根本走不到 —— 校准时汇率因此恒为
-        # None，``cny/cny_cal`` 被约成 1，汇率相对变化整项消失。
-        fallback = getattr(self.source, "get_prev_history_close", None)
-        if fallback is not None:
-            try:
-                value = fallback(cny_id, calibration_date)
-            except Exception:
-                value = None
-            if value not in (None, ""):
-                return value
-        # 最后退到"当前汇率"（与旧行为一致，作为兜底）
-        return self._latest_net_value(cny_id)
+        return self._calibration_cny_with_date(stock_id, symbol)[0]
 
     def _latest_net_value(self, stock_id: Any) -> Any:
         """基金自己的最新单位净值。"""
@@ -992,6 +1173,45 @@ class EstimateCalculator:
             return None
         return value
 
+    def _est_quote_ref_with_date(self, est_symbol: str, cal_date: Any, mid_date: Any) -> tuple:
+        """:meth:`_est_quote_ref` 的带日期版本：``(值, 实际取到的日期)``。
+
+        ``cal_date`` 只是"想取哪天"，四级兜底后真正取到的可能是另一天 ——
+        页面上的算法说明要显示**实际那天**（用户按标签去核对数值），
+        所以把这个信息一起带出来。
+        """
+        est_id = self.source.get_stock_id(est_symbol)
+        if est_id is None:
+            return None, None
+        if cal_date is not None:
+            value = self._net_value(est_id, cal_date)
+            if value not in (None, ""):
+                return value, cal_date
+            reader = getattr(self.source, "get_prev_history_close", None)
+            if reader is not None:
+                try:
+                    value = reader(est_id, cal_date)
+                except Exception:
+                    value = None
+                if value not in (None, ""):
+                    # 退到上一交易日 —— 这一级拿不到具体日期；但若"最新行情日"
+                    # 不晚于校准日，那它就是这个兜底取到的那天（演示库常见：
+                    # 校准日 10-20 而行情只到 10-19），标出确切日期好核对。
+                    latest = getattr(self.source, "get_latest_history_date", None)
+                    if latest is not None:
+                        try:
+                            day = latest(est_id)
+                        except Exception:
+                            day = None
+                        if day and str(day) <= str(cal_date):
+                            return value, day
+                    return value, "%s 前" % cal_date
+        if mid_date is not None:
+            value = self._net_value(est_id, mid_date)
+            if value not in (None, ""):
+                return value, mid_date
+        return None, None
+
     def _est_quote_ref(self, est_symbol: str, cal_date: Any, mid_date: Any) -> Any:
         """中间层报价的**校准基准值**（``est_cal``）—— 基金 ``cal_f`` 建起来那天的中间层值。
 
@@ -1017,27 +1237,10 @@ class EstimateCalculator:
         变成 ``41.58``（= 指数/净值，与生产端 QQQ 41.111 同口径），恒等式失效：
         基准价被算成 ``6.69/41.58 = 0.16``，比值放大 **4648 倍**，
         ``/qdii`` 与 ``/fund`` 页的官方 EST 因此显示成 9625（实测，应约 2.05）。
+
+        取数逻辑在 :meth:`_est_quote_ref_with_date` 里（那份还返回实际取到的日期）。
         """
-        est_id = self.source.get_stock_id(est_symbol)
-        if est_id is None:
-            return None
-        if cal_date is not None:
-            value = self._net_value(est_id, cal_date)
-            if value not in (None, ""):
-                return value
-            reader = getattr(self.source, "get_prev_history_close", None)
-            if reader is not None:
-                try:
-                    value = reader(est_id, cal_date)
-                except Exception:
-                    value = None
-                if value not in (None, ""):
-                    return value
-        if mid_date is not None:
-            value = self._net_value(est_id, mid_date)
-            if value not in (None, ""):
-                return value
-        return None
+        return self._est_quote_ref_with_date(est_symbol, cal_date, mid_date)[0]
 
     def _qdii_value(self, calculator: PalmmicroFundCalculator, data: dict,
                     est_value: Any, cny: Any, est_quote_ref: Any = None) -> Any:

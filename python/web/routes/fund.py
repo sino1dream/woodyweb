@@ -36,7 +36,10 @@ from web.services.detail_sections import (  # noqa: E402
     build_stock_history,
 )
 from web.services.fund_service import FundService  # noqa: E402
-from web.services.fundest_service import fund_position_memo  # noqa: E402
+from web.services.fundest_service import (  # noqa: E402
+    build_est_formula_note,
+    fund_position_memo,
+)
 from web.services.qdii_page_service import build_qdii_page  # noqa: E402
 from web.services.reference_service import (  # noqa: E402
     _fund_reference_symbols,
@@ -71,6 +74,9 @@ def _render_fund(symbol: str, group: str):
         "fund_detail.html",
         fund=output,
         group=group,
+        # 顶部基本信息表默认隐藏（PALMMICRO_SHOW_FUND_INFO=1 恢复），
+        # 原因见 _fund_info_enabled()。
+        show_fund_info=_fund_info_enabled(),
         trading=_build_trading(symbol),
         fundest=_build_fundest(symbol),
         reference=_build_reference(symbol),
@@ -176,6 +182,23 @@ def _sma_enabled() -> bool:
     ``SmaService`` 要读 ``stockhistory`` / ``stockema`` 算均线，能省则省。
     """
     return os.getenv("PALMMICRO_SHOW_SMA", "0") == "1"
+
+
+def _fund_info_enabled() -> bool:
+    """详情页顶部「基本信息」表是否显示（``PALMMICRO_SHOW_FUND_INFO``，默认 ``0`` = 隐藏）。
+
+    2026-10-20 用户要求"隐藏所有详细基金页面的第一个表格" —— 那张
+    「股票代码 / 名称 / 数据库 ID / 仓位 / 官方日期 / 汇率估值 / 估值净值」
+    是本地自建的调试段：生产端 ``sz161125cn.php`` 顶部没有它，页面标题
+    已经是「基金名【代码】」，代码与名称重复；数据库 ID、汇率估值更是
+    内部字段。真正有信息量的（仓位、官方日期、估值净值）在下面的
+    「估值」表与「校准记录」表里都有。
+
+    与 :func:`_sma_enabled` 同款：**默认隐藏、置 1 恢复**，而不是删代码 ——
+    排查数据时把开关打开就能看到那几个内部字段。每请求现读，测试改
+    环境变量即可验证两个方向。
+    """
+    return os.getenv("PALMMICRO_SHOW_FUND_INFO", "0") == "1"
 
 
 def _build_trading(symbol: str) -> dict[str, Any] | None:
@@ -710,7 +733,25 @@ def _build_fundest(symbol: str) -> dict[str, Any] | None:
         table["memo"] = fund_position_memo(refs[0])
     except Exception:
         table["memo"] = ""
+    #: 估值表**下方**的算法说明（公式 + 三档代入值）。本版新增，生产端没有 ——
+    #: 目的是让三档 EST 的差别（标的价 / 汇率各取哪一份）可被逐格验算。
+    table["formula"] = _build_est_formula(symbol)
     return table if table.get("rows") else None
+
+
+def _build_est_formula(symbol: str) -> Any:
+    """估值表下方的「算法说明」；算不出来就整段不显示。
+
+    ``fundest_formula_builder`` 可注入（测试用），默认走
+    :func:`~web.services.fundest_service.build_est_formula_note` 的真实计算。
+    """
+    builder = current_app.extensions.get("fundest_formula_builder")
+    try:
+        if builder is not None:
+            return builder(symbol)
+        return build_est_formula_note(symbol)
+    except Exception:
+        return None
 
 
 def _build_qdii_refs(symbols: list) -> list:

@@ -1,3 +1,4 @@
+import os
 import sys
 import unittest
 from pathlib import Path
@@ -193,12 +194,19 @@ class WebAppTest(unittest.TestCase):
         self.assertAlmostEqual(data["estimate"], 1.376)
 
     def test_fund_page_contains_name_and_estimate(self):
+        """详情页仍显示基金名；估值净值在「估值」表里（顶部基本信息表默认隐藏）。
+
+        2026-10-20 起顶部「股票代码/名称/数据库 ID/…/估值净值」那张表默认隐藏
+        （``PALMMICRO_SHOW_FUND_INFO``，见 ``routes/fund.py``）。名称仍在 ``h1``，
+        6 位估值净值只剩下面「估值」表里的一份，所以这里改成断「数据库 ID」不见。
+        """
         response = self.client.get("/fund/SZ159518")
         html = response.get_data(as_text=True)
 
         self.assertEqual(response.status_code, 200)
         self.assertIn("华宝油气", html)
-        self.assertIn("1.300375", html)
+        # 顶部基本信息表不在页面上（内部字段随它一起隐藏）
+        self.assertNotIn("数据库 ID", html)
 
     def test_unknown_fund_returns_json_404(self):
         response = self.client.get("/api/fund/UNKNOWN")
@@ -761,6 +769,58 @@ class FundListEstColumnsTest(unittest.TestCase):
 
         self.assertEqual(row["official_premium"], "0")
         self.assertEqual(row["official_premium_class"], "")
+
+
+def _restore_env(key, saved):
+    """把环境变量还原成测试前的值（没有就删掉）。"""
+    if saved is None:
+        os.environ.pop(key, None)
+    else:
+        os.environ[key] = saved
+
+
+class FundDetailInfoTableTest(unittest.TestCase):
+    """详情页顶部「基本信息」表：默认隐藏，``PALMMICRO_SHOW_FUND_INFO=1`` 恢复。
+
+    2026-10-20 用户要求隐藏这张表 —— 它是本地自建的调试段（生产端
+    ``sz161125cn.php`` 顶部没有），代码/名称与 ``h1`` 重复，数据库 ID、
+    汇率估值是内部字段。做法是开关而不是删代码：排查时置 1 仍能看那几个值。
+    本类钉住两个方向，避免以后改默认值时悄悄变了。
+    """
+
+    def setUp(self):
+        source = make_source()
+        self.app = create_app(
+            {"TESTING": True},
+            fund_service_factory=lambda: FundService(source),
+            fund_list_service_factory=lambda: FundListService(source),
+        )
+        self.client = self.app.test_client()
+
+    def _set_env(self, value):
+        saved = os.environ.get("PALMMICRO_SHOW_FUND_INFO")
+        self.addCleanup(_restore_env, "PALMMICRO_SHOW_FUND_INFO", saved)
+        if value is None:
+            os.environ.pop("PALMMICRO_SHOW_FUND_INFO", None)
+        else:
+            os.environ["PALMMICRO_SHOW_FUND_INFO"] = value
+
+    def test_hidden_by_default(self):
+        self._set_env(None)
+        html = self.client.get("/fund/SZ159518").get_data(as_text=True)
+
+        self.assertNotIn("数据库 ID", html)
+        self.assertNotIn("汇率估值", html)
+        # 标题与其它段落照旧
+        self.assertIn("华宝油气", html)
+
+    def test_shown_when_env_is_one(self):
+        self._set_env("1")
+        html = self.client.get("/fund/SZ159518").get_data(as_text=True)
+
+        self.assertIn("数据库 ID", html)
+        self.assertIn("汇率估值", html)
+        self.assertIn("1.300375", html)      # 估值净值 6 位
 
 
 if __name__ == "__main__":

@@ -4,17 +4,23 @@
 {% block title %}{{ fund.name }} - 基金估值{% endblock %}
 {% block content %}
   <h1>{{ fund.name }}【{{ fund.symbol }}】</h1>
-  <table class="data-table">
-    <tbody>
-      <tr><th>股票代码</th><td>{{ fund.symbol }}</td></tr>
-      <tr><th>名称</th><td>{{ fund.name }}</td></tr>
-      <tr><th>数据库 ID</th><td>{{ fund.stock_id }}</td></tr>
-      <tr><th>仓位</th><td>{{ fund.position }}</td></tr>
-      <tr><th>官方日期</th><td>{{ fund.official_date or "" }}</td></tr>
-      <tr><th>汇率估值</th><td>{{ fund.cny_est if fund.cny_est is not none else "" }}</td></tr>
-      <tr><th>估值净值</th><td class="estimate">{{ "%.6f"|format(fund.estimate) if fund.estimate is not none else "暂无估值数据" }}</td></tr>
-    </tbody>
-  </table>
+  {# 顶部「基本信息」表默认隐藏（PALMMICRO_SHOW_FUND_INFO=1 恢复）：
+     它是本地自建的调试段 —— 生产端详情页顶部没有，代码与名称跟 h1 重复，
+     数据库 ID / 汇率估值是内部字段。仓位、官方日期、估值净值在下面的
+     「估值」表与「校准记录」表里都有，见 routes/fund.py::_fund_info_enabled。 #}
+  {% if show_fund_info %}
+    <table class="data-table">
+      <tbody>
+        <tr><th>股票代码</th><td>{{ fund.symbol }}</td></tr>
+        <tr><th>名称</th><td>{{ fund.name }}</td></tr>
+        <tr><th>数据库 ID</th><td>{{ fund.stock_id }}</td></tr>
+        <tr><th>仓位</th><td>{{ fund.position }}</td></tr>
+        <tr><th>官方日期</th><td>{{ fund.official_date or "" }}</td></tr>
+        <tr><th>汇率估值</th><td>{{ fund.cny_est if fund.cny_est is not none else "" }}</td></tr>
+        <tr><th>估值净值</th><td class="estimate">{{ "%.6f"|format(fund.estimate) if fund.estimate is not none else "暂无估值数据" }}</td></tr>
+      </tbody>
+    </table>
+  {% endif %}
 
   {# 段落顺序对齐生产端 sz161125cn.php：PHP 的权威顺序是
       php/_qdii.php EchoAll() + php/_qdiigroup.php EchoCommonParagraphs()：
@@ -36,6 +42,60 @@
     {% endif %}
     {{ data_table(fundest, "fund-est-table", first_cell_is_html=True) }}
     <p class="table-note">官方 / 参考 / 实时三档估值，缺哪档就不显示哪两列。</p>
+
+    {# 算法说明（本版新增，生产端没有）：三档 EST 走同一条公式，
+       差别只在"标的价"与"汇率"各取哪一份 —— 摊开才能逐格验算。
+       数据由 routes/fund.py::_build_est_formula 给出，算不出就整段不显示。 #}
+    {% if fundest.formula %}
+      <details class="est-formula" open>
+        <summary>算法说明：三档 EST 是怎么算出来的（点击折叠）</summary>
+        <p class="table-note"><b>{{ fundest.formula.formula }}</b></p>
+        <p class="table-note">{{ fundest.formula.premium_formula }}</p>
+
+        <table class="data-table formula-table">
+          <caption>公共参数（三档共用）</caption>
+          <tbody>
+            {% for name, value in fundest.formula.params %}
+              <tr><th>{{ name }}</th><td>{{ value }}</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+
+        <table class="data-table formula-table">
+          <caption>三档各自的代入值</caption>
+          <thead>
+            <tr>
+              <th>档位</th>
+              <th>标的价 est</th>
+              <th>标的价口径</th>
+              <th>汇率 cny</th>
+              <th>汇率口径</th>
+              <th>est ÷ est_cal</th>
+              <th>cny ÷ cny_cal</th>
+              <th>EST</th>
+              <th>溢价</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for tier in fundest.formula.tiers %}
+              <tr>
+                <th>{{ tier.name }}</th>
+                <td>{{ tier.est }}</td>
+                <td class="formula-label">{{ tier.est_label }}</td>
+                <td>{{ tier.cny }}</td>
+                <td class="formula-label">{{ tier.cny_label }}</td>
+                <td>{{ tier.ratio }}</td>
+                <td>{{ tier.fx }}</td>
+                <td class="estimate">{{ tier.value }}</td>
+                <td>{{ tier.premium }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+
+        <p class="table-note">{{ fundest.formula.note }}</p>
+      </details>
+    {% endif %}
   {% endif %}
 
   {# 校准记录（php/ui/calibrationhistoryparagraph.php）：fundestparagraph.php:157

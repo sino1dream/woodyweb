@@ -34,6 +34,14 @@ body {
   padding: 0 18px;
 }
 
+/* 宽表格页（/fund/<group>，19 列含 EST 七列）：容器放宽到 1560px。
+   980px 时装不下 nowrap 的宽表，浏览器把溢出部分推向右侧，
+   看起来「整体表格偏右」；放宽后表格在窗口内居中且完整可见。
+   由 fund_list.html 覆盖 base.html 的 main_class block 触发。 */
+.site-main.wide {
+  max-width: 1560px;
+}
+
 .table-note {
   margin-top: 6px;
   color: #777;
@@ -46,6 +54,11 @@ body {
   padding: 12px 18px;
   color: #666;
   border-top: 1px solid #ddd;
+}
+
+/* 宽表格页的页脚同步放宽，与主容器右边界对齐 */
+.site-footer.wide {
+  max-width: 1560px;
 }
 
 h1,
@@ -96,6 +109,52 @@ h2 {
 .estimate {
   color: magenta;
   font-weight: bold;
+}
+
+/* 估值表下方的「算法说明」块（本版新增，生产端没有）：默认展开、可折叠。
+   字号小一档，免得抢了估值表本身的视觉重心。 */
+.est-formula {
+  margin: 10px 0 18px;
+  padding: 10px 14px 4px;
+  background: #fbfcfd;
+  border: 1px solid #e3e8ec;
+}
+
+.est-formula > summary {
+  cursor: pointer;
+  font-weight: bold;
+  color: #333;
+}
+
+.est-formula .formula-table {
+  width: auto;
+  margin: 8px 0 12px;
+  font-size: 12px;
+}
+
+.est-formula .formula-table th,
+.est-formula .formula-table td {
+  padding: 5px 8px;
+  white-space: nowrap;
+}
+
+/* 覆盖 .data-table th 的 180px：这里的 th 是表头与行首，不该占那么宽 */
+.est-formula .formula-table th {
+  width: auto;
+  color: #444;
+  background: #eef3f6;
+}
+
+.est-formula .formula-table caption {
+  padding: 4px 0;
+  color: #666;
+  font-size: 12px;
+  text-align: left;
+}
+
+.est-formula .formula-table td.formula-label {
+  color: #777;
+  white-space: normal;
 }
 
 .ok {

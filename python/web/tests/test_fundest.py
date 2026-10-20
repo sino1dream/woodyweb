@@ -29,11 +29,14 @@ from web.bootstrap import install_paths  # noqa: E402
 install_paths()
 
 from web.services.fundest_service import (  # noqa: E402
+    EST_FORMULA,
     FUND_EST_SORT_THRESHOLD,
     FUND_EST_TABLE_ID,
+    PREMIUM_FORMULA,
     SORT_BY_PREMIUM,
     SORT_BY_SYMBOL,
     FundEstService,
+    build_est_formula_note,
     build_fund_est_columns,
     build_fund_est_table,
 )
@@ -396,6 +399,132 @@ def _app_without_builder():
 def _symbol_of(row) -> str:
     """从首格的 ``<a href="/fund/SZ000001">SZ000001</a>`` 里取出符号。"""
     return row.cells[0].split(">")[1].split("<")[0]
+
+
+class EstFormulaNoteTest(unittest.TestCase):
+    """估值表下方的「算法说明」（本版新增，生产端没有）。
+
+    这一段存在的唯一目的是**让用户能逐格验算三档 EST**，所以它自己必须先
+    经得起验算：
+
+    * 展示的 (标的价, 汇率, 两个比值, EST) 必须与 ``explain()`` 给的一致；
+    * 溢价 = 场内价 ÷ EST − 1；
+    * 任何一环算不出来就整段不显示（不能摆一张半空的说明表）。
+
+    ``calculator`` 用替身 —— 这一层只负责**格式化与容错**，取数正确性由
+    ``auto/test_fundest.py`` 的 ``ExplainTest`` 负责。
+    """
+
+    class FakeCalculator:
+        """``explain()`` 的替身：返回一组能手算的数字。
+
+        ``result`` 不传时返回那组默认数字；显式传 ``None`` 表示
+        "``explain()`` 返回空"（页面应整段不显示）。
+        """
+
+        _UNSET = object()
+
+        def __init__(self, result=_UNSET, raises=False):
+            self._result = result
+            self._raises = raises
+
+        def explain(self, symbol):
+            if self._raises:
+                raise RuntimeError("数据源炸了")
+            if self._result is not self._UNSET:
+                return self._result
+            return {
+                "symbol": symbol,
+                "mid_date": "2026-10-19",
+                "position": 0.95,
+                "netvalue": 4.3704,
+                "est_symbol": "QQQ",
+                "est_cal": 709.80,
+                "est_cal_date": "2026-10-16",
+                "cny_cal": 6.72,
+                "cny_cal_date": "2026-10-20",
+                "cny_symbol": "USCNY",
+                "price": 4.783,
+                "tiers": [
+                    {"key": "official", "name": "官方EST", "est": 718.36,
+                     "est_label": "QQQ 2026-10-19 行情价", "cny": 6.7208,
+                     "cny_label": "USCNY 中间价 2026-10-19", "value": 4.4209708},
+                    {"key": "fair", "name": "参考EST", "est": 718.36,
+                     "est_label": "QQQ 当前报价", "cny": 6.72,
+                     "cny_label": "USCNY 中间价 2026-10-20", "value": 4.4204706},
+                    {"key": "realtime", "name": "实时EST", "est": 718.49,
+                     "est_label": "hf_NQ 期货实时价", "cny": 6.72,
+                     "cny_label": "USCNY 中间价 2026-10-20", "value": 4.4212046},
+                ],
+            }
+
+    def test_params_are_formatted_with_fixed_digits(self):
+        """公共参数：仓位 2 位、净值 4 位、基准价 2 位、基准汇率 4 位。"""
+        note = build_est_formula_note("SZ161130", self.FakeCalculator())
+
+        params = dict(note["params"])
+        self.assertEqual(params["仓位 p"], "0.95")
+        self.assertEqual(params["基金净值 nv"], "4.3704")
+        self.assertEqual(params["标的基准价 est_cal"], "709.80（QQQ @ 2026-10-16）")
+        self.assertEqual(params["基准汇率 cny_cal"], "6.7200（USCNY @ 2026-10-20）")
+        self.assertEqual(params["场内价"], "4.783")
+
+    def test_tier_ratios_and_values(self):
+        """三档的比值与 EST 都要能按展示的公式手算出来。"""
+        note = build_est_formula_note("SZ161130", self.FakeCalculator())
+        official, fair, realtime = note["tiers"]
+
+        self.assertEqual(official["ratio"], "%.6f" % (718.36 / 709.80))
+        self.assertEqual(official["fx"], "%.6f" % (6.7208 / 6.72))
+        self.assertEqual(official["value"], "4.4210")
+        # 溢价 = 场内价 / EST - 1
+        self.assertEqual(official["premium"], "8.19%")
+        # 三档共用 est_cal / cny_cal，差别只在 est 与 cny
+        self.assertEqual(fair["ratio"], official["ratio"])
+        self.assertNotEqual(realtime["ratio"], official["ratio"])
+
+    def test_premium_uses_the_tier_value_not_the_nav(self):
+        """溢价的分母是**该档 EST**，不是基金净值。"""
+        note = build_est_formula_note("SZ161130", self.FakeCalculator())
+
+        for tier in note["tiers"]:
+            expected = "%.2f%%" % ((4.783 / float(tier["value"]) - 1.0) * 100.0)
+            self.assertEqual(tier["premium"], expected)
+
+    def test_formula_text_is_the_documented_one(self):
+        note = build_est_formula_note("SZ161130", self.FakeCalculator())
+
+        self.assertEqual(note["formula"], EST_FORMULA)
+        self.assertEqual(note["premium_formula"], PREMIUM_FORMULA)
+
+    def test_missing_tier_inputs_render_as_empty(self):
+        """某一档取不到标的价/汇率 —— 对应格子留空，不编造。"""
+
+        class Partial(self.FakeCalculator):
+            def explain(self, symbol):
+                raw = EstFormulaNoteTest.FakeCalculator.explain(self, symbol)
+                raw["tiers"][2] = {"key": "realtime", "name": "实时EST",
+                                   "est": None, "cny": None, "value": None}
+                return raw
+
+        note = build_est_formula_note("SZ161130", Partial())
+        realtime = note["tiers"][2]
+
+        self.assertEqual(realtime["est"], "")
+        self.assertEqual(realtime["cny"], "")
+        self.assertEqual(realtime["value"], "")
+        self.assertEqual(realtime["premium"], "")
+
+    def test_returns_none_when_explain_fails(self):
+        """取数抛异常时整段不显示（页面据此跳过说明块）。"""
+        self.assertIsNone(
+            build_est_formula_note("SZ161130", self.FakeCalculator(raises=True))
+        )
+
+    def test_returns_none_when_explain_is_empty(self):
+        self.assertIsNone(
+            build_est_formula_note("SZ161130", self.FakeCalculator(result=None))
+        )
 
 
 if __name__ == "__main__":

@@ -328,6 +328,142 @@ def fund_position_memo(ref: Any) -> str:
             + "关联程度按照100%估算。")
 
 
+#: 页面上「算法说明」那一段用的公式（与 :meth:`EstimateCalculator._qdii_value`
+#: 的推导逐字对应）。写成常量是为了让说明文字与 README 里的推导保持同一份。
+EST_FORMULA = (
+    "EST = (1 − 仓位) × 净值 + 仓位 × 净值 × (标的价 ÷ 标的基准价) × (汇率 ÷ 基准汇率)"
+)
+
+PREMIUM_FORMULA = "溢价 = 场内价 ÷ EST − 1"
+
+
+def build_est_formula_note(symbol: str, calculator: Any = None) -> Any:
+    """估值表下方的「算法说明」：公式 + 三档的**实际代入值**。
+
+    生产端没有这一段 —— 是本版为**核对数值**加的。三档 EST 走的是同一条
+    公式，差别只在"标的价"与"汇率"各取哪一份（见
+    ``fundestcalc._qdii_value()`` 的文档）：
+
+    =====================  ===================================  ==================
+    档位                    标的价                                汇率
+    =====================  ===================================  ==================
+    官方 EST                中间层**净值**（无则当日行情价）        中间层日期那条中间价
+    参考 EST                中间层**当日行情价**                   当前中间价（ETF 用即期）
+    实时 EST                配对**期货**实时价（无则中间层快照）    当前中间价（ETF 用即期）
+    =====================  ===================================  ==================
+
+    所以这里把三档的 (标的价, 汇率) 摊开给用户逐格验算 ——
+    "标的基准价 / 基准汇率"是校准那天定下的锚点，三档共用。
+
+    算不出来返回 ``None``（页面整段不显示）。``calculator`` 可注入，便于测试。
+    """
+    if calculator is None:
+        try:
+            calculator = _default_est_calculator()
+        except Exception:
+            return None
+    try:
+        raw = calculator.explain(symbol)
+    except Exception:
+        return None
+    if not raw:
+        return None
+
+    est_cal = _to_float(raw.get("est_cal"))
+    cny_cal = _to_float(raw.get("cny_cal"))
+    price = _to_float(raw.get("price"))
+
+    tiers = []
+    for tier in raw.get("tiers") or []:
+        est = _to_float(tier.get("est"))
+        cny = _to_float(tier.get("cny"))
+        value = _to_float(tier.get("value"))
+        tiers.append({
+            "name": tier.get("name") or "",
+            "est": _fmt(est, 2),
+            "est_label": tier.get("est_label") or "",
+            "cny": _fmt(cny, 4),
+            "cny_label": tier.get("cny_label") or "",
+            "ratio": _fmt(_div(est, est_cal), 6),
+            "fx": _fmt(_div(cny, cny_cal), 6),
+            "value": _fmt(value, 4),
+            "premium": _premium_text(price, value),
+        })
+
+    return {
+        "formula": EST_FORMULA,
+        "premium_formula": PREMIUM_FORMULA,
+        "params": [
+            ("仓位 p", _fmt(_to_float(raw.get("position")), 2)),
+            ("基金净值 nv", _fmt(_to_float(raw.get("netvalue")), 4)),
+            ("标的基准价 est_cal", "%s（%s @ %s）" % (
+                _fmt(est_cal, 2), raw.get("est_symbol") or "", raw.get("est_cal_date") or "")),
+            ("基准汇率 cny_cal", "%s（%s @ %s）" % (
+                _fmt(cny_cal, 4), raw.get("cny_symbol") or "", raw.get("cny_cal_date") or "")),
+            ("场内价", _fmt(price, 3)),
+        ],
+        "tiers": tiers,
+        "note": ("基准价 / 基准汇率取校准那天的值（三档共用；那天没数据就往前退，"
+                 "上面标的是实际取到的那天）。净值与校准值在式子里被约掉，"
+                 "所以它们不出现在表里 —— 推导见 README_fundest_migration.md。"
+                 "另外：参考 EST 只在汇率日期落后于标的日期时才在表里出现 "
+                 "（两者同日时它与官方 EST 相同，PHP 就不显示那一档，"
+                 "见 fundpairref.php::GetFairNetValue）。"),
+    }
+
+
+def _default_est_calculator() -> Any:
+    """按当前请求的数据源建一个 :class:`EstimateCalculator`。"""
+    from core.stockdata import MySqlFundDataSource
+    from web.db import get_db
+
+    connection = get_db()
+    return _build_calculator(MySqlFundDataSource(connection))
+
+
+def _build_calculator(source: Any) -> Any:
+    from calc.fundestcalc import EstimateCalculator
+    from sql.fundeststore import FundEstStore
+
+    return EstimateCalculator(source, FundEstStore(getattr(source, "connection", None)))
+
+
+def _to_float(value: Any) -> Any:
+    if value in (None, ""):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _div(a: Any, b: Any) -> Any:
+    if a is None or b in (None, 0):
+        return None
+    try:
+        return float(a) / float(b)
+    except (TypeError, ValueError, ZeroDivisionError):
+        return None
+
+
+def _fmt(value: Any, digits: int) -> str:
+    """固定小数位；核对用，不削尾零（``1.000119`` 比 ``1.00012`` 好验算）。"""
+    if value is None:
+        return ""
+    return "%.*f" % (digits, float(value))
+
+
+def _premium_text(price: Any, value: Any) -> str:
+    """溢价文本（与表格里的口径一致：场内价 / EST − 1）。"""
+    if price is None or value in (None, 0):
+        return ""
+    try:
+        rate = (float(price) / float(value) - 1.0) * 100.0
+    except (TypeError, ValueError, ZeroDivisionError):
+        return ""
+    return "%.2f%%" % rate
+
+
 def _premium_of(ref: Any) -> Any:
     """``_callbackSortFundEst()``：以**官方估值**为除数的溢价率。
 
