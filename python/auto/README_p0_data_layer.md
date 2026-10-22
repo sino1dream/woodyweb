@@ -509,28 +509,67 @@ QDII 的场内价与净值差着折溢价（SH513100：净值 2.0563、场内价
 `cal_f` 的 `est` 必须是**指数**（`^NDX`），不是杠杆替代后的 ETF（`QQQ`）——
 `qdii_est_symbol()` 返回的就是 PHP `QdiiGetEstSymbol()` 的原始值，两者差约 41 倍。
 
-### 6.2 锚点日的口径（复现得上是硬证据）
-
-PHP 三个量都锚在基金净值日。但 QDII 净值发布比海外行情晚一拍，照抄会一条都
-算不出来（演示库净值已到 10-12，指数行情止于 10-09）。沿用演示库既有三条的口径：
+### 6.2 锚点日的口径 = **基金净值日**（PHP 口径，2026-10-22 改）
 
 ```text
-锚点 = est 标的最新行情日期（净值日与行情日取较大者）
-净值 = 该锚点上**已发布**的最新基金净值（≤ 锚点）
-汇率 = 锚点当天（没有就退到之前最近一条）
+锚点 = 基金最新净值日（净值本身就取这一天的）
+汇率 = 锚点当天（取不到就**不校准**，照抄 PHP 的 return false）
+est  = 锚点当天的净值 → 收盘价（两级都取不到就**不校准**）
 ```
 
-逐位复现（写库前的对照）：
+对应 `AdjustFactor()`（`php/stock/qdiiref.php:176-197`）—— 三个量锚在**同一天**，
+`$strDate = $this->GetDate()` 是 `UpdateOfficialNetValue()` 之后的**基金净值日**：
 
-```text
-SZ161125  ^GSPC 7811.54   × 6.7035 / 3.1679 = 16529.7700   库里 16529.770002
-SZ161130  ^NDX  30883.148 × 6.7035 / 4.5976 = 45028.9679   库里 45028.967857
-SH513100  ^NDX  30883.148 × 6.7035 / 2.0622 = 100390.4484  库里 100390.448365
+```php
+if ($this->UpdateOfficialNetValue())          // 净值取不到 -> 整段 false
+{
+    $strDate = $this->GetDate();              // ← 锚点 = 净值日
+    if ($strCNY = $cny_ref->GetClose($strDate))       // 当天没有汇率 -> false
+    {
+        if (($strEst = $this->_getEstNetValue($est_ref, $strDate)) === false)
+            if (($strEst = $est_ref->GetClose($strDate)) === false)   return false;
+        $this->fFactor = QdiiGetCalibration($strEst, $strCNY, $this->GetPrice());
+        $this->InsertFundCalibration();       // 写库的日期就是这一天
+    }
+}
 ```
+
+## 为什么改：旧口径"est 最新行情日"必然混日
+
+这里**曾经**用"est 标的最新行情日"（净值日与行情日取较大者），理由是"净值日那天
+指数常常没数据，一条都算不出来"。代价是**混日**：QDII 净值比海外行情晚一天，早上
+跑时 est = T−1、净值 = T−2，于是"拿昨天的净值配今天的行情"。
+
+2026-10-22 实测 SZ161125：锚 10-21 配净值 10-20 算出 **16599.36**，按 PHP 口径
+（净值日 10-20：7712.57 × 6.72 / 3.14）应是 **16505.88**，差 **0.56%**。而页面上
+`est_cal` / `cny_cal` 又是按"校准日"取的，于是不自洽：由 `cal × nv / cny` 反推的
+est 是 7710.54，库里 10-20 的行情行却是 7712.57（差 0.044%）。
+
+**"净值日那天指数没数据"是数据缺口，不是口径问题** —— 正解是补 `stockhistory`
+（`dbtools/seed_index_history.py --days N --apply`），不该换锚点去凑。
 
 两个易错点（都踩过）：锚点**不能**取 `realtimequote`（快照是"此刻"，锚点必须是
 已收盘的那天）；取 est 值**不能**用 `_pair_value`（它的兜底会去新浪抓实时点位，
-于是拿今天的指数配昨天的净值）—— 用 `_est_value_on()` 严格按日期取。
+于是拿今天的指数配昨天的净值）—— 用 `_est_value_on()` 严格按日期取，**两级都没有
+就返回 `None`（不校准）**，旧实现还有第三级快照兜底，那是把 SH513100 的 cal 算成
+97692 而非 100390 的元凶。
+
+## 对照结果（真实 PHP，33 只逐只）
+
+`_scratch/_php_calibration_anchor_check.php` 把 `AdjustFactor()` / `_getEstNetValue()`
+/ `QdiiGetCalibration()` 三段真身从 `qdiiref.php` 现场切出来 eval（只把取数/写库换成
+连库替身），与 Python 跑同一个演示库：
+
+```text
+对照 33 只基金（其中同日跳过 15 只）—— 锚点日 / est / 汇率 / cal 全部一致
+SZ161125  2026-10-20  7712.57 × 6.72 / 3.1400 = 16505.882293   php=py
+SZ161130  2026-10-20  29490.28 × 6.72 / 4.4119 = 44918.217004  php=py
+SH513100  2026-10-20  29490.28 × 6.72 / 1.9741 = 100387.357074 php=py
+```
+
+15 只跳过的是 est 为美股 ETF 的那些（AGG/IBB/XOP/XBI/VNQ/IXC/RSPH/VGT/XLY/IEO/
+KWEB/`^DJI`）：它们的 `stockhistory` 停在 10-16，净值日 10-20 没有 est 数据 ——
+PHP 也是同一天取不到，同样不校准。**这是数据缺口（要补美股 ETF 历史），不是口径差异。**
 
 ### 6.3 官方 EST：为什么 33 只里一开始只有 3 只写进去
 
@@ -863,15 +902,15 @@ self.store.write_if_ready(stock_id, record.date, record.value, ...)   # :461-463
 `cal[X] = QdiiGetCalibration(est[X], cny[X], nav[X]) = est[X] × cny[X] / nav[X]`。
 由这条时间线推出两个安全窗口和一个禁忌窗口：
 
-* **凌晨 04:30–09:00**（est 日 = X、净值日 = X−1）：nav[X] 未到，闸门开放，
-  写出的 `fundest[X] = nav[X−1] × (est[X]/est[X−1]) × fx`；
-* **晚间 20:00–21:30**（nav[X] 刚到、美股尚未开盘）：锚点（est 最新日 X）
-  与基金净值日 X 重合，`--funds` 校准与 PHP 同时机、同口径；
-* **禁忌：04:00–20:00 之间跑 `--funds`**。锚点取 est 最新日 X 而基金净值
-  还是 X−1，`cal[X] = est[X]×cny[X]/nav[X−1]` 混日；次晨 fundest 的
-  `est_quote_ref` 落在 cal_date = X 上，比值 est[X]/est[X] **退化成 1.0**，
-  当天涨跌整项丢失。PHP 在上午根本不重校 —— 没有新净值日，
-  `UpdateOfficialNetValue()` 返回 false。
+* **晚间 20:00–21:30**（nav[X] 刚到、美股尚未开盘）：锚点 = 净值日 X，
+  与 est 日 X 重合，`--funds` 校准与 PHP 同时机、同口径；
+* **早上 9:17 也能跑**（2026-10-22 起）。锚点已改成**基金净值日**（§6.2），
+  净值没到新的一天锚点就不前进，闸门会跳过 —— **混日在结构上被消掉了**。
+  早上跑的价值是"净值昨天更新过但当时没校准"的补写；
+* **仍需注意**：早上跑时 est 的**最新行情日**通常比净值日新一天（美股 T−1
+  收盘已就位）。这不影响口径（est 取的是净值日那天），但**净值日那天 est
+  没数据就写不出**—— 表现为"锚点日 X 没有净值/行情"跳过，属数据缺口。
+  所以 `seed_index_history.py --days N --apply` 仍要跑在 `--funds` 之前。
 
 同理，**美股盘中（00:00–04:00）也不要跑 fundestcli**：那时 est 价是未收盘
 的快照。证据就是 10-14 00:52 写下的 4 条 fundest[10-13]（见 §10.4②）。

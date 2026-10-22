@@ -545,24 +545,42 @@ class AutoCalibrator:
         SH513100  ^NDX 30883.148 × 6.7035 / 2.0622 = 100390.4484  库里 100390.448365
         ```
 
-        ## 锚点日期为什么取"标的的最新行情日"，而不是基金净值日
+        ## 锚点日期：为什么是"基金净值日"（PHP 口径）
 
-        PHP 的三个量都锚在**基金净值那一天**。但 QDII 净值的发布节奏与海外行情
-        并不同步：演示库里基金净值已到 10-12，而指数行情（``stockhistory``）
-        止于 10-09 —— 拿基金净值日当锚点，三条基金**一条都算不出来**。
+        PHP 的三个量锚在**同一天** —— ``$strDate = $this->GetDate()``，
+        那是 ``UpdateOfficialNetValue()`` 之后的**基金净值日**（``qdiiref.php:177``）：
 
-        现有那三条记录本身就是按"标的最新行情日 = 10-09"建的（配 10-08 的净值
-        与 10-09 的汇率），所以这里沿用同一口径：
-
-        ```text
-        锚点 = est 标的最新行情日期（净值日与行情日取较大者）
-        净值 = 该锚点上**已发布**的最新基金净值（≤ 锚点）
-        汇率 = 锚点当天（没有就退到之前最近一条）
+        ```php
+        if ($this->UpdateOfficialNetValue())          // 净值取不到 -> 整段 false
+        {
+            $strDate = $this->GetDate();              // 锚点 = 净值日
+            if ($strCNY = $cny_ref->GetClose($strDate))       // 当天没有汇率 -> false
+            {
+                if (($strEst = $this->_getEstNetValue($est_ref, $strDate)) === false)
+                    if (($strEst = $est_ref->GetClose($strDate)) === false)  return false;
+                $this->fFactor = QdiiGetCalibration($strEst, $strCNY, $this->GetPrice());
+                $this->InsertFundCalibration();       // 写库的日期就是这一天
+            }
+        }
         ```
 
-        这样三量落在同一参照日上，且能逐位复现库里的既有值（见上表）——
-        **复现得上是这条路径最硬的证据**。写入日期也用锚点日期，
-        :attr:`CalibrationOutcome.date` 因此可能早于基金最新净值日。
+        本方法**曾经**用"est 标的最新行情日"当锚点，理由是"净值日那天指数常常
+        没数据，一条都算不出来"。代价是**混日**：QDII 净值比海外行情晚一天
+        （早上跑时 est = T−1、净值 = T−2），于是"拿昨天的净值配今天的行情"。
+        2026-10-22 实测 SZ161125：锚 10-21 配净值 10-20 算出 **16599.36**，
+        按 PHP 口径（净值日 10-20）应是 7712.57 × 6.72 / 3.14 = **16506.2**，
+        差 0.56%。而页面上 ``est_cal`` / ``cny_cal`` 又是按"校准日"取的，
+        于是不自洽：``cal × nv / cny`` 反推出的 est 是 7710.54，
+        库里 10-20 的行情行却是 7712.57。
+
+        "净值日那天指数没数据"是**数据缺口**，不是口径问题 —— 正解是补
+        ``stockhistory``（``dbtools/seed_index_history.py``），不该换锚点去凑。
+
+        ```text
+        锚点 = 基金最新净值日（净值本身就取这一天的）
+        汇率 = 锚点当天（取不到就不校准，照抄 PHP 的 return false）
+        est  = 锚点当天的净值 -> 收盘价（两级都取不到就不校准）
+        ```
         """
         outcome = CalibrationOutcome(symbol=fund_symbol)
 
@@ -582,31 +600,37 @@ class AutoCalibrator:
             return outcome
         outcome.pair_symbol = est_symbol
 
-        est_id = self.source.get_stock_id(est_symbol)
-        anchor = self._est_anchor_date(est_symbol, est_id)
-        if anchor is None:
-            outcome.skipped = "%s 没有行情/净值，定不了锚点" % est_symbol
+        #: 锚点 = **基金净值日**（PHP ``$strDate = $this->GetDate()``，在
+        #: ``UpdateOfficialNetValue()`` 之后）。净值定不了就整段失败 ——
+        #: PHP 里 ``UpdateOfficialNetValue()`` 返回 false 直接 return false。
+        nav_value, nav_date = self._latest_net_value(stock_id)
+        if nav_value in (None, "") or nav_date is None:
+            outcome.skipped = "没有单位净值，定不了锚点（PHP 净值取不到即 return false）"
             return outcome
+        anchor = nav_date
+        outcome.date = anchor
+        outcome.net_value = nav_value
 
+        est_id = self.source.get_stock_id(est_symbol)
         calibration_date = self._calibration_date(stock_id)
         if calibration_date is not None and str(calibration_date) == str(anchor):
             outcome.skipped = "锚点日 %s 已校准过" % anchor
             return outcome
 
-        nav_value, nav_date = self._nav_on_or_before(stock_id, anchor)
-        if nav_value is None:
-            outcome.skipped = "锚点日 %s 及之前没有单位净值" % anchor
-            return outcome
-        outcome.date = anchor
-        outcome.net_value = nav_value
-
         est_value = self._est_value_on(est_symbol, est_id, anchor)
         if est_value is None:
-            outcome.skipped = "%s 在 %s 没有行情/净值" % (est_symbol, anchor)
+            outcome.skipped = "%s 在净值日 %s 没有净值/行情（PHP 两级都取不到即 return false）" % (
+                est_symbol, anchor)
             return outcome
         outcome.pair_value = est_value
 
-        cny = self._cny(anchor)
+        #: 汇率**只取锚点当天**：PHP 是 ``$cny_ref->GetClose($strDate)``，
+        #: 取不到就 return false（**不退到之前最近一条**）。用别的日子的汇率
+        #: 会让 ``cny / cny_cal`` 与校准日错位，页面上的"基准汇率"就会对不上。
+        cny = self._cny_on(anchor)
+        if cny is None:
+            outcome.skipped = "净值日 %s 没有汇率（PHP 取不到即 return false）" % anchor
+            return outcome
         outcome.cny = cny
 
         factor = self.calc_factor(est_value, nav_value, cny)
@@ -615,58 +639,23 @@ class AutoCalibrator:
             return outcome
         outcome.calibration = factor
         outcome.formula = "est*cny/net"
-        if nav_date is not None and str(nav_date) != str(anchor):
-            outcome.warnings.append(
-                "净值取的是 %s（锚点日 %s 之前最近一条已发布净值）"
-                % (nav_date, anchor))
         outcome.written = self._write(stock_id, anchor, factor) if apply else False
         return outcome
 
-    def _est_anchor_date(self, est_symbol: str, est_id: Any) -> Any:
-        """``est`` 标的最新数据日期（锚点），见 :meth:`calibrate_fund`。
-
-        取 ``netvaluehistory`` 与 ``stockhistory`` 两个最新日期里较大的那个：
-        ``^NDX`` 这类指数只有行情行，``AGG`` 这类 ETF 两条都有。
-        **不看 ``realtimequote``** —— 快照是"此刻"，锚点必须是"已收盘的那天"。
-        """
-        candidates = []
-        for reader_name in ("get_latest_net_value_date", "get_latest_history_date"):
-            reader = getattr(self.source, reader_name, None)
-            if reader is None or est_id is None:
-                continue
-            try:
-                value = reader(est_id)
-            except Exception:
-                value = None
-            if value:
-                candidates.append(str(value))
-        return max(candidates) if candidates else None
-
-    def _nav_on_or_before(self, stock_id: Any, date: Any):
-        """``date`` 及之前**已发布**的单位净值，返回 ``(净值, 日期)``。
-
-        QDII 净值本来就比海外行情晚一拍（QDII 当天净值要等美股收盘后才出），
-        所以"锚点日的净值"在概念上就是"锚点之前最近一条"。逐日回退最多 10 天，
-        避免无界查询。
-        """
-        reader = getattr(self.source, "get_netvalue_close", None)
-        if reader is None:
-            return None, None
-        for day in _date_range_end(date, 10):
-            try:
-                value = reader(stock_id, day)
-            except Exception:
-                value = None
-            if value not in (None, ""):
-                return value, day
-        return None, None
-
     def _est_value_on(self, est_symbol: str, est_id: Any, date: Any) -> Any:
-        """``est`` 标的在锚点日的值：净值 → 行情价 → 快照（三条都卡日期）。
+        """``est`` 标的在锚点日的值：**净值 → 行情价**，两级都卡日期。
 
-        **不用** :meth:`_pair_value` 那条路 —— 它第 4 级会去新浪取"此刻"的点位，
-        那是给中间层"当天已收盘"的场景兜底的；用在基金锚点上等于拿今天的指数
-        配昨天的净值（实测把 SH513100 的 cal 算成 97692 而非 100390）。
+        照抄 PHP ``AdjustFactor()`` 那两支（``qdiiref.php:185-188``）::
+
+            if (($strEst = $this->_getEstNetValue($est_ref, $strDate)) === false)
+                if (($strEst = $est_ref->GetClose($strDate)) === false)    return false;
+
+        **没有第三级（快照）** —— PHP 两级取不到就 ``return false``（不校准），
+        不会退到 ``realtimequote`` 的"此刻"。快照那一级是历史遗留：它曾让
+        校准值拿"今天的指数"配"昨天的净值"（SH513100 被算成 97692 而非 100390）。
+
+        **不用** :meth:`_pair_value` 那条路 —— 它第 4 级会去新浪取实时点位，
+        那是给中间层"当天已收盘"的场景兜底的。
         """
         for reader_name in ("get_netvalue_close", "get_history_close"):
             reader = getattr(self.source, reader_name, None)
@@ -678,7 +667,8 @@ class AutoCalibrator:
                 value = None
             if value not in (None, ""):
                 return value
-        return self._stored_quote_on(est_symbol, date)
+        #: PHP 两级都取不到就 return false（不校准），**不**退到快照。
+        return None
 
     # -- 算式 -------------------------------------------------------------
     def calc_factor(self, pair_value: Any, net_value: Any, cny: Any = None) -> Any:
@@ -973,11 +963,33 @@ class AutoCalibrator:
         except (TypeError, ValueError):
             return None
 
+    def _cny_on(self, date: Any) -> Any:
+        """**指定那天**的美元人民币中间价；那天没有就返回 ``None``（不兜底）。
+
+        对应 PHP ``AdjustFactor()`` 里的 ``$cny_ref->GetClose($strDate)``
+        （``qdiiref.php:181``）—— 它取不到就整段 ``return false``，
+        **不会**退到最近一条。所以基金层校准走这个方法（:meth:`calibrate_fund`），
+        而 :meth:`_cny`（带兜底）留给中间层那条路径。
+        """
+        cny_id = self.source.get_stock_id("USCNY")
+        if cny_id is None:
+            return None
+        reader = getattr(self.source, "get_netvalue_close", None)
+        if reader is None:
+            return None
+        try:
+            value = reader(cny_id, date)
+        except Exception:
+            return None
+        return None if value in (None, "") else value
+
     def _cny(self, date: Any) -> Any:
         """该日期的美元人民币中间价；没有就退到最新一条。
 
         对应 ``$this->cny_ref->GetVal($strDate)``；取不到时按 1.0 处理
         （与 ``CalcFactor()`` 在没有 ``cny_ref`` 时等价）。
+
+        **带兜底**，所以只用于中间层 —— 基金层要用严格的 :meth:`_cny_on`。
         """
         cny_id = self.source.get_stock_id("USCNY")
         if cny_id is None:
@@ -1022,14 +1034,46 @@ class AutoCalibrator:
 
     # -- 写库 -------------------------------------------------------------
     def _write(self, stock_id: Any, date: Any, value: Any) -> bool:
-        """写校准值，对应 ``$cal_sql->WriteDaily()``。
+        """写校准值，照抄 ``CalibrationSql::WriteDaily()`` 的**完整**语义。
 
-        ``WriteDaily()`` 的语义是"**已有就不动**"
-        （``InsertDaily`` 里判 ``if ($this->GetRecord(...)) return false;``）。
-        这里照抄；闸门已经先挡掉重复调用，这条是双保险。
+        PHP（``php/sql/sqldailyclose.php:161-179``，``UpdateDaily`` 由
+        ``php/sql/sqldailytime.php:48`` 覆写）：
+
+        ```php
+        if ($record = $this->GetRecord($strKeyId, $strDate))
+        {
+            if (abs(floatval($record['close']) - floatval($strClose)) > MIN_FLOAT_VAL)
+                return $this->UpdateDaily($record['id'], $strClose);
+        }
+        else
+        {
+            $ymd = new StringYMD($strDate);
+            if ($ymd->IsWeekend())      return false;   // 防新浪的周末假数据
+            return $this->InsertDaily($strKeyId, $strDate, $strClose);
+        }
+        return false;
+        ```
+
+        **值变了会 UPDATE 覆盖**，不是"已有就不动"。早期实现只照抄了
+        ``InsertDaily`` 的那句判重，结果校准值一旦写错就再也刷不回来 ——
+        改锚点口径后必须靠这一支把旧值（如 16498.992）刷成新值。
         """
         table = CalibrationSql(self.connection)
-        if table.get_record(stock_id, date) is not None:
+        record = table.get_record(stock_id, date)
+        if record is not None:
+            #: 值没变就不动（PHP 判 ``abs(old - new) > MIN_FLOAT_VAL``）；
+            #: 变了才 UPDATE —— 校准值写错时靠这一支刷回来。
+            try:
+                diff = abs(float(record["close"]) - float(value))
+            except (TypeError, ValueError, KeyError):
+                diff = None
+            if diff is not None and diff <= MIN_FLOAT_VAL:
+                return False
+            return self._update_record(record.get("id"), value)
+
+        #: 新行：**周末不写**（PHP ``if ($ymd->IsWeekend()) return false;``，
+        #: 注释写明是防新浪送来的周末假数据）。
+        if not _is_week_day(date):
             return False
         cursor = self.connection.cursor()
         try:
@@ -1037,6 +1081,30 @@ class AutoCalibrator:
                 "INSERT INTO calibrationhistory (stock_id, `date`, close, `time`, num) "
                 "VALUES (%s, %s, %s, %s, 1)",
                 (stock_id, date, value, self._now_time()),
+            )
+            commit = getattr(self.connection, "commit", None)
+            if commit is not None:
+                commit()
+            return True
+        except Exception:
+            return False
+        finally:
+            cursor.close()
+
+    def _update_record(self, record_id: Any, value: Any) -> bool:
+        """覆盖已有校准行，对应 ``CalibrationSql::UpdateDaily()``。
+
+        PHP（``php/sql/sqldailytime.php:48-56``）更新 ``close`` + ``time``，
+        并把 ``num`` **重置为 1**（不是累加 —— ``UpdateDailyAverage`` 的默认
+        ``$iNum = 1``）。照抄，别自作聪明累加。
+        """
+        if record_id is None:
+            return False
+        cursor = self.connection.cursor()
+        try:
+            cursor.execute(
+                "UPDATE calibrationhistory SET close = %s, `time` = %s, num = 1 WHERE id = %s",
+                (value, self._now_time(), record_id),
             )
             commit = getattr(self.connection, "commit", None)
             if commit is not None:
@@ -1055,30 +1123,37 @@ class AutoCalibrator:
         return _datetime.datetime.now().strftime("%H:%M:%S")
 
 
+#: ``php/debug.php:11`` 的 ``MIN_FLOAT_VAL`` —— PHP 判"两个浮点值算不算相等"
+#: 的阈值。``WriteDaily()`` 用它决定"值有没有变、要不要 UPDATE"。
+MIN_FLOAT_VAL = 0.0000005
+
+
+def _is_week_day(value: Any) -> bool:
+    """这天是不是工作日；对应 PHP ``YearMonthDay::IsWeekend()`` 取反。
+
+    **认不出日期格式时当作工作日**（不阻断写入）：宁可多写一行，也不要因为
+    日期的三种形态（``date`` / ``datetime`` / ``"2026-10-20"``）没覆盖全而
+    静默不写库 —— 那种"什么都没发生"的失败最难排查。
+    """
+    import datetime as _datetime
+
+    moment = value
+    if isinstance(moment, str):
+        try:
+            moment = _datetime.date.fromisoformat(str(moment)[:10])
+        except ValueError:
+            return True
+    if isinstance(moment, _datetime.datetime):
+        moment = moment.date()
+    if not isinstance(moment, _datetime.date):
+        return True
+    #: Python 的 weekday()：周一 0 ... 周日 6
+    return moment.weekday() < 5
+
+
 #: 派生净值与当日价格之间允许的偏离（ETF 净值与价格只差千分位；放宽到 ±25%
 #: 是为了容纳分红除息与"净值是收盘后、价格是盘中"的时间差）。
 NAV_PRICE_TOLERANCE = 0.25
-
-
-def _date_range_end(date: Any, days: int) -> list:
-    """``date`` 起逐日回退的日期列表（含 ``date`` 本身，共 ``days`` 天）。
-
-    用来找"某日及之前最近一条记录"。``date`` 可能是 ``datetime.date``
-    或字符串，统一按 ``date`` 处理。
-    """
-    import datetime
-
-    if isinstance(date, datetime.datetime):
-        base = date.date()
-    elif isinstance(date, datetime.date):
-        base = date
-    else:
-        try:
-            base = datetime.datetime.strptime(str(date)[:10], "%Y-%m-%d").date()
-        except ValueError:
-            return []
-    step = datetime.timedelta(days=1)
-    return [str(base - step * offset) for offset in range(days)]
 
 
 def nav_matches_price(nav: Any, price: Any) -> bool:

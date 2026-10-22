@@ -83,6 +83,17 @@ class FakeConnection:
                 "date": params[1], "close": params[2], "time": params[3], "num": 1,
             })
             return []
+        if "UPDATE CALIBRATIONHISTORY" in upper:
+            #: 对应 ``CalibrationSql::UpdateDaily()``：按 id 改 close + time，
+            #: 并把 num 重置为 1（不是累加，见 ``_update_record`` 的说明）。
+            value, time_text, record_id = params[0], params[1], params[2]
+            for row in self.calibration:
+                if str(row["id"]) == str(record_id):
+                    row["close"] = value
+                    row["time"] = time_text
+                    row["num"] = 1
+                    return []
+            return []
         if "FROM CALIBRATIONHISTORY" in upper:
             rows = [r for r in self.calibration if str(r["stock_id"]) == str(params[0])]
             if len(params) > 1:
@@ -599,7 +610,28 @@ class GateTest(unittest.TestCase):
 
 
 class WriteTest(unittest.TestCase):
-    """``WriteDaily()`` 语义：已有就不动。"""
+    """``CalibrationSql::WriteDaily()`` 语义：**值变了才覆盖**，不是"已有就不动"。
+
+    PHP（``php/sql/sqldailyclose.php:161-179``，``UpdateDaily`` 由
+    ``php/sql/sqldailytime.php:48`` 覆写）：
+
+    ```php
+    if ($record = $this->GetRecord($strKeyId, $strDate))
+    {
+        if (abs(floatval($record['close']) - floatval($strClose)) > MIN_FLOAT_VAL)
+            return $this->UpdateDaily($record['id'], $strClose);   // 值变了就覆盖
+    }
+    else
+    {
+        if ($ymd->IsWeekend())      return false;                  // 防周末假数据
+        return $this->InsertDaily($strKeyId, $strDate, $strClose);
+    }
+    return false;                                                  // 值没变：不动
+    ```
+
+    早期只照抄了 ``InsertDaily`` 那句判重，结果校准值一旦写错就再也刷不回来。
+    2026-10-22 改锚点口径后，库里那条 16498.992 正是靠这一支刷成新值的。
+    """
 
     def test_writes_new_row(self):
         source = FakeSource()
@@ -611,15 +643,48 @@ class WriteTest(unittest.TestCase):
         self.assertEqual(rows[0]["stock_id"], 4)
         self.assertEqual(str(rows[0]["date"]), "2026-10-02")
 
-    def test_does_not_overwrite_existing(self):
+    def test_overwrites_existing_when_value_changed(self):
+        """值变了 → UPDATE 同一行（不追加），并把 ``num`` 重置为 1。"""
         source = FakeSource()
+        expected = _calibrator(source).calibrate_middle("QQQ", apply=False).calibration
         source.connection.calibration = [
-            {"id": 1, "stock_id": 4, "date": "2026-10-02", "close": 41.0, "time": None, "num": 1}
+            {"id": 1, "stock_id": 4, "date": "2026-10-02", "close": 41.0, "time": None, "num": 7}
+        ]
+        outcome = _calibrator(source).calibrate_middle("QQQ", apply=True)
+
+        self.assertTrue(outcome.written)
+        #: 覆盖而不是追加：否则同一天会堆出多行，``GetRecord`` 只取第一条。
+        self.assertEqual(len(source.connection.calibration), 1)
+        row = source.connection.calibration[0]
+        self.assertAlmostEqual(float(row["close"]), float(expected), places=9)
+        #: ``UpdateDailyAverage`` 的默认 ``$iNum = 1``，是重置不是累加。
+        self.assertEqual(row["num"], 1)
+
+    def test_leaves_existing_alone_when_value_unchanged(self):
+        """值没变（差 ≤ MIN_FLOAT_VAL）→ 一行不动，连 commit 都不发。"""
+        source = FakeSource()
+        expected = _calibrator(source).calibrate_middle("QQQ", apply=False).calibration
+        source.connection.calibration = [
+            {"id": 1, "stock_id": 4, "date": "2026-10-02",
+             "close": expected, "time": "01:02:03", "num": 1}
         ]
         outcome = _calibrator(source).calibrate_middle("QQQ", apply=True)
 
         self.assertFalse(outcome.written)
-        self.assertAlmostEqual(source.connection.calibration[0]["close"], 41.0, places=9)
+        self.assertEqual(source.connection.commits, 0)
+        self.assertEqual(source.connection.calibration[0]["time"], "01:02:03")
+
+    def test_new_row_on_weekend_is_refused(self):
+        """新行落周末 → 不写（PHP 防新浪送来的周末假数据）。
+
+        **只挡 INSERT**：已经存在的行仍走 UPDATE 分支，PHP 也是这样
+        （``IsWeekend`` 那一句在 ``else`` 里）。
+        """
+        source = FakeSource(net_date="2026-10-03")       #: 周六
+        outcome = _calibrator(source).calibrate_middle("QQQ", apply=True)
+
+        self.assertFalse(outcome.written)
+        self.assertEqual(source.connection.calibration, [])
 
     def test_time_is_written(self):
         """``calibrationhistory.time`` 是 NOT NULL 且无默认值。"""
@@ -629,6 +694,157 @@ class WriteTest(unittest.TestCase):
         written = source.connection.calibration[0]["time"]
         self.assertIsInstance(written, str)
         self.assertRegex(written, r"^\d{2}:\d{2}:\d{2}$")
+
+
+class _FundAnchorSource(FakeSource):
+    """给 :class:`FundAnchorTest` 用的假数据源。
+
+    与 :class:`FakeSource` 的差别：``est`` 标的（``^GSPC``）的净值/行情按
+    **日期查表**，汇率也可以限定"只有哪几天有"。
+
+    这样才能把"锚点日当天有没有数据"确定地控制住 —— 而这件事正是
+    **新口径（锚 = 基金净值日）与旧口径（锚 = est 最新行情日）的分水岭**：
+    旧口径下 est 有更新的行情就会把锚点拉走，新口径不会。
+    """
+
+    #: 估值标的固定成 ``^GSPC``（``qdii_est_symbol('SZ161125')`` 的结果）。
+    EST_ID = 7
+
+    def __init__(self, nav_date="2026-10-20", nav=3.14, est_netvalue=None,
+                 est_quote=None, cny=6.72, cny_dates=None, **kwargs):
+        stock = dict(kwargs.pop("stock", None) or
+                     {"QQQ": 4, "SPY": 5, "^NDX": 6, "^GSPC": 7, "USCNY": 8})
+        stock["SZ161125"] = 40
+        FakeSource.__init__(self, netvalue=nav, net_date=nav_date, cny=cny,
+                            stock=stock, **kwargs)
+        self._est_netvalue = dict(est_netvalue or {})
+        self._est_quote = dict(est_quote or {})
+        self._cny_dates = None if cny_dates is None else set(cny_dates)
+
+    def get_netvalue_close(self, stock_id, date):
+        day = str(date)
+        if stock_id == self.connection.stock.get("USCNY"):
+            #: 限定汇率只在某几天有 —— 用来验 PHP "取不到就 return false"。
+            if self._cny_dates is not None and day not in self._cny_dates:
+                return None
+            return self.cny
+        if stock_id == self.EST_ID:
+            return self._est_netvalue.get(day)
+        return None
+
+    def get_history_close(self, stock_id, date):
+        if stock_id == self.EST_ID:
+            return self._est_quote.get(str(date))
+        return None
+
+
+class FundAnchorTest(unittest.TestCase):
+    """``calibrate_fund`` 的锚点 = **基金净值日**（PHP ``AdjustFactor`` 口径）。
+
+    对应 ``php/stock/qdiiref.php:177-197``：
+
+    ```php
+    if ($this->UpdateOfficialNetValue())          // 净值取不到 -> 整段 false
+    {
+        $strDate = $this->GetDate();              // ← 锚点 = 净值日
+        if ($strCNY = $cny_ref->GetClose($strDate))        // 当天没有汇率 -> false
+        {
+            if (($strEst = $this->_getEstNetValue($est_ref, $strDate)) === false)
+                if (($strEst = $est_ref->GetClose($strDate)) === false)  return false;
+            $this->fFactor = QdiiGetCalibration($strEst, $strCNY, $this->GetPrice());
+        }
+    }
+    ```
+
+    **本方法曾经**用"est 标的最新行情日"当锚点，代价是混日：QDII 净值比海外
+    行情晚一天，早上跑必是"昨天的净值配今天的行情"。2026-10-22 实测
+    SZ161125：锚 10-21 配净值 10-20 算出 16599.36，PHP 口径应是 16506.2。
+    """
+
+    #: 净值日 10-20；est 在 10-21 **也有**行情（旧口径会把锚点拉到 10-21）。
+    EST_QUOTE = {"2026-10-19": 7690.73, "2026-10-20": 7712.57, "2026-10-21": 7757.17}
+
+    def test_anchor_is_net_value_date_even_when_est_has_newer_quote(self):
+        source = _FundAnchorSource(nav_date="2026-10-20", est_quote=self.EST_QUOTE)
+        outcome = _calibrator(source).calibrate_fund("SZ161125", apply=False)
+
+        self.assertFalse(outcome.skipped)          #: 未跳过时是空串，不是 None
+        self.assertEqual(str(outcome.date), "2026-10-20")
+        #: est 必须取**净值日那天**的行情，不是最新那天（10-21）。
+        self.assertAlmostEqual(float(outcome.pair_value), 7712.57, places=9)
+
+    def test_est_prefers_netvalue_over_quote_like_php(self):
+        """PHP 先 ``_getEstNetValue()``，取不到才 ``GetClose()``（两级都卡日期）。"""
+        source = _FundAnchorSource(nav_date="2026-10-20",
+                                   est_netvalue={"2026-10-20": 7700.0},
+                                   est_quote=self.EST_QUOTE)
+        outcome = _calibrator(source).calibrate_fund("SZ161125", apply=False)
+
+        self.assertFalse(outcome.skipped)
+        self.assertAlmostEqual(float(outcome.pair_value), 7700.0, places=9)
+
+    def test_skips_when_est_has_no_value_on_net_value_date(self):
+        """est 在净值日没有净值也没有行情 → 不校准（PHP 两级取不到即 false）。
+
+        **不退到快照**：那是旧实现把 cal 算成 97692 的元凶。
+        """
+        source = _FundAnchorSource(nav_date="2026-10-20",
+                                   est_quote={"2026-10-19": 7690.73})
+        outcome = _calibrator(source).calibrate_fund("SZ161125", apply=False)
+
+        self.assertIn("没有净值/行情", outcome.skipped or "")
+        self.assertIsNone(outcome.calibration)
+
+    def test_skips_when_cny_missing_on_net_value_date(self):
+        """汇率在净值日没有 → 不校准（PHP ``GetClose($strDate)`` 取不到即 false）。
+
+        旧实现会退到"之前最近一条"，于是 ``cny`` 与校准日错位，
+        页面上的"基准汇率"对不上。
+        """
+        source = _FundAnchorSource(nav_date="2026-10-20", est_quote=self.EST_QUOTE,
+                                   cny_dates={"2026-10-19"})
+        outcome = _calibrator(source).calibrate_fund("SZ161125", apply=False)
+
+        self.assertIn("没有汇率", outcome.skipped or "")
+        self.assertIsNone(outcome.cny)
+
+    def test_skips_when_there_is_no_net_value_at_all(self):
+        """净值本身取不到 → 整段失败（PHP ``UpdateOfficialNetValue()`` 返回 false）。"""
+        source = _FundAnchorSource(est_quote=self.EST_QUOTE)
+        source.get_latest_net_value = lambda stock_id: None
+        outcome = _calibrator(source).calibrate_fund("SZ161125", apply=False)
+
+        self.assertIn("没有单位净值", outcome.skipped or "")
+
+    def test_three_inputs_land_on_the_same_day_so_no_mixed_date_warning(self):
+        """三量同日 → 不该有"净值取的是 X（锚点日 Y 之前…）"这类警告。
+
+        旧口径在早上跑时必挂这条警告，还照样写库。
+        """
+        source = _FundAnchorSource(nav_date="2026-10-20", est_quote=self.EST_QUOTE)
+        outcome = _calibrator(source).calibrate_fund("SZ161125", apply=False)
+
+        self.assertEqual(outcome.warnings, [])
+        self.assertEqual(str(outcome.date), "2026-10-20")
+        self.assertAlmostEqual(float(outcome.cny), 6.72, places=9)
+
+    def test_calibration_is_est_times_cny_over_nav(self):
+        """``QdiiGetCalibration(est, cny, nav) = est × cny / nav``。"""
+        source = _FundAnchorSource(nav_date="2026-10-20", nav=3.14,
+                                   est_quote=self.EST_QUOTE, cny=6.72)
+        outcome = _calibrator(source).calibrate_fund("SZ161125", apply=False)
+
+        self.assertAlmostEqual(float(outcome.calibration), 7712.57 * 6.72 / 3.14, places=6)
+        self.assertEqual(outcome.formula, "est*cny/net")
+
+    def test_gate_still_blocks_a_date_already_calibrated(self):
+        """锚点日已有校准记录 → 跳过（闸门不受改口径影响）。"""
+        source = _FundAnchorSource(nav_date="2026-10-20", est_quote=self.EST_QUOTE,
+                                   calibration_date="2026-10-20")
+        outcome = _calibrator(source).calibrate_fund("SZ161125", apply=True)
+
+        self.assertIn("已校准过", outcome.skipped or "")
+        self.assertEqual(source.connection.calibration, [])
 
 
 class FundToMiddleTest(unittest.TestCase):

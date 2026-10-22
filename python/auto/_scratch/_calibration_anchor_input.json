@@ -1,0 +1,200 @@
+{
+ "SH501300": {
+  "cny_id": 8,
+  "est_id": 122,
+  "est_symbol": "AGG",
+  "fund_id": 24
+ },
+ "SH513100": {
+  "cny_id": 8,
+  "est_id": 6,
+  "est_symbol": "^NDX",
+  "fund_id": 3
+ },
+ "SH513110": {
+  "cny_id": 8,
+  "est_id": 6,
+  "est_symbol": "^NDX",
+  "fund_id": 38
+ },
+ "SH513290": {
+  "cny_id": 8,
+  "est_id": 123,
+  "est_symbol": "IBB",
+  "fund_id": 25
+ },
+ "SH513300": {
+  "cny_id": 8,
+  "est_id": 6,
+  "est_symbol": "^NDX",
+  "fund_id": 48
+ },
+ "SH513350": {
+  "cny_id": 8,
+  "est_id": 131,
+  "est_symbol": "XOP",
+  "fund_id": 34
+ },
+ "SH513390": {
+  "cny_id": 8,
+  "est_id": 6,
+  "est_symbol": "^NDX",
+  "fund_id": 39
+ },
+ "SH513400": {
+  "cny_id": 8,
+  "est_id": 124,
+  "est_symbol": "^DJI",
+  "fund_id": 26
+ },
+ "SH513500": {
+  "cny_id": 8,
+  "est_id": 7,
+  "est_symbol": "^GSPC",
+  "fund_id": 49
+ },
+ "SH513650": {
+  "cny_id": 8,
+  "est_id": 7,
+  "est_symbol": "^GSPC",
+  "fund_id": 50
+ },
+ "SH513870": {
+  "cny_id": 8,
+  "est_id": 6,
+  "est_symbol": "^NDX",
+  "fund_id": 40
+ },
+ "SZ159501": {
+  "cny_id": 8,
+  "est_id": 6,
+  "est_symbol": "^NDX",
+  "fund_id": 41
+ },
+ "SZ159502": {
+  "cny_id": 8,
+  "est_id": 130,
+  "est_symbol": "XBI",
+  "fund_id": 32
+ },
+ "SZ159513": {
+  "cny_id": 8,
+  "est_id": 6,
+  "est_symbol": "^NDX",
+  "fund_id": 42
+ },
+ "SZ159518": {
+  "cny_id": 8,
+  "est_id": 131,
+  "est_symbol": "XOP",
+  "fund_id": 35
+ },
+ "SZ159612": {
+  "cny_id": 8,
+  "est_id": 7,
+  "est_symbol": "^GSPC",
+  "fund_id": 51
+ },
+ "SZ159632": {
+  "cny_id": 8,
+  "est_id": 6,
+  "est_symbol": "^NDX",
+  "fund_id": 43
+ },
+ "SZ159655": {
+  "cny_id": 8,
+  "est_id": 7,
+  "est_symbol": "^GSPC",
+  "fund_id": 52
+ },
+ "SZ159659": {
+  "cny_id": 8,
+  "est_id": 6,
+  "est_symbol": "^NDX",
+  "fund_id": 44
+ },
+ "SZ159660": {
+  "cny_id": 8,
+  "est_id": 6,
+  "est_symbol": "^NDX",
+  "fund_id": 45
+ },
+ "SZ159696": {
+  "cny_id": 8,
+  "est_id": 6,
+  "est_symbol": "^NDX",
+  "fund_id": 46
+ },
+ "SZ159941": {
+  "cny_id": 8,
+  "est_id": 6,
+  "est_symbol": "^NDX",
+  "fund_id": 47
+ },
+ "SZ160140": {
+  "cny_id": 8,
+  "est_id": 125,
+  "est_symbol": "VNQ",
+  "fund_id": 27
+ },
+ "SZ160416": {
+  "cny_id": 8,
+  "est_id": 132,
+  "est_symbol": "IXC",
+  "fund_id": 36
+ },
+ "SZ161125": {
+  "cny_id": 8,
+  "est_id": 7,
+  "est_symbol": "^GSPC",
+  "fund_id": 2
+ },
+ "SZ161126": {
+  "cny_id": 8,
+  "est_id": 126,
+  "est_symbol": "RSPH",
+  "fund_id": 28
+ },
+ "SZ161127": {
+  "cny_id": 8,
+  "est_id": 130,
+  "est_symbol": "XBI",
+  "fund_id": 33
+ },
+ "SZ161128": {
+  "cny_id": 8,
+  "est_id": 127,
+  "est_symbol": "VGT",
+  "fund_id": 29
+ },
+ "SZ161130": {
+  "cny_id": 8,
+  "est_id": 6,
+  "est_symbol": "^NDX",
+  "fund_id": 1
+ },
+ "SZ162411": {
+  "cny_id": 8,
+  "est_id": 131,
+  "est_symbol": "XOP",
+  "fund_id": 12
+ },
+ "SZ162415": {
+  "cny_id": 8,
+  "est_id": 128,
+  "est_symbol": "XLY",
+  "fund_id": 30
+ },
+ "SZ162719": {
+  "cny_id": 8,
+  "est_id": 133,
+  "est_symbol": "IEO",
+  "fund_id": 37
+ },
+ "SZ164906": {
+  "cny_id": 8,
+  "est_id": 129,
+  "est_symbol": "KWEB",
+  "fund_id": 31
+ }
+}
