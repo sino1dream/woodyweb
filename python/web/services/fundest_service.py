@@ -278,20 +278,24 @@ def default_fundest_service_factory() -> FundEstService:
     return FundEstService(MySqlFundDataSource(get_db()))
 
 
-def fund_position_memo(ref: Any) -> str:
-    """估值表上方那行说明（``fundestparagraph.php:135-152``）。
+#: 说明行里**可点**的那四个字（PHP 里它就是 ``GetFundPositionLink()``
+#: 的链接文字，见 ``php/stocklink.php``）。单独提出来是为了让模板能
+#: 只把这四个字包 ``<a>``，而不用把整句当 HTML 插进页面（那样得开 ``|safe``）。
+POSITION_MEMO_LABEL = "仓位估算"
 
-    PHP 在 ``EchoFundEstParagraph()`` 里拼两段，本版合成一句纯文本：
 
-    .. code-block:: php
+def fund_position_memo_parts(ref: Any, href: Any = "") -> dict:
+    """估值表上方那行说明，拆成「可链的四字」+「其余」两段。
+
+    对应 PHP ``EchoFundEstParagraph()`` 拼的两段（``fundestparagraph.php:135-152``）::
 
         $str = _getFundPositionStr($ref);   // 「仓位估算值使用0.95。」
         if ($ref->GetRealtimeNetValue() && method_exists($ref, 'GetEstRef'))
         {
-            $str .= $col->GetDisplay()          // 「实时EST」
-                  . $realtime_ref->GetMyStockLink()   // 「ES」
+            $str .= $col->GetDisplay()                  // 「实时EST」
+                  . $realtime_ref->GetMyStockLink()     // 「ES」
                   . '和'
-                  . SymCalibrationHistoryLink($est_ref)  // 「^GSPC」
+                  . SymCalibrationHistoryLink($est_ref) // 「^GSPC」
                   . '关联程度按照100%估算。';
         }
 
@@ -299,33 +303,48 @@ def fund_position_memo(ref: Any) -> str:
 
         仓位估算值使用0.95。实时EST ES 和 ^GSPC 关联程度按照100%估算。
 
+    **为什么要拆两段**：PHP 这句里「仓位估算」四个字本身就是
+    ``GetFundPositionLink()`` 的锚文本（指向 ``fundpositioncn.php``）。
+    本版把它拆开返回，路由再按 PHP ``GetFundLinks()`` 的判据决定是否给
+    ``href`` —— 段落结构（谁可以点）与文案（点进去是什么）各归各位。
+
+    返回 ``{"label", "href", "rest", "text"}``；``text`` = ``label + rest``，
+    给只要纯文本的调用方（含既有测试）用。
+
     ## 三处与 PHP 的差异（迁移期取舍）
 
-    1. **不带链接**。PHP 那段有三个站内链接（仓位估算页 / mystock 页 /
-       校准记录页）；本版只出文字 —— 前两个页面（``fundpositioncn.php`` /
-       ``mystockcn.php``）尚未迁移，校准记录页虽然在``/history`` 有同源页，
-       但一句话里只链一个目标反而更怪。链接的事记在迁移文档里。
+    1. **只链「仓位估算」一个目标**。PHP 那段有三个站内链接（仓位估算页 /
+       mystock 页 / 校准记录页）；后两个（``mystockcn.php`` 与
+       ``SymCalibrationHistoryLink``）本版仍未接，故不出链。
     2. **仓位用 ``number_format($fPos, 2)``**（保留尾零，``1`` → ``"1.00"``），
        不是 ``GetNumberDisplay`` 那套削尾零的口径。
     3. 实时那一整段以 ``GetRealtimeNetValue()`` 为闸门（PHP 的 ``if``），
        没有实时估值就只剩第一句。
     """
     position = _invoke(ref, "get_position", "GetPosition")
-    text = "仓位估算值使用%s。" % php_number_format(position, 2)
-    if not _invoke(ref, "get_realtime_net_value", "GetRealtimeNetValue"):
-        return text
-
-    est_ref = _invoke(ref, "get_est_ref", "GetEstRef")
-    realtime_ref = _invoke(ref, "get_realtime_ref", "GetRealtimeRef")
-    if est_ref is None or realtime_ref is None:
+    rest = "值使用%s。" % php_number_format(position, 2)
+    if _invoke(ref, "get_realtime_net_value", "GetRealtimeNetValue"):
+        est_ref = _invoke(ref, "get_est_ref", "GetEstRef")
+        realtime_ref = _invoke(ref, "get_realtime_ref", "GetRealtimeRef")
         # PHP 这里是 method_exists() 闸门：建不出 est_ref 就不拼第二句
-        return text
-    #: 注意这句里有一个**字面百分号**（"100%"），所以用拼接而不是 % 格式化
-    return (text + "实时EST "
-            + _text(_invoke(realtime_ref, "get_symbol", "GetSymbol"))
-            + "和"
-            + _text(_invoke(est_ref, "get_symbol", "GetSymbol"))
-            + "关联程度按照100%估算。")
+        if est_ref is not None and realtime_ref is not None:
+            #: 注意这句里有一个**字面百分号**（"100%"），所以用拼接而不是 % 格式化
+            rest += ("实时EST "
+                     + _text(_invoke(realtime_ref, "get_symbol", "GetSymbol"))
+                     + "和"
+                     + _text(_invoke(est_ref, "get_symbol", "GetSymbol"))
+                     + "关联程度按照100%估算。")
+    return {
+        "label": POSITION_MEMO_LABEL,
+        "href": _text(href),
+        "rest": rest,
+        "text": POSITION_MEMO_LABEL + rest,
+    }
+
+
+def fund_position_memo(ref: Any) -> str:
+    """:func:`fund_position_memo_parts` 的纯文本形式（不带链接）。"""
+    return fund_position_memo_parts(ref)["text"]
 
 
 #: 页面上「算法说明」那一段用的公式（与 :meth:`EstimateCalculator._qdii_value`

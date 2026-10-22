@@ -79,6 +79,68 @@ from web.db import get_db  # noqa: E402
 # ---------------------------------------------------------------------------
 # 仓位反算（对应 php/ui/netvaluehistoryparagraph.php 顶部两个函数）
 # ---------------------------------------------------------------------------
+
+#: 仓位公式的说明文字。写成常量是为了让**页面上的说明**与
+#: :func:`qdii_get_stock_position` 的实现保持同一份口径 —— 改公式时必须同时改这里，
+#: 否则页面会开始撒谎（这跟 EST 那三档公式的做法一致，见
+#: :data:`~web.services.fundest_service.EST_FORMULA`）。
+#: 四句分别对应 ``php/stock.php:121`` 与 ``netvaluehistoryparagraph.php:7-13``。
+POSITION_PERCENTAGE_DEF = (
+    "StockGetPercentage(divisor, dividend) = (dividend ÷ divisor − 1) × 100"
+)
+POSITION_NET_PERCENT = "净值涨跌% = StockGetPercentage(上期净值, 净值)"
+POSITION_EST_PERCENT = (
+    "标的涨跌% = StockGetPercentage(上期汇率 ÷ (标的 ÷ 上期标的), 汇率)"
+    " = (标的 ÷ 上期标的 × 汇率 ÷ 上期汇率 − 1) × 100"
+)
+POSITION_FORMULA = "仓位 = 净值涨跌% ÷ 标的涨跌%"
+#: PHP 源码里那行注释（``netvaluehistoryparagraph.php:4``）—— 公式就是它解出来的
+POSITION_DERIVATION = "(标的 × 汇率 ÷ 上期标的 × 上期汇率 − 1) × 仓位 = 净值 ÷ 上期净值 − 1"
+
+#: 逐步算法。第 1 条是本页与「净值记录」页唯一的差别，必须写在最前面。
+POSITION_STEPS = (
+    "① 取相邻两个净值拐点（GetSwitchDates）：本期的「上期」是**上一个拐点**，"
+    "不是上一交易日 —— 一段跨好几个交易日，累计涨跌才有信噪比；",
+    "② 净值、上期净值（netvaluehistory 的单位净值）；",
+    "③ 标的（est）与上期标的：est 有净值记录取净值，否则取行情价；",
+    "④ 汇率与上期汇率（中间价 netvaluehistory）；",
+    "⑤ 两个涨跌%相除，number_format 保留 2 位；与库里登记的仓位"
+    "（同样 2 位）字符串相等时整行加黄。",
+)
+
+#: 三个闸门，逐条对应 PHP ``_QdiiGetStockPosition()`` 的 if。
+POSITION_GATES = (
+    "|净值涨跌%| > 阈值（默认 4%，页面 ?input= 可改）",
+    "|标的涨跌%| > MIN_FLOAT_VAL",
+    "仓位 > MIN_FLOAT_VAL（负数仓位也不出）",
+)
+
+
+def _plain(value: Any) -> str:
+    """取 ``(文本, 颜色)`` 二元组里的文本；本来就是字符串则原样返回。
+
+    说明段只关心数字本身 —— 涨跌染色是表格的事，且 ``|safe`` 之外的渲染
+    会把二元组整个打印出来（``('4.6176', 'black')``）。
+    """
+    if isinstance(value, tuple) and value:
+        return str(value[0])
+    return "" if value is None else str(value)
+
+
+def _percent_text(value: Any, places: int = 2) -> str:
+    """把涨跌百分比排成 ``"-5.35%"``；算不出来（None / 非数字）返回空串。
+
+    只给说明段用：表里的百分比走 ``format_percentage_display``（带阈值归零
+    与涨跌染色），说明段要的是**原始值**，两个口径别混用。
+    """
+    if value is None:
+        return ""
+    try:
+        return "%.*f%%" % (places, float(value))
+    except (TypeError, ValueError):
+        return ""
+
+
 def qdii_get_stock_position(
     proportion: Any,
     prev: Any,
@@ -341,7 +403,23 @@ HISTORY_KINDS: dict[str, dict[str, str]] = {
         "title": "基金场内份额",
         "description": "场内份额变化与成交量的比值（换手率）。份额单位是万份。",
     },
+    "fundposition": {
+        "title": "仓位估算",
+        "description": (
+            "只挑净值出现**局部拐点**的交易日，用相邻两个拐点之间的累计涨跌反算实际仓位。"
+            "找的是净值连续几天累计涨跌超过阈值（默认 4%）的机会。"
+        ),
+        #: PHP 的 ``fundpositioncn.php`` **没有翻页**：``$acct->GetNum()`` 只截行数，
+        #: 不生成菜单链接（对比 netvaluehistorycn.php 有 ``GetMenuLink``）。这里显式关掉，
+        #: 免得模板渲染出一个点了没反应的"下一页"。
+        "paged": False,
+    },
 }
+
+
+#: 只有这几个 builder 多收一个"浓度阈值"参数。放集合里比在 ``get_table``
+#: 里写 ``if kind == 'fundposition'`` 好扩展，也不会让其它 builder 被迫收参数。
+_BUILDERS_WITH_INPUT = frozenset({"fundposition"})
 
 
 class HistoryService:
@@ -362,11 +440,16 @@ class HistoryService:
         symbol: str,
         start: int = 0,
         num: int = TABLE_COMMON_DISPLAY,
+        f_input: Any = POS_NETVALUE_DIFF,
     ) -> dict[str, Any]:
         """取一个历史数据表格。
 
         ``start`` / ``num`` 与 PHP 的 ``stockhistorycn.php?symbol=X&start=&num=``
         语义一致：``num=0`` 表示"全部记录"。
+
+        ``f_input`` 只有 **fundposition** 用得到 —— 它是页面上"净值涨跌%阈值"
+        输入框的值（``POS_NETVALUE_DIFF`` 是 PHP 的默认 4%，``stockdisp.php:32``）。
+        其余页面在 PHP 里写死这个常量，这里也就跟着不传。
         """
         if kind not in HISTORY_KINDS:
             raise HistoryNotFoundError(kind)
@@ -378,16 +461,20 @@ class HistoryService:
             raise HistoryNotFoundError(symbol)
 
         builder = getattr(self, "_build_" + kind)
-        columns, rows, total = builder(symbol, stock_id, start, num)
+        if kind in _BUILDERS_WITH_INPUT:
+            columns, rows, total = builder(symbol, stock_id, start, num, f_input)
+        else:
+            columns, rows, total = builder(symbol, stock_id, start, num)
 
         meta = HISTORY_KINDS[kind]
-        return {
+        output = {
             "kind": kind,
             "symbol": symbol,
             "name": self.source.get_stock_name(symbol) or symbol,
             "group": get_symbol_group(symbol),
             "title": meta["title"],
             "description": meta["description"],
+            "paged": meta.get("paged", True),
             "columns": columns,
             "rows": rows,
             "total": total,
@@ -395,6 +482,12 @@ class HistoryService:
             "num": num,
             "other_kinds": [k for k in HISTORY_KINDS if k != kind],
         }
+        #: 只有仓位估算页有算法说明：这一页的"仓位"是**反算**出来的，
+        #: 不像其它历史页那样直接读库，不摊开没法验算。没有一行算出仓位
+        #: 时整段不显示（返回 None），与详情页 ``_build_est_formula`` 一致。
+        if kind == "fundposition":
+            output["formula"] = self._position_formula_note(rows, f_input)
+        return output
 
     # -- 净值记录段落（``EchoNetValueHistoryParagraph``） -------------------
     def net_value_paragraph(
@@ -650,6 +743,76 @@ class HistoryService:
             )
         return _columns_netvaluehistory(cny_symbol, est_symbol), rows, total
 
+    # -- 仓位估算（``fundpositioncn.php``） ---------------------------------
+    def _build_fundposition(self, symbol: str, stock_id: Any, start: int, num: int,
+                            f_input: Any = POS_NETVALUE_DIFF):
+        """``_echoFundPositionData()``（``woody/res/fundpositioncn.php:8-41``）。
+
+        与 ``netvaluehistory`` 用的是**同一个** ``EchoNetValueItem()``，唯一区别是
+        **每一行的"上期"不是上一交易日，而是上一个净值拐点** —— 由
+        :meth:`get_switch_dates` 挑出来。这样一段跨越好几个交易日，
+        净值累计涨跌才有信噪比（单日涨跌常被 4% 闸门挡掉），
+        混合型也才能拿这段区间去问 ``GetProportionArray()`` 要区间持仓比例。
+
+        逐句对应 PHP 的行选择::
+
+            if ($strDate == $arDate[$iIndex]) {
+                $iIndex ++;
+                if (isset($arDate[$iIndex])) {
+                    $bWritten = EchoNetValueItem(...);
+                    $iTotal ++;
+                    if ($iTotal == $iNum)	break;
+                } else break;
+            }
+
+        三个容易改错的地方：
+
+        * **``$iTotal`` 数的是"候选行"，不是"写出了仓位的行"**。PHP 的
+          ``EchoNetValueItem()`` 结尾无条件调 ``EchoMatchTableColumn()``
+          （``netvaluehistoryparagraph.php:114``），所以没过阈值的
+          ``$iTotal`` 照样 +1、整行照样显示，只是仓位格空着。
+          早按"写出行数"实现会让页面少掉一半的行。
+        * **拐点用完就 break**：``$arDate`` 最后一个成员之后没有更早的拐点可配对，
+          PHP 直接退出。数组里虽然还有它，页面上却没有那一行。
+        * **``$iNum`` 是行数不是 SQL 的 LIMIT**：PHP 先把 ``GetAll()`` 全取出来再截断，
+          所以这里也全量取。净值表一个符号通常几十行，代价可以忽略；
+          换成 SQL LIMIT 会变成"按原始记录数截断"，显示的候选行数不再受控。
+
+        ``start`` 在 PHP 侧不存在（这一页没有翻页参数），这里同样忽略。
+        """
+        netvalue = NetValueHistorySql(self.connection)
+        total = netvalue.count(stock_id)
+        cny_symbol, est_symbol, holdings_ref = self._net_value_refs(symbol)
+        columns = _columns_netvaluehistory(cny_symbol, est_symbol)
+        if total == 0:
+            return columns, [], total
+
+        est_has_netvalue = self._est_has_netvalue(netvalue, est_symbol)
+        position = self.source.get_position(stock_id)
+        #: 拐点日期统一转 str —— MySQL 可能返回 date 对象，而下面要用 ``==`` 跟
+        #:  ``record["date"]`` 比；PHP 那边两边都是字符串，这里得自己对齐类型。
+        switch_dates = [str(date) for date in netvalue.get_switch_dates(stock_id)]
+
+        rows = []
+        shown = 0
+        index = 0
+        for record in netvalue.get_all(stock_id):
+            date = str(record["date"])
+            if index >= len(switch_dates) or date != switch_dates[index]:
+                continue
+            index += 1
+            if index >= len(switch_dates):
+                break
+            rows.append(
+                self._row_netvaluehistory(symbol, netvalue, record, switch_dates[index],
+                                          cny_symbol, est_symbol, position, holdings_ref,
+                                          est_has_netvalue, f_input)
+            )
+            shown += 1
+            if num and shown >= num:
+                break
+        return columns, rows, total
+
     # -- 净值记录段落的引用选型（``EchoNetValueHistoryParagraph``） ----------
     def _est_has_netvalue(self, netvalue: NetValueHistorySql, est_symbol: Any) -> bool:
         """est 标的有没有净值记录（PHP ``$est_ref->CountNetValue() > 0``）。
@@ -738,12 +901,17 @@ class HistoryService:
     def _row_netvaluehistory(
         self, symbol: str, netvalue: NetValueHistorySql, record: Any, prev_date: Any,
         cny_symbol: Any, est_symbol: Any, position: Any, holdings_ref: Any = None,
-        est_has_netvalue: bool = False,
+        est_has_netvalue: bool = False, f_input: Any = POS_NETVALUE_DIFF,
     ) -> TableRow:
         """``EchoNetValueItem()``（``netvaluehistoryparagraph.php:62``）的一行。
 
         ``holdings_ref`` 只在"持仓型 LOF"那条路上用得到（``_QdiiMixGetPosition``
         要读持仓明细反算仓位），其余两路是 ``None``。
+
+        ``f_input`` 是"净值涨跌%阈值"（PHP ``$fInput``）：仓位反算式只在
+        波动大于它时才出数。**只有 fundposition 页面会把这个值开放给用户**
+        （``fundpositioncn.php:70`` 的输入框），其余调用点写死
+        ``POS_NETVALUE_DIFF``，所以设成默认参数而不是必填。
         """
         date = str(record["date"])
         net_value = record["close"]
@@ -804,24 +972,99 @@ class HistoryService:
                                                   StockSymbol(str(est_symbol)).get_precision()))
                 # 对应 PHP _QdiiGetStockPosition()：先用汇率变动把"净值涨幅"里的
                 # 汇率成分剥掉，剩下的比例才是真实仓位。
-                estimated = self._estimate_position(est, est_prev, prev_net, net_value, cny_prev, cny)
+                estimated = self._estimate_position(est, est_prev, prev_net, net_value,
+                                                    cny_prev, cny, f_input)
                 row.add(estimated if estimated is not None else "")
-                if estimated is not None and estimated == org_pos:
-                    row.match = True
+                if estimated is not None:
+                    row.position_inputs = self._position_inputs(
+                        date, prev_date, net_value, prev_net, cny, cny_prev,
+                        f_input, estimated, est=est, est_prev=est_prev,
+                        est_symbol=est_symbol, est_precision=est_precision,
+                        cny_symbol=cny_symbol)
+                    if estimated == org_pos:
+                        row.match = True
             else:
                 row.add("")
                 row.add("")
         else:
             # 混合型：用持仓比例加权，见 PHP _QdiiMixGetPosition()
             estimated = self._mixed_position(symbol, holdings_ref, date, prev_date,
-                                             prev_net, net_value, cny_prev, cny)
+                                             prev_net, net_value, cny_prev, cny, f_input)
             row.add(estimated if estimated is not None else "")
-            if estimated is not None and estimated == org_pos:
-                row.match = True
+            if estimated is not None:
+                #: 混合型没有单一 est 标的（``est_precision`` 那一路走不到），
+                #: 页面说明段据此把"标的涨跌%"写成加权合计。
+                row.position_inputs = self._position_inputs(
+                    date, prev_date, net_value, prev_net, cny, cny_prev,
+                    f_input, estimated, mixed=True, cny_symbol=cny_symbol)
+                if estimated == org_pos:
+                    row.match = True
         return row
 
+    def _position_inputs(
+        self,
+        date: Any,
+        prev_date: Any,
+        net_value: Any,
+        prev_net: Any,
+        cny: Any,
+        cny_prev: Any,
+        f_input: Any,
+        position: Any,
+        est: Any = None,
+        est_prev: Any = None,
+        est_symbol: Any = None,
+        est_precision: Any = None,
+        cny_symbol: Any = None,
+        mixed: bool = False,
+    ) -> dict:
+        """把这一行算仓位用的量留一份，供页面「算法说明」逐格代入。
+
+        ``est`` 为空（混合型）时 ``est_percent`` 也算不出来 —— 那时页面
+        把这一格写成"成分股加权合计"，不再摆数字。
+        """
+        net_percent = percentage_change(prev_net, net_value)
+        est_percent = (None if est is None
+                       else self._est_percent(est, est_prev, cny_prev, cny))
+        return {
+            "date": str(date),
+            "prev_date": str(prev_date) if prev_date else "",
+            #: ``format_price_display`` 返回 ``(文本, 颜色)`` —— 说明段只取文本，
+            #: 颜色留给表格（那里才有涨跌染色的语义）。
+            "net": _plain(format_price_display(net_value, precision=NETVALUE_PRECISION)),
+            "prev_net": _plain(format_price_display(prev_net, precision=NETVALUE_PRECISION)),
+            "net_percent": _percent_text(net_percent),
+            "est": ("" if est is None
+                    else _plain(format_price_display(est, precision=est_precision))),
+            "est_prev": ("" if est_prev is None
+                         else _plain(format_price_display(est_prev, precision=est_precision))),
+            "est_percent": _percent_text(est_percent),
+            "cny": "" if cny is None else _plain(format_price_display(cny)),
+            "cny_prev": "" if cny_prev is None else _plain(format_price_display(cny_prev)),
+            "position": str(position),
+            "threshold": _percent_text(f_input),
+            "est_symbol": "" if est_symbol is None else str(est_symbol),
+            "cny_symbol": "" if cny_symbol is None else str(cny_symbol),
+            "mixed": mixed,
+        }
+
+    @staticmethod
+    def _est_percent(est: Any, est_prev: Any, cny_prev: Any, cny: Any) -> Any:
+        """标的（含汇率）涨跌%，即 PHP ``StockGetPercentage($fCnyPrev / $fEstProportion, $fCny)``。
+
+        展开后就是 ``(est ÷ est_prev × cny ÷ cny_prev − 1) × 100``
+        —— PHP 把它写成"汇率 ÷ (上期汇率 ÷ 标的比例)"，绕一圈是因为
+        ``proportion`` 在混合型那条路上是加权合计，不是两个价格的比。
+        """
+        try:
+            proportion = float(est) / float(est_prev)
+            divisor = float(cny_prev) / proportion
+        except (TypeError, ValueError, ZeroDivisionError):
+            return None
+        return percentage_change(divisor, cny)
+
     def _estimate_position(self, est: Any, est_prev: Any, prev_net: Any, net_value: Any,
-                           cny_prev: Any, cny: Any) -> Any:
+                           cny_prev: Any, cny: Any, f_input: Any = POS_NETVALUE_DIFF) -> Any:
         """对应 PHP ``_QdiiGetStockPosition()``（netvaluehistoryparagraph.php:5）。
 
         PHP 原文注释给出了推导：
@@ -832,6 +1075,7 @@ class HistoryService:
         所以仓位 = 净值涨跌% / 标的（已换汇）涨跌%。
 
         只在净值涨跌超过 ``fInput``（默认 4%）时才算 —— 波动小时反算噪声太大。
+        fundposition 页面把这个值开放给用户改，其余调用点走默认值。
         """
         if est_prev is None:
             return None
@@ -839,10 +1083,34 @@ class HistoryService:
             proportion = float(est) / float(est_prev)
         except (TypeError, ValueError, ZeroDivisionError):
             return None
-        return qdii_get_stock_position(proportion, prev_net, net_value, cny_prev, cny)
+        return qdii_get_stock_position(proportion, prev_net, net_value, cny_prev, cny, f_input)
+
+    def _position_formula_note(self, rows: Any, f_input: Any = POS_NETVALUE_DIFF) -> Any:
+        """仓位估算页的「算法说明」：公式 + 逐步算法 + 闸门 + 一行代入示例。
+
+        示例取**第一行算出仓位的行**；一行都没有时 ``sample`` 为 ``None``，
+        但公式与算法照样给 —— 说明本身不依赖有没有算出行（默认 4% 阈值下
+        SZ161125 就是一整页都过不了闸门，把公式也一起藏掉反而让人以为坏了）。
+        """
+        sample = None
+        for row in rows:
+            if getattr(row, "position_inputs", None):
+                sample = row.position_inputs
+                break
+        return {
+            "percentage_def": POSITION_PERCENTAGE_DEF,
+            "net_percent": POSITION_NET_PERCENT,
+            "est_percent": POSITION_EST_PERCENT,
+            "formula": POSITION_FORMULA,
+            "derivation": POSITION_DERIVATION,
+            "steps": list(POSITION_STEPS),
+            "gates": list(POSITION_GATES),
+            "sample": sample,
+        }
 
     def _mixed_position(self, symbol: str, holdings_ref: Any, date: Any, prev_date: Any,
-                        prev_net: Any, net_value: Any, cny_prev: Any, cny: Any) -> Any:
+                        prev_net: Any, net_value: Any, cny_prev: Any, cny: Any,
+                        f_input: Any = POS_NETVALUE_DIFF) -> Any:
         """对应 PHP ``_QdiiMixGetPosition()``：按持仓比例加权后反算仓位。
 
         需要 ``holdings`` 表（持仓明细）。**CK4 之前演示库里 holdings 是空的**，
@@ -852,7 +1120,7 @@ class HistoryService:
         if holdings_ref is None:
             return None
         return qdii_mix_position(holdings_ref, date, prev_date, prev_net, net_value,
-                                 cny_prev, cny)
+                                 cny_prev, cny, f_input)
 
     # -- 净值价格比较 -----------------------------------------------------
     def _build_netvalueclose(self, symbol: str, stock_id: Any, start: int, num: int):

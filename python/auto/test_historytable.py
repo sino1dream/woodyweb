@@ -492,5 +492,101 @@ class TimeTableTest(unittest.TestCase):
             self.assertEqual(instance.columns, ("id", "stock_id", "date", "close"))
 
 
+class SwitchDatesTest(unittest.TestCase):
+    """``DailyCloseSql.get_switch_dates()`` —— PHP ``GetSwitchDates()``。
+
+    期望值取自 real demo 库的 ``netvaluehistory``，并已用
+    ``_scratch/_php_switchdates_check.php`` 跑真实 PHP 逐条对照过
+    （SZ161125 / SZ161130 / SH513100 / SZ164906 四个符号 0 差异）。
+    """
+
+    #: ``date DESC``：``get_all()`` 的排序，也就是 PHP 喂给状态机的顺序
+    SZ161125_DESC = [
+        ("2026-10-19", "3.1319"), ("2026-10-16", "3.1206"), ("2026-10-15", "3.1548"),
+        ("2026-10-14", "3.1448"), ("2026-10-13", "3.1803"), ("2026-10-12", "3.1817"),
+        ("2026-10-09", "3.1843"), ("2026-10-08", "3.1679"), ("2026-10-01", "3.1328"),
+        ("2026-09-30", "3.1229"), ("2026-09-29", "3.1328"), ("2026-09-28", "3.1374"),
+        ("2026-09-24", "3.1494"), ("2026-09-23", "3.1494"), ("2026-09-22", "3.1718"),
+        ("2026-09-21", "3.1731"), ("2026-09-18", "3.1302"), ("2026-09-17", "3.128"),
+        ("2026-09-16", "3.0967"), ("2026-09-15", "3.1117"), ("2026-09-14", "3.1259"),
+        ("2026-09-11", "3.1424"), ("2026-09-10", "3.1179"), ("2026-09-09", "3.1353"),
+    ]
+
+    def _table(self, rows):
+        connection = FakeConnection({"netvaluehistory": [
+            {"id": i, "stock_id": "1", "date": date, "close": close}
+            for i, (date, close) in enumerate(rows)
+        ]})
+        return NetValueHistorySql(connection)
+
+    def test_matches_php_on_real_netvalue_series(self):
+        self.assertEqual(
+            self._table(self.SZ161125_DESC).get_switch_dates("1"),
+            ["2026-10-19", "2026-10-16", "2026-10-15", "2026-10-14", "2026-10-09",
+             "2026-09-30", "2026-09-21", "2026-09-16", "2026-09-11", "2026-09-10"],
+        )
+
+    def test_records_are_local_min_or_max_alternately(self):
+        """首个以外的成员必须是局部极值，且极小/极大严格交替。
+
+        这条是对"为什么记的是上一条而不是当前条"的回归保护：
+        记错一条，整个序列会整体平移一天，页面上每个波段的端点都错，
+        但因为仍然是日期、长度也一样，肉眼很难发现。
+        """
+        closes = {date: float(close) for date, close in self.SZ161125_DESC}
+        order = [date for date, _ in self.SZ161125_DESC]          # DESC
+        dates = self._table(self.SZ161125_DESC).get_switch_dates("1")
+        kinds = []
+        for date in dates[1:]:
+            index = order.index(date)
+            newer = closes[order[index - 1]]
+            older = closes[order[index + 1]]
+            middle = closes[date]
+            self.assertTrue(
+                middle < min(newer, older) or middle > max(newer, older),
+                "%s 不是极值（前 %s 后 %s 自己是 %s）" % (date, newer, older, middle),
+            )
+            kinds.append("min" if middle < min(newer, older) else "max")
+        self.assertEqual(kinds[0], "min")
+        self.assertTrue(all(a != b for a, b in zip(kinds, kinds[1:])),
+                        "极值类型没有交替：%s" % kinds)
+
+    def test_flat_segment_does_not_flip_the_trend(self):
+        """严格不等号：相邻两天相等时**不**触发反转判定。
+
+        PHP 的 ``if ($fOld < $fCur)`` / ``if ($fOld > $fCur)`` 都是严格比较，
+        所以平台段被"看成还在延续原趋势"，直到真正越过平台那一天才判定，
+        于是拐点落到平台上**更旧**那条（这里 10-15 而不是 10-16）。
+        净值 09-23/09-24 同为 3.1494 就是这种情形。
+        """
+        plateau = [("2026-10-19", "1.20"), ("2026-10-16", "1.10"),
+                   ("2026-10-15", "1.10"), ("2026-10-14", "1.15")]
+        without = [("2026-10-19", "1.20"), ("2026-10-16", "1.10"),
+                   ("2026-10-14", "1.15")]
+        self.assertEqual(self._table(plateau).get_switch_dates("1"),
+                         ["2026-10-19", "2026-10-15"])
+        self.assertEqual(self._table(without).get_switch_dates("1"),
+                         ["2026-10-19", "2026-10-16"])
+
+    def test_single_record_returns_only_itself(self):
+        """PHP 里 ``$bSecond`` 在只有一条记录时永远为真，走不到方向判断。"""
+        self.assertEqual(self._table([("2026-10-19", "3.1319")]).get_switch_dates("1"),
+                         ["2026-10-19"])
+
+    def test_empty_table_returns_empty_list(self):
+        self.assertEqual(self._table([]).get_switch_dates("1"), [])
+
+    def test_unparsable_close_follows_php_floatval(self):
+        """``close`` 为空串时照抄 PHP 的 ``floatval`` → **0.0**，不是跳过。
+
+        PHP 原文是 ``floatval($record['close'])``，空串得到 0.0，于是净值缺失的
+        那天会被当成一个假深谷 —— 生产端同样如此。这里刻意保持一致而不做
+        "修正"：一旦改成跳过，拐点序列就与 PHP 错位，而页面上的波段是按下标配对的。
+        """
+        rows = [("2026-10-19", "3.10"), ("2026-10-16", ""), ("2026-10-15", "3.00")]
+        self.assertEqual(self._table(rows).get_switch_dates("1"),
+                         ["2026-10-19", "2026-10-16"])
+
+
 if __name__ == "__main__":
     unittest.main()

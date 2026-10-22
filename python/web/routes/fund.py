@@ -25,6 +25,13 @@ install_paths()
 
 from cli.fundcli import parse_market_values  # noqa: E402
 from calc.fundgroups import get_fund_group, get_fund_group_names, get_symbol_group  # noqa: E402
+from core.stocksymbol import (  # noqa: E402
+    in_array_lof_mix,
+    in_array_qdii,
+    in_array_qdii_eu,
+    in_array_qdii_hk,
+    in_array_qdii_jp,
+)
 from web.services.fund_list_service import (  # noqa: E402
     FundGroupNotFoundError,
     FundListService,
@@ -38,7 +45,7 @@ from web.services.detail_sections import (  # noqa: E402
 from web.services.fund_service import FundService  # noqa: E402
 from web.services.fundest_service import (  # noqa: E402
     build_est_formula_note,
-    fund_position_memo,
+    fund_position_memo_parts,
 )
 from web.services.qdii_page_service import build_qdii_page  # noqa: E402
 from web.services.reference_service import (  # noqa: E402
@@ -91,6 +98,35 @@ def _render_fund(symbol: str, group: str):
         fundlist=_build_fund_list(symbol),
         fundpairsma=_build_fund_pair_sma(symbol) if _sma_enabled() else [],
     )
+
+
+def _has_fund_position(symbol: str) -> bool:
+    """该基金详情页要不要出「仓位估算」链接。
+
+    判据照抄 PHP ``GetFundLinks()``（``php/stocklink.php:201-202``）::
+
+        if ($bQdii || $bQdiiHk || $bQdiiJp || $bQdiiEu)   $str .= ' '.GetCalibrationHistoryLink(...);
+        if ($bQdii || $bQdiiHk || $bQdiiJp || $bQdiiEu || $bLofMix)  $str .= ' '.GetFundPositionLink(...);
+
+    即 **QDII 四大家族 + 持仓型 LOF**。``in_arrayQdiiMix`` 只参与外层的 if
+    （决定走哪一簇链接），**不是**出这个链接的条件 —— 混进来会多给一只不该有的链接。
+    这个判据同时决定 /history/fundposition/<sym> 有没有内容：其余符号会落到
+    ``_net_value_refs`` 的第三支（只有日期/净值/涨幅三列，没有仓位列）。
+    """
+    return bool(in_array_qdii(symbol) or in_array_qdii_hk(symbol)
+                or in_array_qdii_jp(symbol) or in_array_qdii_eu(symbol)
+                or in_array_lof_mix(symbol))
+
+
+def _fund_position_href(symbol: str) -> str:
+    """仓位估算页的地址；不该出链接的符号返回**空串**（模板据此不包 ``<a>``）。
+
+    与 :func:`_has_fund_position` 用同一个判据 —— 两处若分叉，会出现
+    "判据说有、链接给空"或"判据说没有、说明行却点了进去"的半状态。
+    """
+    if not _has_fund_position(symbol):
+        return ""
+    return url_for("history.history_page", kind="fundposition", symbol=symbol)
 
 
 def _build_qdii_page() -> dict[str, Any]:
@@ -729,10 +765,20 @@ def _build_fundest(symbol: str) -> dict[str, Any] | None:
     #: 估值表上方那行「仓位估算值使用0.95。…」（fundestparagraph.php:135-152）。
     #: 只有基金详情页这一种调用形式有它，分类页那张表（EchoFundArrayEstParagraph）
     #: 传的是 false，走的是"EST网页链接"那套标题 —— 所以在这里补，不在服务里补。
+    #:
+    #: PHP 那句的「仓位估算」四字本身就是链接（``GetFundPositionLink()``），
+    #: 本版照办：拆成 parts 交给模板，只把这四个字包 ``<a>``。
+    #: ``href`` 由 :func:`_has_fund_position` 的判据决定（QDII 四族 + 持仓型
+    #: LOF），不给没有仓位估算页的符号留死链。
     try:
-        table["memo"] = fund_position_memo(refs[0])
+        memo = fund_position_memo_parts(refs[0], _fund_position_href(symbol))
     except Exception:
+        memo = None
+    if memo is None:
         table["memo"] = ""
+    else:
+        table["memo"] = memo["text"]
+        table["memo_parts"] = memo
     #: 估值表**下方**的算法说明（公式 + 三档代入值）。本版新增，生产端没有 ——
     #: 目的是让三档 EST 的差别（标的价 / 汇率各取哪一份）可被逐格验算。
     table["formula"] = _build_est_formula(symbol)

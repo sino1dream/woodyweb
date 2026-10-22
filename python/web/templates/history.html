@@ -15,6 +15,16 @@
     {% endfor %}
   </nav>
 
+  {% if table.kind == 'fundposition' %}
+    <form class="threshold-form" method="get" action="{{ url_for('history.history_page', kind=table.kind, symbol=table.symbol) }}">
+      <label for="input">进行仓位估算的净值涨跌%阈值</label>
+      <input type="text" id="input" name="input" size="6" value="{{ threshold }}">
+      <button type="submit">估算</button>
+      <input type="hidden" name="num" value="{{ table.num }}">
+      <span class="hint">净值累计涨跌没超过这个比例的行不出仓位，但整行仍然列出。</span>
+    </form>
+  {% endif %}
+
   {% if paging.show %}
     <p class="paging">
       总数：{{ paging.total }}
@@ -35,6 +45,66 @@
     {{ history_table(table) }}
   {% else %}
     <p class="empty">该符号暂无{{ table.title }}数据。</p>
+  {% endif %}
+
+  {# 算法说明（本版新增，生产端没有）：这一页的「仓位」是**反算**出来的
+     （PHP _QdiiGetStockPosition），不像其它历史页那样直接读库 —— 不摊开
+     没法验算。示例取第一行算出仓位的行，数据由 history_service 给。 #}
+  {% if table.formula %}
+    {% set f = table.formula %}
+    {% set s = f.sample %}
+    <details class="est-formula" open>
+      {# f.sample 为 None = 这一页没有一行算出仓位（默认 4% 阈值下很常见）。
+         公式与算法照样摆，只省掉代入示例那张表。 #}
+      <summary>算法说明：仓位是怎么反算出来的（点击折叠）</summary>
+
+      <table class="data-table formula-table">
+        <caption>公式</caption>
+        <tbody>
+          <tr><th>百分比（php/stock.php:121）</th><td>{{ f.percentage_def }}</td></tr>
+          <tr><th>① 净值涨跌%</th><td>{{ f.net_percent }}</td></tr>
+          <tr><th>② 标的涨跌%（含汇率）</th><td>{{ f.est_percent }}</td></tr>
+          <tr><th>③ 仓位</th><td><b>{{ f.formula }}</b></td></tr>
+          <tr><th>推导（PHP 源码注释）</th><td>{{ f.derivation }}</td></tr>
+        </tbody>
+      </table>
+
+      <p class="table-note">逐步算法：</p>
+      <ol class="formula-steps">
+        {% for step in f.steps %}<li>{{ step }}</li>{% endfor %}
+      </ol>
+
+      <p class="table-note">三个闸门 —— 任一不满足，仓位格留空，但整行照样列出：</p>
+      <ul class="formula-steps">
+        {% for gate in f.gates %}<li>{{ gate }}</li>{% endfor %}
+      </ul>
+
+      {% if s %}
+      <table class="data-table formula-table">
+        <caption>代入示例：{{ s.prev_date }} → {{ s.date }}</caption>
+        <tbody>
+          <tr><th>上期净值</th><td>{{ s.prev_net }}</td></tr>
+          <tr><th>本期净值</th><td>{{ s.net }}</td></tr>
+          <tr><th>① 净值涨跌%</th><td>{{ s.net_percent }}</td></tr>
+          {% if s.mixed %}
+            <tr><th>② 标的涨跌%</th><td>各成分股按持仓比例加权后的合计（无单一 est 标的）</td></tr>
+          {% else %}
+            <tr><th>上期标的 {{ s.est_symbol }}</th><td>{{ s.est_prev }}</td></tr>
+            <tr><th>本期标的 {{ s.est_symbol }}</th><td>{{ s.est }}</td></tr>
+          {% endif %}
+          <tr><th>上期汇率 {{ s.cny_symbol }}</th><td>{{ s.cny_prev }}</td></tr>
+          <tr><th>本期汇率 {{ s.cny_symbol }}</th><td>{{ s.cny }}</td></tr>
+          {% if not s.mixed %}
+            <tr><th>② 标的涨跌%（含汇率）</th><td>{{ s.est_percent }}</td></tr>
+          {% endif %}
+          <tr><th>③ 仓位</th><td><b>{{ s.position }}</b>{% if not s.mixed %}（{{ s.net_percent }} ÷ {{ s.est_percent }}）{% endif %}</td></tr>
+        </tbody>
+      </table>
+      <p class="table-note">阈值 {{ s.threshold }}：净值累计涨跌没超过它的行不出仓位。</p>
+      {% else %}
+      <p class="table-note">当前阈值下没有一行算出仓位，所以没有可代入的行；把阈值调小（净值涨跌%输入框）再估算一次即可看到。</p>
+      {% endif %}
+    </details>
   {% endif %}
 
   <p class="history-back">

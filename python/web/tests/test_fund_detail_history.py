@@ -125,6 +125,22 @@ class FundDetailHistoryTest(unittest.TestCase):
         text = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", "", html))
         self.assertIn("仓位估算值使用0.95。", text)
 
+    def test_fundest_memo_links_the_position_page(self):
+        """CK6：说明行的「仓位估算」四字是**链接**，指向仓位估算页。
+
+        PHP ``fundestparagraph.php:135-152`` 里那四个字就是
+        ``GetFundPositionLink()`` 的锚文本（指向 ``fundpositioncn.php``）；
+        本版链 ``/history/fundposition/<symbol>``。
+
+        断言锚文本精确等于这四个字 —— 若哪天把整句（含 ``值使用0.95。``）
+        一起包进 ``<a>``，本测试立刻失败。
+        """
+        html = self.client.get("/fund/SZ162411").get_data(as_text=True)
+        self.assertIn('href="/history/fundposition/SZ162411"', html)
+        self.assertIn(">仓位估算</a>", html)
+        #: 底部那个独立「查看仓位估算」段落已挪走，不留两份入口
+        self.assertNotIn("查看仓位估算", html)
+
     def test_netvalueclose_shows_est_symbol_not_fund_itself(self):
         """CK6：净值价格比较摆 **est + 杠杆**，不再只摆基金自己。
 

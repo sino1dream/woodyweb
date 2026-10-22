@@ -377,6 +377,14 @@ class TableRow:
     #: 与 :attr:`hrefs` 是互斥的两套方案：一个格子要么走 ``hrefs``（数据），
     #: 要么出现在 ``html_indexes`` 里（HTML）。不要两个都给。
     html_indexes: list = field(default_factory=list)
+    #: **只有仓位估算页用**：这一行算出仓位时，把参与计算的那些量留一份，
+    #: 供页面下方的「算法说明」逐格代入验算（见
+    #: ``web/services/history_service.py::_position_formula_note``）。
+    #:
+    #: 为什么不另起一个返回通道：仓位是在 ``_row_netvaluehistory`` 内部算的，
+    #: 那里已经把 est / cny 的两套取数（净值 vs 行情价回退）都走了一遍，
+    #: 让调用方再取一次就会把这套分支抄成两份。空 dict = 这一行没算出仓位。
+    position_inputs: dict = field(default_factory=dict)
 
     def add(self, value: Any, color: str = "") -> "TableRow":
         """追加一格。``color`` 为空表示普通文本。"""
@@ -498,6 +506,69 @@ class DailyCloseSql:
         """对应 PHP ``GetDatePrev()``：上一个有记录的日期。"""
         row = self.get_record_prev(stock_id, date)
         return row["date"] if row else None
+
+    def get_switch_dates(self, stock_id: Any) -> list:
+        """净值序列的**拐点（局部极值）日期**，对应 PHP ``GetSwitchDates()``
+        （``php/sql/sqldailyclose.php:215-264``）。
+
+        一个三阶段状态机，没有阈值、不做平滑，纯方向反转检测：
+
+        1. **第一条**（最新的一天）无条件入组 —— 它是序列端点，未必是极值；
+        2. **第二条**只用 ``$bUp = ($fOld > $fCur)`` 定初始方向，不入组；
+        3. 之后每读到一条，若方向与当前趋势相反，把**上一条**日期记为拐点并翻转方向。
+
+        几个不改会出错的细节：
+
+        * **输入顺序必须是 ``date DESC``**（``get_all`` 的排序）。从新往旧扫时
+          ``$fOld``（上一条）是**日期更新**的那条，于是
+          ``$bUp = ($fOld > $fCur)`` 的语义是"顺时间在涨"，反转条件才算得对。
+          用升序喂进来会得到一串同样多但**含义全反**的日期。
+        * **记的是上一条 ``$strOldDate``**（= 趋势里最后那条），不是当前这条。
+          反转是"读到更旧那条才发现"的，而折返点本身属于旧趋势的末端。
+          由此还有个干净的规律：``$bUp`` 支（涨势中反转）记的一定是**局部极小**，
+          ``!$bUp`` 支记的一定是**局部极大**，两者严格交替。
+        * **严格不等号**：相邻两天净值相等时不算反转，平台段整个被跳过。
+        * PHP 里 ``$bSecond`` / ``$bUp`` 在循环外**没初始化**，靠 ``$bFirst``
+          分支赋值；只有一条记录时返回仅含首条。这里的显式初值只为可读性。
+
+        返回值为**字符串日期列表**（与 ``record["date"]`` 同类型），空表返回空列表。
+        最老那段的尾巴不在里面 —— 调用方按 ``dates[i]`` / ``dates[i+1]`` 配对使用，
+        见 :meth:`web.services.history_service.HistoryService._build_fundposition`。
+        """
+        dates: list = []
+        first = True
+        #: PHP 未初始化，这里显式给初值；语义等价（首条走 $bFirst 分支）
+        second = False
+        up = False
+        old = 0.0
+        old_date: Any = None
+        for record in self.get_all(stock_id):
+            date = record["date"]
+            try:
+                cur = float(record["close"])
+            except (TypeError, ValueError):
+                #: 照抄 PHP ``floatval($record['close'])``：空字符串得 **0.0** 而不是报错。
+                #: 代价是净值缺失的那天会被当成一次深谷（PHP 同样如此），但换来自
+                #: 家与 PHP 的取数完全一致；这类行在正常数据里不存在。
+                cur = 0.0
+            if first:
+                dates.append(date)
+                first = False
+                second = True
+            elif second:
+                up = old > cur
+                second = False
+            elif up:
+                if old < cur:
+                    up = False
+                    dates.append(old_date)
+            else:
+                if old > cur:
+                    up = True
+                    dates.append(old_date)
+            old = cur
+            old_date = date
+        return dates
 
     def get_proportion(self, stock_id: Any, date: Any, prev_date: Any) -> Any:
         """对应 PHP ``GetProportion()``（``php/sql/sqldailyclose.php:88``）。

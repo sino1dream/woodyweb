@@ -157,6 +157,18 @@ h2 {
   white-space: normal;
 }
 
+/* 仓位估算页「算法说明」里的步骤/闸门列表：公式长，允许换行 */
+.est-formula .formula-steps {
+  margin: 4px 0 12px;
+  padding-left: 22px;
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.est-formula .formula-steps li {
+  white-space: normal;
+}
+
 .ok {
   color: #087c25;
   font-weight: bold;
@@ -305,6 +317,25 @@ h2 {
   margin-right: 10px;
   padding: 2px 8px;
   border-radius: 3px;
+}
+
+/* 仓位估算页的阈值输入框（PHP EchoEditInputForm）—— 与其它表单同款紧凑样式 */
+.threshold-form {
+  margin: 0 0 10px;
+  font-size: 13px;
+  color: #555;
+}
+
+.threshold-form input[type="text"] {
+  margin: 0 6px;
+  padding: 2px 4px;
+  border: 1px solid #ccc;
+  border-radius: 3px;
+}
+
+.threshold-form .hint {
+  margin-left: 8px;
+  color: #888;
 }
 
 .history-nav .current {

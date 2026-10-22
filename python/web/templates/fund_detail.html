@@ -36,8 +36,13 @@
   {% if fundest %}
     <h2>估值</h2>
     {# 仓位估算说明行（fundestparagraph.php:135-152）：生产端在估值表上方。
-        本版只有文字没有链接 —— 仓位估算页 / mystock 页尚未迁移。 #}
-    {% if fundest.memo %}
+        PHP 那句的「仓位估算」四字是 GetFundPositionLink() 的锚文本，指向
+        fundpositioncn.php —— 本版照办，链 /history/fundposition/<symbol>。
+        其余两个字（mystock 页 / 校准记录页）本版仍未接，所以只链这一个。
+        href 为空（非 QDII 四族且非持仓型 LOF）时不包 <a>，不留死链。 #}
+    {% if fundest.memo_parts %}
+      <p class="table-note">{% if fundest.memo_parts.href %}<a href="{{ fundest.memo_parts.href }}">{{ fundest.memo_parts.label }}</a>{% else %}{{ fundest.memo_parts.label }}{% endif %}{{ fundest.memo_parts.rest }}</p>
+    {% elif fundest.memo %}
       <p class="table-note">{{ fundest.memo }}</p>
     {% endif %}
     {{ data_table(fundest, "fund-est-table", first_cell_is_html=True) }}
@@ -230,6 +235,9 @@
     </p>
   {% endif %}
 
+  {# 仓位估算页的入口已挪到上方估值表说明行的「仓位估算」四字上
+      （PHP 里那四个字就是 GetFundPositionLink()，见 fundestparagraph.php:135-152），
+      这里不再单摆一个「查看仓位估算」段落。 #}
   <p>
     {% if group %}
       <a href="{{ url_for('fund.fund_group_page', group=group) }}">返回分组列表</a>

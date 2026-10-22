@@ -37,8 +37,11 @@ from web.services.fundest_service import (  # noqa: E402
     SORT_BY_SYMBOL,
     FundEstService,
     build_est_formula_note,
+    POSITION_MEMO_LABEL,
     build_fund_est_columns,
     build_fund_est_table,
+    fund_position_memo,
+    fund_position_memo_parts,
 )
 
 
@@ -525,6 +528,82 @@ class EstFormulaNoteTest(unittest.TestCase):
         self.assertIsNone(
             build_est_formula_note("SZ161130", self.FakeCalculator(result=None))
         )
+
+
+class _Symbol:
+    """只给 ``get_symbol`` 一个方法的替身（est_ref / realtime_ref）。"""
+
+    def __init__(self, symbol: str):
+        self.symbol = symbol
+
+    def get_symbol(self):
+        return self.symbol
+
+
+class _PositionRef:
+    """够 ``fund_position_memo_parts`` 用的替身。"""
+
+    def __init__(self, position=0.95, realtime=None, est="^GSPC", realtime_sym="ES"):
+        self.position = position
+        self.realtime = realtime
+        self._est = _Symbol(est) if est else None
+        self._realtime = _Symbol(realtime_sym) if realtime_sym else None
+
+    def get_position(self):
+        return self.position
+
+    def get_realtime_net_value(self):
+        return self.realtime
+
+    def get_est_ref(self):
+        return self._est
+
+    def get_realtime_ref(self):
+        return self._realtime
+
+
+class PositionMemoTest(unittest.TestCase):
+    """估值表上方那句说明：只有「仓位估算」四字可链（PHP ``GetFundPositionLink``）。"""
+
+    HREF = "/history/fundposition/SZ161125"
+
+    def test_only_the_four_chars_are_the_link(self):
+        """锚文本必须精确等于「仓位估算」，其余（值使用0.95。）在链接**外面**。"""
+        parts = fund_position_memo_parts(_PositionRef(), self.HREF)
+
+        self.assertEqual(parts["label"], POSITION_MEMO_LABEL)
+        self.assertEqual(parts["label"], "仓位估算")
+        self.assertEqual(parts["rest"], "值使用0.95。")
+        self.assertEqual(parts["text"], "仓位估算值使用0.95。")
+        self.assertEqual(parts["href"], self.HREF)
+
+    def test_href_is_empty_when_the_page_is_not_offered(self):
+        """非 QDII 四族且非持仓型 LOF：模板据此不包 ``<a>``（不留死链）。"""
+        self.assertEqual(fund_position_memo_parts(_PositionRef())["href"], "")
+        self.assertEqual(fund_position_memo_parts(_PositionRef(), None)["href"], "")
+
+    def test_position_keeps_trailing_zeros(self):
+        """仓位走 ``number_format($fPos, 2)``：``1`` 显示成 ``1.00``，不是 ``1``。"""
+        parts = fund_position_memo_parts(_PositionRef(position=1))
+        self.assertEqual(parts["rest"], "值使用1.00。")
+
+    def test_realtime_sentence_needs_both_refs(self):
+        """实时那句以 ``GetRealtimeNetValue()`` **且** est_ref 存在为闸门。"""
+        with_realtime = fund_position_memo_parts(
+            _PositionRef(realtime=4.6), self.HREF)["rest"]
+        self.assertEqual(with_realtime, "值使用0.95。实时EST ES和^GSPC关联程度按照100%估算。")
+
+        #: 没有实时估值 -> 只剩第一句（PHP 的 if 直接不拼）
+        self.assertEqual(
+            fund_position_memo_parts(_PositionRef(), self.HREF)["rest"], "值使用0.95。")
+        #: 有实时估值但建不出 est_ref -> 同样不拼（PHP 的 method_exists 闸门）
+        self.assertEqual(
+            fund_position_memo_parts(_PositionRef(realtime=4.6, est=None), self.HREF)["rest"],
+            "值使用0.95。")
+
+    def test_memo_helper_is_the_plain_text_form(self):
+        """``fund_position_memo`` 保持返回纯文本（不带链接）的旧契约。"""
+        self.assertEqual(fund_position_memo(_PositionRef()), "仓位估算值使用0.95。")
 
 
 if __name__ == "__main__":
