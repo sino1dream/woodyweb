@@ -127,6 +127,21 @@ def _plain(value: Any) -> str:
     return "" if value is None else str(value)
 
 
+def _chart_number(value: Any) -> Any:
+    """把净值列的原始值转成 float（``ReadColumn`` 的 ``floatval``）。
+
+    MySQL 的 DECIMAL 列经 pymysql 出来是 ``Decimal`` —— **JSON 序列化不了**，
+    而 ``chart`` 会随 ``/api/history/...`` 一起 ``jsonify``。所以这里统一转
+    float；转不动的（None / 空串）返回 ``None``，调用方把那一行从图数据里
+    剔掉（PHP 的 ``floatval`` 会给 0.0，但净值列为空的记录本就病态，
+    剔掉与画一个假深谷之间，前者对页面更诚实）。
+    """
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _percent_text(value: Any, places: int = 2) -> str:
     """把涨跌百分比排成 ``"-5.35%"``；算不出来（None / 非数字）返回空串。
 
@@ -462,9 +477,10 @@ class HistoryService:
 
         builder = getattr(self, "_build_" + kind)
         if kind in _BUILDERS_WITH_INPUT:
-            columns, rows, total = builder(symbol, stock_id, start, num, f_input)
+            built = builder(symbol, stock_id, start, num, f_input)
         else:
-            columns, rows, total = builder(symbol, stock_id, start, num)
+            built = builder(symbol, stock_id, start, num)
+        columns, rows, total = built[0], built[1], built[2]
 
         meta = HISTORY_KINDS[kind]
         output = {
@@ -487,6 +503,8 @@ class HistoryService:
         #: 时整段不显示（返回 None），与详情页 ``_build_est_formula`` 一致。
         if kind == "fundposition":
             output["formula"] = self._position_formula_note(rows, f_input)
+            #: 走势图数据（PHP 的 CSV 两列）；没有净值记录时为 None。
+            output["chart"] = built[3]
         return output
 
     # -- 净值记录段落（``EchoNetValueHistoryParagraph``） -------------------
@@ -779,13 +797,33 @@ class HistoryService:
           换成 SQL LIMIT 会变成"按原始记录数截断"，显示的候选行数不再受控。
 
         ``start`` 在 PHP 侧不存在（这一页没有翻页参数），这里同样忽略。
+
+        **顺手收集走势图数据**（PHP 的 ``PageCsvFile``，``fundpositioncn.php:47``）。
+        逐句照抄那两列的口径：
+
+        * base（第 1 列净值）= **所有被迭代到的记录**，不只是拐点行 ——
+          PHP 的 ``if ($bWritten === false) $csv->Write($strDate, $strNetValue);``
+          （``:37``）把没算出仓位的拐点行、乃至两个拐点之间的**非拐点日**
+          （``if`` 不进，直接落到 :37）都写进了 CSV；
+        * focus（第 2 列仓位）= 只含**算出仓位**的行 —— ``EchoNetValueItem()``
+          在算出仓位时写三列（``netvaluehistoryparagraph.php:94,107``），
+          ``ReadColumn(2)`` 的 ``count($arWord) > $iColumn`` 只收三列的行；
+        * 两个 break 都发生在 :37 **之前**：最后一个拐点日（没有更早的拐点
+          可配对）与被 ``num`` 截断的那行。后者特殊 —— 它若算出了仓位，
+          三列写入在 ``EchoNetValueItem()`` 里已完成，所以**在** base 里；
+          没算出仓位则连 base 都进不去。
+
+        于是图的横轴是净值记录本身（含非拐点日），红线才是稀疏的断线。
         """
         netvalue = NetValueHistorySql(self.connection)
         total = netvalue.count(stock_id)
         cny_symbol, est_symbol, holdings_ref = self._net_value_refs(symbol)
         columns = _columns_netvaluehistory(cny_symbol, est_symbol)
         if total == 0:
-            return columns, [], total
+            #: 没有净值记录 → 没有图（PHP 的 ``HasFile()`` 为假，``<img>``
+            #: 压根不出现）。chart 给 None 而不是空列表，模板与路由据此区分
+            #: "这一页没有数据"与"有数据但画不出来"。
+            return columns, [], total, None
 
         est_has_netvalue = self._est_has_netvalue(netvalue, est_symbol)
         position = self.source.get_position(stock_id)
@@ -794,24 +832,47 @@ class HistoryService:
         switch_dates = [str(date) for date in netvalue.get_switch_dates(stock_id)]
 
         rows = []
+        #: 走势图两列（PHP 的 CSV）：base = 净值列、focus = 仓位列。
+        #: 语义见本方法 docstring —— base 含非拐点日，focus 只含算出仓位的行。
+        chart_base: list = []
+        chart_focus: list = []
         shown = 0
         index = 0
         for record in netvalue.get_all(stock_id):
             date = str(record["date"])
-            if index >= len(switch_dates) or date != switch_dates[index]:
-                continue
-            index += 1
-            if index >= len(switch_dates):
-                break
-            rows.append(
-                self._row_netvaluehistory(symbol, netvalue, record, switch_dates[index],
-                                          cny_symbol, est_symbol, position, holdings_ref,
-                                          est_has_netvalue, f_input)
-            )
-            shown += 1
-            if num and shown >= num:
-                break
-        return columns, rows, total
+            net_value = record["close"]
+            written = False
+            if index < len(switch_dates) and date == switch_dates[index]:
+                index += 1
+                if index >= len(switch_dates):
+                    break
+                row = self._row_netvaluehistory(symbol, netvalue, record, switch_dates[index],
+                                                cny_symbol, est_symbol, position, holdings_ref,
+                                                est_has_netvalue, f_input)
+                rows.append(row)
+                inputs = getattr(row, "position_inputs", None)
+                if inputs:
+                    #: PHP 在 EchoNetValueItem() 里写三列（date, netvalue, position），
+                    #: 所以这一行同时进 base 与 focus。仓位取 number_format 后的
+                    #: 两位字符串转 float —— PHP 的 ReadColumn 也是
+                    #: floatval($arWord[2])，两边同一个数。
+                    written = True
+                    chart_base.append((date, net_value))
+                    chart_focus.append((date, float(inputs["position"])))
+                shown += 1
+                if num and shown >= num:
+                    break
+            if not written:
+                #: PHP fundpositioncn.php:37 —— 没写出三列的行照样写两列。
+                #: 非拐点日（上面的 if 不进）也走这里，于是 base 的横轴是
+                #: 净值记录本身而不是拐点子集。
+                chart_base.append((date, net_value))
+        chart = {"base": [], "focus": [[date, value] for date, value in chart_focus]}
+        for date, value in chart_base:
+            number = _chart_number(value)
+            if number is not None:
+                chart["base"].append([date, number])
+        return columns, rows, total, chart
 
     # -- 净值记录段落的引用选型（``EchoNetValueHistoryParagraph``） ----------
     def _est_has_netvalue(self, netvalue: NetValueHistorySql, est_symbol: Any) -> bool:

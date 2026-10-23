@@ -292,6 +292,69 @@ class PagingTest(unittest.TestCase):
         self.assertTrue(make_service().get_table("netvaluehistory", "SZ161130")["paged"])
 
 
+class ChartDataTest(unittest.TestCase):
+    """走势图取数（PHP 的 ``PageCsvFile`` 两列，``fundpositioncn.php:37``）。
+
+    base = 净值列（第 1 列）、focus = 仓位列（第 2 列）。最容易写错的一点：
+    base **不是**"所有拐点行" —— PHP 的
+    ``if ($bWritten === false) $csv->Write($strDate, $strNetValue);``
+    把没算出仓位的拐点行、乃至两个拐点之间的**非拐点日**都写进了 CSV，
+    所以横轴是净值记录本身。这几个用例就是钉这个反直觉点。
+    """
+
+    def chart(self, **kwargs) -> dict:
+        return make_service().get_table("fundposition", "SZ161130", **kwargs)["chart"]
+
+    def test_base_includes_non_switch_dates(self):
+        """10-17 不是拐点，但照样在 base 里（PHP 的 if 不进，落到 :37）。"""
+        self.assertEqual([d for d, _ in self.chart()["base"]],
+                         ["2026-10-19", "2026-10-17", "2026-10-16", "2026-10-15"])
+
+    def test_last_switch_date_is_absent_from_base(self):
+        """最后一个拐点（10-14）没有更早的拐点可配对，PHP 在写入之前就 break。"""
+        dates = [d for d, _ in self.chart()["base"]]
+        self.assertNotIn("2026-10-14", dates)
+        #: 10-13 在 10-14 之后，循环已经退出，压根迭代不到
+        self.assertNotIn("2026-10-13", dates)
+
+    def test_focus_only_has_rows_that_got_a_position(self):
+        """``input=5`` 下只有 10-16 算出仓位；base 仍是四行、focus 只一行。"""
+        chart = self.chart(f_input=5.0)
+        self.assertEqual([d for d, _ in chart["focus"]], ["2026-10-16"])
+        self.assertEqual(len(chart["base"]), 4)
+
+    def test_position_is_the_two_decimal_string_as_float(self):
+        """focus 取 ``number_format`` 之后的值（PHP ``floatval($arWord[2])``）。
+
+        0.43 而不是 0.4285… —— 图上画的必须和表格里显示的那个数一致。
+        """
+        self.assertEqual([v for _, v in self.chart()["focus"]], [0.43, 0.5, 0.22])
+
+    def test_num_truncation_keeps_the_break_row_when_it_has_a_position(self):
+        """``num=2`` 截在 10-16；那行算出了仓位 → 三列写入已完成，它在 base 里。"""
+        self.assertEqual([d for d, _ in self.chart(start=0, num=2)["base"]],
+                         ["2026-10-19", "2026-10-17", "2026-10-16"])
+
+    def test_num_truncation_drops_the_break_row_when_no_position(self):
+        """``num=2`` + ``input=99``：截断那行没仓位，PHP 的 break 发生在 :37
+        **之前** —— 它连 base 都进不去，只剩先前的 10-19 与非拐点的 10-17。"""
+        chart = self.chart(start=0, num=2, f_input=99.0)
+        self.assertEqual([d for d, _ in chart["base"]], ["2026-10-19", "2026-10-17"])
+        self.assertEqual(chart["focus"], [])
+
+    def test_no_netvalue_gives_no_chart(self):
+        """没有净值记录 → chart 为 None（PHP 的 ``HasFile()`` 为假）。"""
+        service = HistoryService(make_source(),
+                                 FakeConnection({"netvaluehistory": [], "fundest": []}))
+        self.assertIsNone(service.get_table("fundposition", "SZ161130")["chart"])
+
+    def test_other_kinds_have_no_chart(self):
+        """只有仓位估算页有图 —— 其余历史页不产这个键，模板也别去渲染。"""
+        service = make_service()
+        self.assertNotIn("chart", service.get_table("netvaluehistory", "SZ161130"))
+        self.assertNotIn("chart", service.get_table("stockhistory", "SZ161130"))
+
+
 class RouteTest(unittest.TestCase):
     def setUp(self):
         source = make_source()
@@ -363,6 +426,61 @@ class RouteTest(unittest.TestCase):
                           if isinstance(row["cells"][0], list) else row["cells"][0]
                           for row in payload["rows"]],
                          ["2026-10-19", "2026-10-16", "2026-10-15"])
+
+
+class ChartRouteTest(unittest.TestCase):
+    """``/history/fundposition/<sym>/chart.png``（PHP ``DateImageFile``）。"""
+
+    def setUp(self):
+        source = make_source()
+        self.app = create_app(
+            {"TESTING": True},
+            history_service_factory=lambda: HistoryService(source, FakeConnection(TABLES)),
+        )
+        self.client = self.app.test_client()
+
+    def test_chart_returns_png(self):
+        response = self.client.get("/history/fundposition/SZ161130/chart.png")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.mimetype, "image/png")
+        self.assertTrue(response.data.startswith(b"\x89PNG\r\n\x1a\n"))
+
+    def test_threshold_changes_the_picture(self):
+        """阈值只影响 focus（红线上的点），base（横轴）不变 —— 两张图字节不同。
+
+        没有直接数红点（那是位图），但 ``input=99`` 下 focus 为空、图上一个
+        仓位点都不画，PNG 必然与默认阈值那张不一样。
+        """
+        loose = self.client.get("/history/fundposition/SZ161130/chart.png")
+        tight = self.client.get("/history/fundposition/SZ161130/chart.png?input=99")
+        self.assertEqual(tight.status_code, 200)
+        self.assertNotEqual(loose.data, tight.data)
+
+    def test_num_param_reaches_the_chart(self):
+        """``num=2`` 时横轴只剩三行 —— 图跟着表一起截断。"""
+        response = self.client.get("/history/fundposition/SZ161130/chart.png?num=2")
+        self.assertEqual(response.status_code, 200)
+
+    def test_404_without_netvalue(self):
+        """base 少于两点 → PHP ``Draw()`` 返回 false → 404（页面上也不出图）。"""
+        app = create_app(
+            {"TESTING": True},
+            history_service_factory=lambda: HistoryService(
+                make_source(), FakeConnection({"netvaluehistory": [], "fundest": []})),
+        )
+        response = app.test_client().get("/history/fundposition/SZ161130/chart.png")
+        self.assertEqual(response.status_code, 404)
+
+    def test_page_embeds_the_chart_image(self):
+        """页面上要有 ``<img>``，且 URL 带上当前阈值与行数（图与表对齐）。"""
+        html = self.client.get("/history/fundposition/SZ161130").get_data(as_text=True)
+        self.assertIn('class="position-chart"', html)
+        self.assertIn("chart.png?input=4.0&amp;num=10", html)
+
+    def test_chart_still_rendered_when_no_position_passes(self):
+        """focus 为空时图照画（PHP ``Draw()`` 提前 return true，只画基准线）。"""
+        html = self.client.get("/history/fundposition/SZ161130?input=99").get_data(as_text=True)
+        self.assertIn("chart.png", html)
 
 
 if __name__ == "__main__":

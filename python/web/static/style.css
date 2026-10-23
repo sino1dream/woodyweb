@@ -338,6 +338,33 @@ h2 {
   color: #888;
 }
 
+/* 仓位估算页的净值 + 仓位走势图（PHP DateImageFile）。图自带左右两个 Y 轴
+   刻度与图例，说明文字放图下方、小一档字号，不抢图的视觉重心。 */
+.position-chart {
+  margin: 14px 0 18px;
+  text-align: center;
+}
+
+.position-chart img {
+  max-width: 100%;
+  height: auto;
+  border: 1px solid #e3e8ec;
+  border-radius: 4px;
+  background: #fff;
+}
+
+.position-chart figcaption {
+  margin-top: 6px;
+  color: #666;
+  font-size: 12px;
+  line-height: 1.7;
+  text-align: left;
+}
+
+.position-chart figcaption b {
+  color: #333;
+}
+
 .history-nav .current {
   background: #2f6f9f;
   color: #fff;

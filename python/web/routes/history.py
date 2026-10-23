@@ -12,6 +12,7 @@
 ``/history/calibrationhistory/<sym>`` calibrationhistorycn.php?symbol=      calibrationhistoryparagraph.php
 ``/history/shareshistory/<sym>``  fundsharecn.php?symbol=                   fundshareparagraph.php
 ``/history/fundposition/<sym>``   fundpositioncn.php?symbol=                (woody/res/fundpositioncn.php)
+``/history/fundposition/<sym>/chart.png`` （图表 URL）                      dateimagefile.php
 ===============================  =======================================  ==============================
 
 分页参数沿用 PHP 的 ``start`` / ``num``（``num=0`` 表示全部记录）。
@@ -19,23 +20,37 @@
 ``fundposition`` 额外接受 ``input=`` —— 页面上"净值涨跌%阈值"输入框的值，
 对应 PHP ``GetEditInput()``（``fundpositioncn.php:70``），留空则沿用默认
 ``POS_NETVALUE_DIFF``（4%）。这一页在 PHP 侧**没有翻页**，所以也不显示翻页菜单。
+
+``chart.png`` 是走势图：PHP 把 ``DateImageFile`` 画成临时文件再让页面
+``<img>`` 指过去（``fundpositioncn.php:54-58``），这里直接吐 PNG bytes。
+取数走**同一次** ``get_table``（含 ``input=`` / ``num=``），所以图上的线
+永远和表里的行对得上。
 """
 
 from __future__ import annotations
 
-from flask import Blueprint, current_app, jsonify, render_template, request
+from flask import (
+    Blueprint,
+    Response,
+    abort,
+    current_app,
+    jsonify,
+    render_template,
+    request,
+)
 
 from web.bootstrap import install_paths
 
 install_paths()
 
+from ui.dateimage import draw_netvalue_position_chart  # noqa: E402
+from ui.uicolumn import POS_NETVALUE_DIFF, STOCK_DISP_POSITION  # noqa: E402
 from web.services.history_service import (  # noqa: E402
     HISTORY_KINDS,
     HistoryNotFoundError,
     HistoryService,
     parse_paging,
 )
-from ui.uicolumn import POS_NETVALUE_DIFF  # noqa: E402
 
 
 history_bp = Blueprint("history", __name__)
@@ -98,6 +113,35 @@ def history_page(kind: str, symbol: str):
         paging=_paging_links(output),
         threshold=_threshold(),
     )
+
+
+@history_bp.route("/history/fundposition/<symbol>/chart.png")
+def fundposition_chart(symbol: str):
+    """净值 + 仓位走势图（``DateImageFile``，``fundpositioncn.php:54-58``）。
+
+    PHP 把图落成临时文件、页面 ``<img>`` 再指过去；这里直接吐 PNG bytes。
+    ``input=`` / ``num=`` 与表格页面共用同一份 ``get_table``，改阈值或行数
+    时图与表一起变 —— 不会出现"表里 8 行、图上 3 个点"的对不上。
+
+    **base 少于两点时 404**：PHP 的 ``if ($jpg->Draw(...))`` 为假时页面上
+    那个 ``<img>`` 压根不出现（``dateimagefile.php:26`` 的
+    ``count($arBase) < 2`` 闸门），模板侧也用 ``table.chart`` 为空的守卫
+    不渲染 ``<img>``，所以正常浏览不会碰到这个 404。
+    """
+    start, num = _parse(request.args)
+    output = _get_service().get_table("fundposition", symbol, start, num,
+                                      f_input=_threshold())
+    chart = output.get("chart") or {}
+    png = draw_netvalue_position_chart(
+        chart.get("base") or [],
+        chart.get("focus") or [],
+        symbol=symbol,
+        #: PHP ``GetAll(TableColumnGetPosition(), $strSymbol)`` 的标题两截
+        name=STOCK_DISP_POSITION,
+    )
+    if png is None:
+        abort(404)
+    return Response(png, mimetype="image/png")
 
 
 def _paging_links(output: dict) -> dict:

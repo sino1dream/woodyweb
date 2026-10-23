@@ -47,6 +47,22 @@
     <p class="empty">该符号暂无{{ table.title }}数据。</p>
   {% endif %}
 
+  {# 净值 + 仓位走势图（PHP DateImageFile，fundpositioncn.php:54-58）。
+     chart 为 None = 没有净值记录，与 PHP HasFile() 为假时图上不出现一致；
+     有 base 但 focus 为空（没有一行过闸门）时图照画 —— PHP 的 Draw()
+     在 count(focus) < 2 时提前 return true，只画基准线。 #}
+  {% if table.kind == 'fundposition' and table.chart and table.chart.base %}
+    <figure class="position-chart">
+      <img src="{{ url_for('history.fundposition_chart', symbol=table.symbol, input=threshold, num=table.num) }}"
+           alt="{{ table.name }}（{{ table.symbol }}）净值与仓位走势图" loading="lazy">
+      <figcaption>
+        <b>绿线</b>是单位净值（左轴），<b>红线</b>是反算出的仓位（右轴），两条线各按自己的尺度归一。
+        横轴是净值记录本身（含两个拐点之间的交易日）；红线只连接算出仓位的日子，
+        断开的段落就是净值累计涨跌没过阈值（当前 {{ threshold }}%）的区间。
+      </figcaption>
+    </figure>
+  {% endif %}
+
   {# 算法说明（本版新增，生产端没有）：这一页的「仓位」是**反算**出来的
      （PHP _QdiiGetStockPosition），不像其它历史页那样直接读库 —— 不摊开
      没法验算。示例取第一行算出仓位的行，数据由 history_service 给。 #}
