@@ -1,0 +1,111 @@
+{# 新增/修改交易的表单 —— 对应 _edittransactionform.php 的 echo 段。
+
+   PHP 那边是"HTML + 内联 JS"一起 echo 出来的；这里拆成 Jinja 模板，
+   数据由 core.edittransactionform.build_transaction_form 给（键名与表单
+   字段名一一对应）。JS 的三个联动（换标的 / 选价格档 / 选常用备注）
+   照抄 PHP 的 OnSymbol / OnPrice / OnRemark / OnType 四个函数，
+   数组用 tojson 注入（PHP 用 HtmlGetJsArray 拼 JS 字面量）。 #}
+<script>
+  var priceArray = {{ form.price_array|tojson }};
+  var quantityArray = {{ form.quantity_array|tojson }};
+  var priceOptionArray = {{ form.price_option_array|tojson }};
+  var remarkArray = {{ form.common_phrases|tojson }};
+
+  function OnLoad()
+  {
+    var form = document.transactionForm;
+    form.type.value = {{ form.type|tojson }};
+    OnType();
+    form.symbol.value = {{ form.item_id|tojson }};
+  }
+
+  function OnType()
+  {
+    var form = document.transactionForm;
+    // PHP：买入(type=1)时税费两格禁用（A 股买入不收印花税）
+    var disabled = (form.type.value == "1");
+    form.tax.disabled = disabled;
+    form.taxselect.disabled = disabled;
+  }
+
+  function OnSymbol()
+  {
+    var form = document.transactionForm;
+    var options = form.priceselect.options;
+    var symbolValue = form.symbol.value;
+
+    form.price.value = priceArray[symbolValue];
+    options.length = 0;
+    var optionStr = priceOptionArray[symbolValue];
+    if (optionStr) {
+      var optionArray = optionStr.split(",");
+      for (var i = 0; i < optionArray.length; i ++) {
+        var val = optionArray[i];
+        options.add(new Option(val, i));
+        if (val == form.price.value)    form.priceselect.selectedIndex = i;
+      }
+    }
+    form.quantity.value = quantityArray[symbolValue];
+  }
+
+  function OnPrice()
+  {
+    var form = document.transactionForm;
+    var priceselect = form.priceselect;
+    form.price.value = priceselect.options[priceselect.selectedIndex].text;
+  }
+
+  function OnRemark()
+  {
+    var form = document.transactionForm;
+    var value = form.remarkselect.value;
+    if (value == "0")                  form.remark.value = "";
+    else if (value != "")              form.remark.value = remarkArray[value];
+  }
+</script>
+
+<form id="transactionForm" name="transactionForm" method="post"
+      action="{{ url_for('transactions.submit_transaction') }}">
+  <input type="hidden" name="groupid" value="{{ group_id }}" />
+  {% if form.trans_id %}<input type="hidden" name="edit" value="{{ form.trans_id }}" />{% endif %}
+  <div>
+    <p>
+      <select name="symbol" onChange="OnSymbol()" size="1">
+        {% for item_id, symbol in form.symbols %}
+          <option value="{{ item_id }}"{% if item_id == form.item_id %} selected{% endif %}>{{ symbol }}</option>
+        {% endfor %}
+      </select>
+      <select name="type" onChange="OnType()" size="1">
+        <option value="0"{% if form.type == '0' %} selected{% endif %}>卖出</option>
+        <option value="1"{% if form.type == '1' %} selected{% endif %}>买入</option>
+      </select>
+      价格
+      <input name="price" value="{{ form.price }}" type="text" size="20" maxlength="32" class="textfield" id="price" />
+      <select name="priceselect" onChange="OnPrice()" size="1">
+        {% for option in form.price_options %}
+          <option value="{{ loop.index0 }}"{% if option == form.price %} selected{% endif %}>{{ option }}</option>
+        {% endfor %}
+      </select>
+      <br />数量
+      <br /><input name="quantity" value="{{ form.quantity }}" type="text" size="20" maxlength="32" class="textfield" id="quantity" />
+      <br /><select name="commissionselect" size="1">
+        <option value="0">佣金金额</option><option value="1">佣金‰</option>
+      </select>
+      <br /><input name="commission" value="{{ form.commission }}" type="text" size="20" maxlength="32" class="textfield" id="commission" />
+      <br /><select name="taxselect" size="1">
+        <option value="0">税费金额</option><option value="1">税费‰</option>
+      </select>
+      <br /><input name="tax" value="" type="text" size="20" maxlength="32" class="textfield" id="tax" />
+      <br />备注
+      <select name="remarkselect" onChange="OnRemark()" size="1">
+        <option value="" style="background:#CCCCCC;">---请选择---</option>
+        <option value="0">清空</option>
+        {% for phrase_id, phrase in form.common_phrases.items() %}
+          <option value="{{ phrase_id }}">{{ phrase }}</option>
+        {% endfor %}
+      </select>
+      <br /><textarea name="remark" rows="4" cols="50" id="remark">{{ form.remark }}</textarea>
+      <br /><input type="submit" name="submit" value="{{ form.submit }}" />
+    </p>
+  </div>
+</form>

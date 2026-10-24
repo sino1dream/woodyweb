@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}{{ form.submit }} - 基金估值{% endblock %}
+{% block content %}
+  {# 修改表单页（woody/res/php/_editstocktransaction.php 的 EchoAll）：
+     只有一个表单，数据来自 ?edit=<交易 id> 那条记录。 #}
+  <h1>{{ form.submit }}</h1>
+  <p class="group-description">
+    分组 <strong>{{ group_name }}</strong>（id {{ group_id }}）的交易表单，
+    对应 PHP 的 <code>StockEditTransactionForm()</code>
+    （<code>woody/res/php/_edittransactionform.php:137</code>）。
+  </p>
+
+  <p class="hint">
+    <strong>演示环境说明</strong>：登录态未接（账号体系暂缓），这里固定
+    <code>member_id={{ member_id }}</code>，权限闸门恒开 —— 与
+    <code>/admin</code> 分组页同一形态。写操作一律 POST。
+  </p>
+
+  {% include "_transaction_form.html" %}
+
+  <p><a href="{{ url_for('transactions.transactions_page', groupid=group_id) }}">返回交易明细</a></p>
+{% endblock %}

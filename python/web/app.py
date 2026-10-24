@@ -99,6 +99,10 @@ def create_app(
     fundlist_link_builder: Any = None,
     fundlist_refs_builder: Any = None,
     admin_source_factory: Any = None,
+    #: 交易页（web/routes/transactions.py）的数据源工厂 —— 与
+    #: ``admin_source_factory`` 同一套路：缺省 None → 请求级库连接，
+    #: 测试注入假数据源即可不连库。
+    transactions_source_factory: Any = None,
     #: 持仓引用构造器的注入口：``/fund/<group>/<symbol>`` 走不走
     #: ``EchoHoldingsEstParagraph`` 那一支，取决于这一步给不给引用对象。
     #: 与 ``fundest_refs_builder`` / ``sma_refs_builder`` 同一套路 ——
@@ -198,6 +202,9 @@ def create_app(
     # 请求级库连接（web.db.get_db）；测试注入假数据源即可不连库。
     if admin_source_factory is not None:
         app.extensions["admin_source_factory"] = admin_source_factory
+    if transactions_source_factory is not None:
+        app.extensions["transactions_source_factory"] = (
+            transactions_source_factory)
     # 持仓引用构造器；缺省 None → 路由现场连库查 holdings 表
     # （见 routes/fund.py::_build_holdings_ref）。
     if holdings_ref_builder is not None:

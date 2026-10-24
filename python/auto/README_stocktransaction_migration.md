@@ -21,10 +21,12 @@ woody/res/editstocktransactioncn.php    页面装配                 （T4，待
 | T1 | `StockTransactionSql` 全量方法 + 分组侧四个交易查询 | `sql/stocktransactiontable.py`、`core/stockgroupsql.py` |
 | T2 | 数量符号 / 六种佣金费率 / `strval_round` | `core/stocktrans.py` |
 | T3 | 七个写入动作 + 成员预统计回填 | `core/submittransaction.py` |
-| T4 | 编辑表单 + `/transactions`、`/account` 切真库 | **待办** |
+| T4a | 新增/修改表单 + `/transactions` 切真库 + 四个 POST 写端点 | `core/edittransactionform.py`、`web/routes/transactions.py`、`web/templates/_transaction_form.html` |
+| T4b | `/account` 切真库 | **待办** |
 
-测试：auto 全量 1463 OK（新增 `test_stocktransactiontable.py` 24、
-`test_stocktrans.py` +12、`test_submittransaction.py` 41）；
+测试：auto 全量 1485 OK（新增 `test_stocktransactiontable.py` 24、
+`test_stocktrans.py` +12、`test_submittransaction.py` 41、
+`test_edittransactionform.py` 22）、web 866 OK（+5）；
 PHP 逐例对照 `cost / quantity / round`（T2）与 `fee / arb / adjust`（T3）
 全部一致。
 
@@ -130,11 +132,50 @@ submit（merge → new → edit）→ delete → adjust → empty → groupid（
 4. **逐例对照不含除零档**：PHP 8 的 `/` 遇 0 抛 `DivisionByZeroError`
    （pitfalls #118），Python 同款 `ZeroDivisionError`，两边都不设防。
 
-## 七、下一步（T4）
+## 七、T4a：表单 + `/transactions` 切真库（2026-10-24）
 
-1. `woody/res/php/_edittransactionform.php` → 新增/编辑表单（含
-   `_getGroupItemQuantityArray` 的"上次成交数量"默认值、
-   `{`/`}` 批次标记的取反）；
-2. `web/routes/transactions.py` 从演示数据切成真库（用户拍板 T0 建种子后
-   就切），并挂上 POST 写端点；
-3. `/account` 同步切真库。
+### 表单（``woody/res/php/_edittransactionform.php``）
+
+PHP 是"echo 一段 HTML + 内联 JS"，拆成两半：
+
+* **数据**在 `core/edittransactionform.py` —— 成员下拉（只收
+  `IsTradable()` 的成员，按 A 股 → 港股 → 美股三组各排序拼接）、
+  价格下拉（±5 个最小变动单位，步长 `10^-precision`）、
+  数量默认（最近一笔成交，去负号）、建议备注（`{` / `}` 取反）；
+* **渲染**在 `web/templates/_transaction_form.html` —— 照抄 PHP 的
+  `OnSymbol` / `OnPrice` / `OnRemark` / `OnType` 四个联动函数，
+  数组用 `| tojson` 注入（PHP 用 `HtmlGetJsArray` 拼 JS 字面量）。
+
+编辑分支两个细节：卖出记录（`quantity < 0`）→ `type='0'` 且数量去负号；
+**备注含"申购"才回填 fees**（`_edittransactionform.php:155`）—— 对冲申购的
+fees 是申购费，其它交易的 fees 是佣金，混填就错。
+
+### `/transactions` 切真库 + 四个 POST 写端点
+
+| 端点 | 动作 | PHP 对应 |
+|---|---|---|
+| `POST /transactions/submit` | 新增 / 修改 / 合并 | `$_POST['submit']` 分派 |
+| `POST /transactions/delete` | 删一笔 | `?delete=<id>` |
+| `POST /transactions/adjust` | 按净值校准数量 | `?adjust=<id>&netvalue=` |
+| `POST /transactions/empty` | 清空备注 | `?empty=<id>` |
+
+数据源注入口 `transactions_source_factory`（与 `admin_source_factory`
+同一套路，见 `web/app.py`）。页面读真库：`StockGroupSql.get_all` 取分组、
+`StockGroupItemSql.get_all_stock_transaction(0, 10)` 取记录、
+`StockHistorySql.get_close_now` 给表单价格、
+`NetValueHistorySql.get_close(_prev)` 给备注格的校准净值。
+
+### 已知偏差
+
+1. **表格操作列仍是 PHP 链接形态**（"修改 / 删除"指向 PHP 页面）。本地
+   三个 POST 端点已备好并通过路由测试，但把链接换成"每行一个小表单"
+   要动 `transaction_service` 的 `html_indexes` 透传，留给下一步。
+2. **常用备注（`CommonPhraseSql`）未迁**：那张表不在本次范围，表单里
+   对应下拉留空（`COMMON_PHRASE_TABLE_MISSING`）。
+
+## 八、下一步（T4b 与之后）
+
+1. `/account` 从演示数据切真库（与 `/transactions` 同一套注入口）；
+2. 表格操作列改成 POST 小表单（删掉对 PHP 页面的链接依赖）；
+3. "生产端未展示页面"那一批（edit 族 15 个 + submit 族 5 个 + 杂项），
+   按用户拍板的"仿 admin 分组页 + 一律 POST"推进。
