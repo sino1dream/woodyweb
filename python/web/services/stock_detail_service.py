@@ -105,10 +105,14 @@ from calc.futurepremium import get_future_interest_premium, php_round  # noqa: E
 from ref.holdingsref import StockGetHoldingsReference  # noqa: E402
 from ref.refobj import StockGetFundPairReference, StockGetPairReferences  # noqa: E402
 from ref.stocklink import (  # noqa: E402
+    EXHAUSTIVE_HOLDINGS_DISPLAY,
+    FUND_POSITION_DISPLAY,
+    HOLDINGS_DISPLAY,
     get_exhaustive_holdings_link,
     get_fund_position_link,
     get_holdings_link,
 )
+from sql.historytable import php_number_format  # noqa: E402
 from web.services.detail_sections import (  # noqa: E402
     build_fund_history,
     build_netvalue_close,
@@ -222,6 +226,16 @@ def _invoke_ref(ref: Any, snake: str, camel: str) -> Any:
     """
     method = getattr(ref, snake, None) or getattr(ref, camel, None)
     return None if method is None else method()
+
+
+def _note_link(href: Any, text: str) -> str:
+    """有 href 就包 ``<a>``，没有就纯文字。
+
+    PHP 那三个链接（``stocklink`` 一族）恒给得出 URL；Flask 站点上
+    "穷举持仓比例"页还没有路由，注入 ``links`` 时那一项可能就是 ``None``。
+    少一个链接只是少一处可点，**不能少一句文案** —— PHP 的句子结构是固定的。
+    """
+    return '<a href="%s">%s</a>' % (href, text) if href else text
 
 
 class StockDetailService:
@@ -363,6 +377,7 @@ class StockDetailService:
         sma_service: Any = None,
         history_service: Any = None,
         fundest_service: Any = None,
+        links: dict = None,
     ) -> dict[str, Any] | None:
         """``_mystock.php:138-142`` 的 ``holdings_ref`` 分支。
 
@@ -406,14 +421,16 @@ class StockDetailService:
             "symbol": symbol,
             "branch": "holdings",
             "ref": holdings_ref,
-            #: ``EchoHoldingsEstParagraph`` 的表体：官方 EST / 参考 EST / 溢价
-            "est": self._fund_est_table(fundest_service, holdings_ref),
-            #: 表头下方那句说明（仓位 + 持仓更新日期）
-            "est_note": self._holdings_est_note(holdings_ref),
-            #: ``EchoNetValueHistoryParagraph($holdings_ref, false, 0, 1)``。
-            #: 没有净值记录时 PHP 整段不出现（``CountNetValue() == 0`` 就 return），
-            #: 所以这里可能是 ``None``，模板要判空。
-            "netvaluehistory": self._net_value_paragraph(symbol, holdings_ref, history_service),
+            #: ``EchoHoldingsEstParagraph`` 的三段：估值表 + 说明 + 净值记录。
+            #: 与 ``/holdings/<symbol>`` 页共用同一份装配（见
+            #: :func:`get_holdings_est_sections`），``links`` 透传给说明文字。
+            **get_holdings_est_sections(
+                symbol,
+                holdings_ref,
+                fundest_service=fundest_service,
+                history_service=history_service,
+                links=links,
+            ),
             #: ``EchoSmaParagraph($ref)`` —— 通用引用，不是持仓引用
             "sma": self._sma_sections(symbol, ref, None, None, sma_service),
             "stockhistory": build_stock_history(history_service, symbol),
@@ -447,7 +464,7 @@ class StockDetailService:
             return None
 
     @staticmethod
-    def _holdings_est_note(ref: Any) -> str:
+    def _holdings_est_note(ref: Any, links: dict = None) -> str:
         """``EchoHoldingsEstParagraph()`` 里那句说明（``fundestparagraph.php:163-168``）。
 
         生产端 ``holdingscn.php?symbol=SH513050`` 上是这样一句::
@@ -460,19 +477,39 @@ class StockDetailService:
 
         **链接是 HTML 字符串**，模板那头必须按原文渲染（不能转义），否则页面上
         会看到 ``<a href=...>`` 的字面文本。
+
+        ## ``links`` 注入：两套链接来源
+
+        * ``links=None``（默认）—— 走 :mod:`ref.stocklink` 的 **PHP 形 URL**
+          （``/woody/res/xxx.php?symbol=…``）。那是迁移替身，Flask 站点上点不动，
+          保留它是为了既有测试与调用方不变；
+        * ``links={...}`` —— 路由层注入 Flask 的 ``url_for`` 结果，键为
+          ``position`` / ``holdings`` / ``exhaustive``。**缺哪个键，哪一段就退化成
+          纯文字**（比如"穷举持仓比例"页还没有路由时）。
+
+        仓位走 :func:`sql.historytable.php_number_format`（PHP 的
+        ``number_format`` 口径，保留尾零）—— 与 ``fundest_service`` 里同一句
+        「值使用0.95。」用的是同一个函数，两处口径必须一致。
         """
         symbol = _invoke_ref(ref, "get_symbol", "GetSymbol")
         position = _invoke_ref(ref, "get_position", "GetPosition") or 1.0
-        text = "%s值使用%s。" % (
-            get_fund_position_link(symbol),
-            _number_format(position, 2),
-        )
-        text += "%s更新于%s。" % (
-            get_holdings_link(symbol),
-            _invoke_ref(ref, "get_holdings_date", "GetHoldingsDate") or "",
-        )
-        if (_invoke_ref(ref, "count_holdings", "CountHoldings") or 0) <= EXHAUSTIVE_HOLDINGS_LIMIT:
-            text += get_exhaustive_holdings_link(symbol)
+        date = _invoke_ref(ref, "get_holdings_date", "GetHoldingsDate") or ""
+        few_holdings = (_invoke_ref(ref, "count_holdings", "CountHoldings") or 0) <= EXHAUSTIVE_HOLDINGS_LIMIT
+
+        if links is None:
+            position_link = get_fund_position_link(symbol)
+            holdings_link = get_holdings_link(symbol)
+            exhaustive_link = get_exhaustive_holdings_link(symbol) if few_holdings else ""
+        else:
+            position_link = _note_link(links.get("position"), FUND_POSITION_DISPLAY)
+            holdings_link = _note_link(links.get("holdings"), HOLDINGS_DISPLAY)
+            exhaustive_link = (_note_link(links.get("exhaustive"), EXHAUSTIVE_HOLDINGS_DISPLAY)
+                               if few_holdings else "")
+
+        text = "%s值使用%s。" % (position_link, php_number_format(position, 2))
+        text += "%s更新于%s。" % (holdings_link, date)
+        if exhaustive_link:
+            text += exhaustive_link
         return text
 
     # -- 第 4 分支：else（CK3） -------------------------------------------
@@ -638,3 +675,39 @@ class StockDetailService:
 def default_stock_detail_service_factory() -> StockDetailService:
     """默认工厂；``source`` 由路由层注入（连库那一步在 web 侧完成）。"""
     return StockDetailService()
+
+
+def get_holdings_est_sections(
+    symbol: str,
+    holdings_ref: Any,
+    fundest_service: Any = None,
+    history_service: Any = None,
+    links: dict = None,
+) -> dict[str, Any]:
+    """``EchoHoldingsEstParagraph($ref)``（``fundestparagraph.php:160-172``）的三段。
+
+    ==============  ==========================================  ====================
+    键              PHP                                        取不到时
+    ==============  ==========================================  ====================
+    ``est``         ``_echoFundEstParagraph``（估值表）            ``None``
+    ``est_note``    表头那句说明（仓位 + 持仓日期）               恒有（纯文本也出）
+    ``netvaluehistory``  ``EchoNetValueHistoryParagraph``       ``None``（整段不摆）
+    ==============  ==========================================  ====================
+
+    **两个页面共用**：``/stock/<symbol>`` 的第 3 分支（CK4）与
+    ``/holdings/<symbol>``（holdingscn.php）。PHP 里也是同一个函数被两处调用，
+    区别只在 ``/holdings`` 页在它之后还摆参考数据表与七列持仓测算表。
+
+    ``links`` 透传给 :meth:`StockDetailService._holdings_est_note`：
+    见那边关于"PHP 形链接 vs Flask 链接"的说明。
+    """
+    return {
+        "est": StockDetailService._fund_est_table(fundest_service, holdings_ref),
+        "est_note": StockDetailService._holdings_est_note(holdings_ref, links),
+        #: ``EchoNetValueHistoryParagraph($holdings_ref, false, 0, 1)``。
+        #: 没有净值记录时 PHP 整段不出现（``CountNetValue() == 0`` 就 return），
+        #: 所以这里可能是 ``None``，模板要判空。
+        "netvaluehistory": StockDetailService._net_value_paragraph(
+            symbol, holdings_ref, history_service
+        ),
+    }

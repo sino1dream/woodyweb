@@ -196,6 +196,29 @@ def _table_link(symbol: str, kind: str) -> str:
     return url_for("history.history_page", kind=kind, symbol=symbol)
 
 
+def _holdings_note_links(symbol: str) -> dict:
+    """估值表说明文字的三个链接（``get_holdings_detail`` 的 ``links``）。
+
+    对应 PHP 那句里的三个站内链接：仓位估算页 / 基金持仓页 / 穷举持仓比例页。
+    与 :func:`web.routes.holdings._note_links` 同一份内容 —— ``/stock`` 的
+    持仓分支与 ``/holdings`` 页共用这句说明，两处必须给出一样的 URL。
+
+    **"穷举持仓比例"本站点没有路由，恒传 ``None``** —— 说明文字里退化成
+    纯文字（``stock_detail_service._note_link``），比给个死链好。
+    同理``links`` 非 ``None`` 时整个字典缺键也会退化成纯文字，所以这里
+    三个键都给全。
+
+    为什么替掉 PHP 的链接：``ref.stocklink`` 给的是 ``/woody/res/xxx.php``
+    形 URL，那是迁移替身，Flask 站点上点不动（见
+    ``stock_detail_service._holdings_est_note`` 的 ``links`` 说明）。
+    """
+    return {
+        "position": url_for("history.history_page", kind="fundposition", symbol=symbol),
+        "holdings": url_for("holdings.holdings_page", symbol=symbol),
+        "exhaustive": None,
+    }
+
+
 def _get_table(start: int, num: int, admin: bool = False):
     """取表格数据。注入了工厂就用注入的，否则走默认实现。
 
@@ -294,6 +317,9 @@ def stock_detail_page(symbol: str):
         sma_service=_get_sma_service(),
         history_service=_get_history_service(),
         fundest_service=_get_fundest_service(),
+        #: 说明文字里的三个站内链接（``url_for`` 版，替掉 PHP 形死链）。
+        #: 与 ``/holdings/<symbol>`` 页同一份字典，两处页面必须一致。
+        links=_holdings_note_links(symbol),
     )
     if detail is not None:
         return render_template("stock_detail.html", detail=detail, symbol=symbol)

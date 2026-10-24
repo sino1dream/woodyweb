@@ -99,6 +99,11 @@ def create_app(
     fundlist_link_builder: Any = None,
     fundlist_refs_builder: Any = None,
     admin_source_factory: Any = None,
+    #: 持仓引用构造器的注入口：``/fund/<group>/<symbol>`` 走不走
+    #: ``EchoHoldingsEstParagraph`` 那一支，取决于这一步给不给引用对象。
+    #: 与 ``fundest_refs_builder`` / ``sma_refs_builder`` 同一套路 ——
+    #: 让"持仓型 vs QDII 型"的分流能不连库验证。
+    holdings_ref_builder: Any = None,
 ) -> Flask:
     """创建 Flask 应用，允许测试注入服务工厂。"""
     app = Flask(__name__)
@@ -193,6 +198,10 @@ def create_app(
     # 请求级库连接（web.db.get_db）；测试注入假数据源即可不连库。
     if admin_source_factory is not None:
         app.extensions["admin_source_factory"] = admin_source_factory
+    # 持仓引用构造器；缺省 None → 路由现场连库查 holdings 表
+    # （见 routes/fund.py::_build_holdings_ref）。
+    if holdings_ref_builder is not None:
+        app.extensions["holdings_ref_builder"] = holdings_ref_builder
 
     init_app(app)
     register_blueprints(app)

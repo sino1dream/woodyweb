@@ -32,6 +32,7 @@ from core.stocksymbol import (  # noqa: E402
     in_array_qdii_hk,
     in_array_qdii_jp,
 )
+from ref.holdingsref import StockGetHoldingsReference  # noqa: E402
 from web.services.fund_list_service import (  # noqa: E402
     FundGroupNotFoundError,
     FundListService,
@@ -53,6 +54,7 @@ from web.services.reference_service import (  # noqa: E402
     _leverage_symbols,
     reference_symbols_for_fund,
 )
+from web.services.stock_detail_service import get_holdings_est_sections  # noqa: E402
 
 
 fund_bp = Blueprint("fund", __name__)
@@ -74,8 +76,19 @@ def _parse_sources() -> dict[str, float]:
 
 
 def _render_fund(symbol: str, group: str):
-    """渲染基金详情页，并把分组信息带过去用于生成返回链接。"""
+    """渲染基金详情页，并把分组信息带过去用于生成返回链接。
+
+    ## 持仓型基金走另一支（``EchoHoldingsEstParagraph``）
+
+    判据是 ``holdings`` 表有没有明细行（见 :func:`_build_holdings_ref`）：
+    有就用 :func:`_build_holdings_est` 的估值表与说明文字，**不再走**
+    :func:`_build_fundest`（那是 QDII 口径的 ``EchoFundEstParagraph``）。
+    两支都出"估值"表，但说明文字与后随段落不同，选错分支会整段对不上生产端
+    （实测 ``SZ164701``：生产端是「基金持仓更新于2026-10-22。」，
+    本仓库改之前恒出 QDII 那句）。
+    """
     output = _get_service().get_fund(symbol, _parse_sources())
+    holdings_est = _build_holdings_est(symbol)
 
     return render_template(
         "fund_detail.html",
@@ -85,7 +98,11 @@ def _render_fund(symbol: str, group: str):
         # 原因见 _fund_info_enabled()。
         show_fund_info=_fund_info_enabled(),
         trading=_build_trading(symbol),
-        fundest=_build_fundest(symbol),
+        fundest=holdings_est["est"] if holdings_est else _build_fundest(symbol),
+        # 持仓分支的说明文字是**整句 HTML**（三个链接），与 QDII 分支那个
+        # 「可链四字 + 其余」的 memo_parts 结构不同，模板里分两路渲染。
+        holdings_memo=holdings_est["est_note"] if holdings_est else None,
+        holdings_netvalue=(holdings_est["netvaluehistory"] if holdings_est else None),
         reference=_build_reference(symbol),
         shares=_build_shares(symbol),
         stockhistory=_build_stock_history(symbol),
@@ -722,6 +739,93 @@ def _get_sma_refs(symbol: str) -> list:
 def _get_history_service():
     factory = current_app.extensions.get("history_service_factory")
     return None if factory is None else factory()
+
+
+def _build_holdings_ref(symbol: str) -> Any:
+    """``StockGetHoldingsReference($strSymbol)``；**不是持仓型返回 ``None``**。
+
+    PHP 的判据是 ``SqlCountHoldings($strSymbol) > 0``（``_mystock.php`` 分支
+    与 ``sqlholdings.php`` 一致）—— 即 ``holdings`` 表有没有这只基金的明细行。
+    与 ``/stock/<symbol>`` 第 3 分支用的是同一个函数，两边判据必须一致，
+    否则会出现"详情页说是持仓型、持仓页又说没有"的半状态。
+
+    包 ``try``：连不上库时退化成"按 QDII 分支渲染"，而不是整页 500。
+
+    ``holdings_ref_builder`` 是测试注入口（与 ``fundest_refs_builder`` /
+    ``sma_refs_builder`` 同一套路）：持仓分支要不要走，取决于这一步给不给
+    引用对象，注入了就能**不连库**验证两个分支的分流。
+    """
+    try:
+        builder = current_app.extensions.get("holdings_ref_builder")
+        if builder is not None:
+            return builder(symbol)
+        service = _get_reference_service()
+        return StockGetHoldingsReference(symbol, source=getattr(service, "source", None))
+    except Exception:
+        #: 注入的 builder 也包进来：它抛异常时同样按"不是持仓型"处理 ——
+        #: 这一支唯一的后果是少两段说明文字，不值得让整页 500。
+        return None
+
+
+def _build_holdings_est(symbol: str) -> dict[str, Any] | None:
+    """持仓型基金的估值段落 ``EchoHoldingsEstParagraph($ref)``。
+
+    ## 为什么基金详情页也要判这一支
+
+    PHP 的 ``_qdiimix.php`` 里 ``$this->ref = new HoldingsReference($strSymbol)``
+    —— **qdiimix（QDII-LOF 混合）这一族页面用的是持仓引用**，不是 QDII 引用，
+    所以生产端 ``sz164701cn.php`` 那句说明是::
+
+        仓位估算值使用1.00。基金持仓更新于2026-10-22。穷举持仓比例
+
+    而不是 QDII 那句「实时EST xx 和 yy 关联程度按照100%估算。」。本仓库之前
+    只把这一支接进了 ``/stock``，**``/fund/<group>/<symbol>`` 恒走 QDII 分支**，
+    于是持仓型基金在基金详情页少了「基金持仓」链接与后面的净值记录段。
+
+    ## 与 QDII 分支的三个差别
+
+    1. **说明文字多两段**：「基金持仓」链接 + 持仓更新日，持仓数 <= 4 时再补
+       「穷举持仓比例」；
+    2. **估值表后面跟的是净值记录**（``EchoNetValueHistoryParagraph($ref,
+       false, 0, 1)``），不是 QDII 那张校准记录表；
+    3. 仓位值取自持仓引用自己的 ``GetPosition()``。
+
+    三段装配与 ``/stock`` 第 3 分支、``/holdings/<symbol>`` 共用同一份
+    :func:`~web.services.stock_detail_service.get_holdings_est_sections`。
+
+    ``_fund_position_href`` 可能给空串（该符号没有仓位估算页），
+    ``_note_link`` 收到假值退化成纯文字 —— 与 QDII 分支同一条约定。
+    """
+    ref = _build_holdings_ref(symbol)
+    if ref is None:
+        return None
+    #: 三个链接与 ``routes/stock.py::_holdings_note_links`` /
+    #: ``routes/holdings.py::_note_links`` **逐键相同**（三处共用这句说明，
+    #: 给不一样的 URL 会让同一个符号在不同页面上点出不同结果）。
+    #:
+    #: **这里不能用 ``_fund_position_href``**：那个带 ``_has_fund_position``
+    #: 的判据（QDII 四族 + 持仓型 LOF），对应的是 PHP 页尾 ``GetFundLinks()``
+    #: 那一族链接；而估值表上方这句走的是 ``_getFundPositionStr()``
+    #: （``fundestparagraph.php:129-135``），它调 ``GetFundPositionLink()``
+    #: **不带任何判据** —— 生产端 ``sh513050cn.php`` 上的「仓位估算」就是链接，
+    #: 而 SH513050 不在 QDII 四族号段里（``in_array_qdii`` 为 False）。
+    links = {
+        "position": url_for("history.history_page", kind="fundposition", symbol=symbol),
+        "holdings": url_for("holdings.holdings_page", symbol=symbol),
+        #: 「穷举持仓比例」页本站点还没有路由，恒 None（退化成纯文字）
+        "exhaustive": None,
+    }
+    try:
+        sections = get_holdings_est_sections(
+            symbol,
+            ref,
+            fundest_service=_get_fundest_service(),
+            history_service=_get_history_service(),
+            links=links,
+        )
+    except Exception:
+        return None
+    return sections if sections.get("est") else None
 
 
 def _build_fundest(symbol: str) -> dict[str, Any] | None:

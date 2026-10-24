@@ -40,13 +40,29 @@
         fundpositioncn.php —— 本版照办，链 /history/fundposition/<symbol>。
         其余两个字（mystock 页 / 校准记录页）本版仍未接，所以只链这一个。
         href 为空（非 QDII 四族且非持仓型 LOF）时不包 <a>，不留死链。 #}
-    {% if fundest.memo_parts %}
+    {% if holdings_memo %}
+      {# 持仓型（EchoHoldingsEstParagraph，fundestparagraph.php:163-168）：
+         整句是「仓位估算值使用X。基金持仓更新于Y。穷举持仓比例」，
+         三个链接由服务层拼好（/holdings/<sym> 那支可能是纯文字），
+         必须按原文渲染 —— 与 /stock、/holdings 两页同一句，同一套 |safe。 #}
+      <p class="table-note">{{ holdings_memo | safe }}</p>
+    {% elif fundest.memo_parts %}
       <p class="table-note">{% if fundest.memo_parts.href %}<a href="{{ fundest.memo_parts.href }}">{{ fundest.memo_parts.label }}</a>{% else %}{{ fundest.memo_parts.label }}{% endif %}{{ fundest.memo_parts.rest }}</p>
     {% elif fundest.memo %}
       <p class="table-note">{{ fundest.memo }}</p>
     {% endif %}
     {{ data_table(fundest, "fund-est-table", first_cell_is_html=True) }}
     <p class="table-note">官方 / 参考 / 实时三档估值，缺哪档就不显示哪两列。</p>
+
+    {# 持仓型：估值表之后紧跟净值记录（EchoNetValueHistoryParagraph($ref, false, 0, 1)），
+       只摆最新一天。QDII 那支这里摆的是校准记录表，两支不并存。 #}
+    {% if holdings_netvalue %}
+      <h2>{{ holdings_netvalue.title }}</h2>
+      {{ history_table(holdings_netvalue, "history-table netvaluehistory-table") }}
+      <p class="table-note">
+        <a href="{{ url_for('history.history_page', kind='netvaluehistory', symbol=fund.symbol) }}">查看全部净值记录</a>
+      </p>
+    {% endif %}
 
     {# 算法说明（本版新增，生产端没有）：三档 EST 走同一条公式，
        差别只在"标的价"与"汇率"各取哪一份 —— 摊开才能逐格验算。

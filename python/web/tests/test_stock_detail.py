@@ -967,7 +967,12 @@ class FakeHoldingsDetailService:
             "branch": "holdings",
             "ref": ref,
             "est": self.fundest.get_table([ref]),
-            "est_note": sds.StockDetailService._holdings_est_note(ref),
+            #: 真实现 + **路由层注入的 links**（``routes/stock.py`` 的
+            #: ``_holdings_note_links``）—— 照真的 ``get_holdings_detail``
+            #: 一样透传，缺了 ``kwargs.get("links")`` 这条路由就退化成
+            #: PHP 形死链而没人发现。
+            "est_note": sds.StockDetailService._holdings_est_note(
+                ref, kwargs.get("links")),
             #: ``EchoNetValueHistoryParagraph($ref, false, 0, 1)``
             #: （fundestparagraph.php:171）—— 估值表之后、均线之前。
             #: 形状照 ``HistoryService.net_value_paragraph()`` 的返回值，
@@ -1054,9 +1059,14 @@ class HoldingsRouteTest(unittest.TestCase):
 
         与 CK2b 那个 ``first_cell_is_html`` 的坑同源（pitfalls #59）：
         漏掉 ``| safe`` 时页面上会出现 ``&lt;a href=...&gt;``。
+
+        顺带验**路由层注入的 Flask 链接**（``_holdings_note_links``）：
+        页面上的链接得是 ``url_for`` 版，不能留着 ``ref.stocklink`` 的
+        ``/woody/res/xxx.php`` 形死链（那是迁移替身，点了跳不走）。
         """
         html = self.client.get("/stock/SH513050").get_data(as_text=True)
-        self.assertIn('<a href="/woody/res/fundpositioncn.php?symbol=SH513050">', html)
+        self.assertIn('<a href="/history/fundposition/SH513050">', html)
+        self.assertNotIn("fundpositioncn.php", html)
         self.assertNotIn("&lt;a href", html)
 
     def test_net_value_history_renders_between_est_and_sma(self):

@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+{% from "_data_table.html" import data_table %}
+{% from "_history_table.html" import history_table %}
+{# 持仓型基金的「基金持仓」页 —— woody/res/holdingscn.php。
+   段落顺序照 PHP EchoAll()：估值表（含说明）→ 净值记录 → 参考数据 →
+   持仓测算表 → ADR/H 对比表。没有账号层，所以 PHP 首页那张「分组名称」
+   表不出现（账号体系暂缓）。 #}
+{% block title %}{{ symbol }}基金持仓{% endblock %}
+{% block content %}
+  <h1>{{ symbol }}</h1>
+
+  {% if not page %}
+    <p class="table-note">
+      取不到该基金的持仓数据（可能不是持仓型基金、库里没有持仓明细行，或暂时没有抓取到行情）。
+      <a href="{{ url_for('stock.stock_detail_page', symbol=symbol) }}">查看股票详情页</a>
+    </p>
+  {% else %}
+    {# ---- 估值表 + 说明（EchoHoldingsEstParagraph，fundestparagraph.php:160）----
+         与 /stock/<symbol> 第 3 分支是同一张表、同一个服务，列数浮动：
+         有参考/实时估值时才多出两列。说明文字里有两个站内链接
+         （仓位估算 / 基金持仓），必须按原文渲染。 #}
+    {% if page.est %}
+      <h2>{{ page.est.title or "估值" }}</h2>
+      <p class="table-note">{{ page.est_note | safe }}</p>
+      {{ data_table(page.est, "est-table", first_cell_is_html=True) }}
+    {% endif %}
+
+    {# ---- 净值记录（EchoNetValueHistoryParagraph，:171）----
+         只摆最新一天（PHP 传的 false, 0, 1）；没有净值记录时整段不出现。 #}
+    {% if page.netvaluehistory %}
+      <h2>{{ page.netvaluehistory.title }}</h2>
+      {{ history_table(page.netvaluehistory, "history-table netvaluehistory-table") }}
+      <p class="table-note">
+        <a href="{{ url_for('history.history_page', kind='netvaluehistory', symbol=symbol) }}">查看全部净值记录</a>
+      </p>
+    {% endif %}
+
+    {# ---- 参考数据表（EchoReferenceParagraph）----
+         首格是新浪外链（GetExternalLink），服务层给的即 HTML 串，
+         所以 first_cell_is_html=True 不能省。行序：基金自己 → A股 → H股 → 美股。 #}
+    {% if page.reference %}
+      <h2>{{ page.reference.title }}</h2>
+      {{ data_table(page.reference, "reference-table", first_cell_is_html=True) }}
+    {% endif %}
+
+    {# ---- 七列持仓测算表（holdingscn.php:87-112）----
+         标题是页首那句「持仓和测算示意 总数N 港股X% 美股Y%」—— PHP 把它拼在
+         EchoTableParagraphBegin 的第三参（表格标题）上，照原样摆在表格上方。
+         合计尾行只有 6 格（缺「汇率调整」），忠实复刻 PHP，见
+         holdings_service.HoldingsService._total_row。 #}
+    {% if page.holdings %}
+      <p class="table-note">{{ page.holdings.title }}</p>
+      {{ data_table(page.holdings, "holdings-table") }}
+    {% endif %}
+
+    {# ---- ADR/H 对比表（EchoAdrhParagraph）----
+         演示库 adrpair 为空所以通常不显示；有配对记录时自己出现。
+         行是变长的（没有 fundposition 行的 ADR 少最后一格仓位），
+         与 PHP 的 if ($strPos = ...) 守卫一致。 #}
+    {% if page.adr %}
+      <h2>{{ page.adr.title or "ADR和H股对比" }}</h2>
+      {{ data_table(page.adr, "pair-table adr-table", first_cell_is_html=True) }}
+    {% endif %}
+  {% endif %}
+
+  <p>
+    <a href="{{ url_for('stock.stock_detail_page', symbol=symbol) }}">返回股票详情</a>
+    <a href="{{ url_for('main.index') }}">返回首页</a>
+  </p>
+{% endblock %}
