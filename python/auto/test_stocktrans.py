@@ -11,12 +11,16 @@
 
 import unittest
 
+from core.stocksymbol import StockSymbol
 from core.stocktrans import (
     MyStockTransaction,
     StockTransaction,
     add_sql_transaction,
     get_sql_transaction_date,
+    get_stock_cost,
+    get_stock_quantity,
     number_display_cell,
+    strval_round,
 )
 
 
@@ -234,3 +238,143 @@ class NumberDisplayCellTest(unittest.TestCase):
 
     def test_empty_value_empty_cell(self):
         self.assertEqual(number_display_cell(None), ('', ''))
+
+
+class StrvalRoundTest(unittest.TestCase):
+    """PHP ``strval_round()``（php/debug.php:22）。"""
+
+    def test_explicit_precision(self):
+        self.assertEqual(strval_round(0.62, 3), "0.62")
+        self.assertEqual(strval_round(6.7, 3), "6.7")
+
+    def test_auto_precision_by_magnitude(self):
+        """不传精度按量级选档：>10 → 2 位、>2 → 3 位、其余 4 位。
+
+        注意档位是 ``> (10 - MIN_FLOAT_VAL)`` 而不是 ``>=``：恰好 2.0 落在
+        4 位档（见 :meth:`test_boundary_min_float_val`），1.23456 也是 4 位。
+        """
+        self.assertEqual(strval_round(1.5), "1.5")
+        self.assertEqual(strval_round(15.0), "15")
+        self.assertEqual(strval_round(150.0), "150")
+        self.assertEqual(strval_round(0.12345), "0.1235")     # 4 位
+        self.assertEqual(strval_round(1.23456), "1.2346")     # 4 位（不 >2）
+        self.assertEqual(strval_round(2.5), "2.5")            # 3 位
+        self.assertEqual(strval_round(5.6789), "5.679")       # 3 位
+        self.assertEqual(strval_round(12.3456), "12.35")      # 2 位
+
+    def test_half_away_from_zero(self):
+        """PHP 的 round 是十进制 half-up，不是 Python 的 half-to-even。"""
+        self.assertEqual(strval_round(0.1255, 3), "0.126")
+        self.assertEqual(strval_round(2.6755, 3), "2.676")
+
+    def test_boundary_min_float_val(self):
+        """|值| 刚好 10 / 2 时归下一档（PHP 用 ``> (10 - MIN_FLOAT_VAL)``）。"""
+        self.assertEqual(strval_round(10.0), "10")
+        self.assertEqual(strval_round(2.0), "2")
+
+
+class GetStockQuantityTest(unittest.TestCase):
+    """PHP ``_getStockQuantity()``（_submittransaction.php:5）。"""
+
+    def test_buy_keeps_sign(self):
+        self.assertEqual(get_stock_quantity({"quantity": "100", "type": "1"}),
+                         "100")
+
+    def test_sell_prefixes_minus(self):
+        self.assertEqual(get_stock_quantity({"quantity": "100", "type": "0"}),
+                         "-100")
+
+    def test_trimmed_before_sign(self):
+        self.assertEqual(get_stock_quantity({"quantity": " 100 ", "type": "0"}),
+                         "-100")
+
+    def test_empty_sell_gives_bare_minus(self):
+        """PHP 同款不设防：``'-' . ''`` 得 ``'-'``。"""
+        self.assertEqual(get_stock_quantity({"quantity": "", "type": "0"}), "-")
+
+    def test_missing_type_is_buy(self):
+        """type 缺失（PHP notice）：!= '0' 成立，不加负号。"""
+        self.assertEqual(get_stock_quantity({"quantity": "100"}), "100")
+
+    def test_numeric_type_zero_is_sell(self):
+        """PHP 松比：数字 0 == '0' 为真（``0 == '0'``）。"""
+        self.assertEqual(get_stock_quantity({"quantity": "50", "type": 0}),
+                         "-50")
+
+
+class GetStockCostTest(unittest.TestCase):
+    """PHP ``_getStockCost()``（_submittransaction.php:15）六种费率。"""
+
+    def _cost(self, symbol, quantity, price, params=None):
+        return get_stock_cost(StockSymbol(symbol), quantity, price,
+                              params or {})
+
+    # -- 默认费率六分支 -----------------------------------------------------
+    def test_future_fixed_fee(self):
+        self.assertEqual(self._cost("hf_NQ", "10", "100"), "0.62")
+
+    def test_forex_fixed_fee(self):
+        self.assertEqual(self._cost("fx_susdcnh", "1000", "7.1"), "15")
+
+    def test_fund_a_ratio(self):
+        self.assertEqual(self._cost("SZ161125", "1000", "1.65"), "0.165")
+
+    def test_a_stock_buy(self):
+        """1000 × 10 × 0.0002 = 2，低于保底 5 → 5。"""
+        self.assertEqual(self._cost("SZ000001", "1000", "10"), "5")
+
+    def test_a_stock_sell(self):
+        """卖出 0.0015：1000 × 10 × 0.0015 = 15。"""
+        self.assertEqual(self._cost("SZ000001", "-1000", "10"), "15")
+
+    def test_a_stock_buy_above_minimum(self):
+        self.assertEqual(self._cost("SZ000001", "100000", "10"), "200")
+
+    def test_hongkong_ratio(self):
+        self.assertEqual(self._cost("00700", "500", "300"), "300")
+
+    def test_us_below_200_shares(self):
+        self.assertEqual(self._cost("GLD", "100", "300"), "1")
+
+    def test_us_above_200_shares(self):
+        self.assertEqual(self._cost("GLD", "500", "300"), "2.5")
+
+    def test_us_sell_adds_sec_fee(self):
+        """卖出加 成交额 × 0.000028：2.5 + 150000×0.000028 = 6.7。"""
+        self.assertEqual(self._cost("GLD", "-500", "300"), "6.7")
+
+    # -- 显式佣金 / 税费 ------------------------------------------------------
+    def test_explicit_commission(self):
+        self.assertEqual(self._cost("GLD", "100", "300",
+                                    {"commission": "3"}), "3")
+
+    def test_explicit_commission_permille(self):
+        """commissionselect == '1'：值当千分比（× 成交额 / 1000）。"""
+        self.assertEqual(self._cost("GLD", "100", "300",
+                                    {"commission": "1",
+                                     "commissionselect": "1"}), "30")
+
+    def test_explicit_tax_permille(self):
+        self.assertEqual(self._cost("GLD", "100", "300",
+                                    {"commission": "1",
+                                     "commissionselect": "1",
+                                     "taxselect": "1", "tax": "0.5"}), "45")
+
+    def test_tax_ignored_without_select(self):
+        """taxselect 不存在（PHP isset 语义）：税费不计。"""
+        self.assertEqual(self._cost("GLD", "100", "300",
+                                    {"commission": "1", "tax": "0.5"}), "1")
+
+    def test_commission_zero_falls_back_to_default(self):
+        """照抄的坑：empty('0') 为真 → 走默认费率，佣金清不掉。"""
+        self.assertEqual(self._cost("GLD", "100", "300",
+                                    {"commission": "0"}), "1")
+
+    def test_commission_zero_dot_zero_is_explicit(self):
+        """'0.0' 不是 empty（两个非空串不同）→ 佣金清零。"""
+        self.assertEqual(self._cost("GLD", "100", "300",
+                                    {"commission": "0.0"}), "0")
+
+    def test_commission_trimmed(self):
+        self.assertEqual(self._cost("GLD", "100", "300",
+                                    {"commission": " 3 "}), "3")

@@ -27,6 +27,20 @@ PHP ``AddSqlTransaction()``（``php/stocktrans.php:129``）::
 ``GetValue()`` 是 ``iTotalShares * GetPrice()``，**不带绝对值**。做空/融券
 归还时 ``iTotalShares`` 会是负数，市值与盈亏随之变负 —— 这是有意的，
 ``EchoPortfolioParagraph`` 里 ``if ($iShares != 0)`` 就是靠符号区分方向的。
+
+## 交易写入口（``woody/res/php/_submittransaction.php``）
+
+本模块还承担写入口的两个纯函数（不碰 ``$_POST`` 全局，由调用方传
+``params`` 字典进来，方便测试）：
+
+* :func:`get_stock_quantity` —— ``_getStockQuantity()``：卖出记负数；
+* :func:`get_stock_cost` —— ``_getStockCost()``：**六种默认佣金费率** +
+  用户显式佣金/税费的百分比档。费率表见函数 docstring。
+
+``php/stocktrans.php`` 的 ``UpdateStockGroupItemTransaction`` /
+``UpdateStockGroupItem``（交易写完回填成员的 quantity/cost/record）与
+``_submittransaction.php`` 的七个写入动作在 ``core/submittransaction.py``
+—— 那边才碰数据库（本模块保持纯模型/纯函数）。
 """
 
 from __future__ import annotations
@@ -313,3 +327,256 @@ def get_sql_transaction_date(record: Any) -> Any:
         return None
     text = str(filled)
     return text.split(' ', 1)[0] if ' ' in text else None
+
+
+# ---------------------------------------------------------------------------
+# PHP 口径小助手（_submittransaction.php 用到）
+# ---------------------------------------------------------------------------
+
+#: 与 historytable / stockref 同一个常量（PHP ``php/stock.php`` 的
+#: ``MIN_FLOAT_VAL``）。``strval_round`` 的"按量级选精度"分支要用它，
+#: 不 import 是为了让本模块的纯函数部分不拖 sql 层依赖
+#: （sql 层在 ``number_display_cell`` 等处是**函数内**延迟 import 的）。
+MIN_FLOAT_VAL = 0.0000005
+
+
+def strval_round(value: Any, precision: Any = None) -> str:
+    """对应 PHP ``strval_round()``（``php/debug.php:22``）。
+
+    ::
+
+        if ($iPrecision === false)
+        {
+            $f = abs($fVal);
+            if ($f > (10 - MIN_FLOAT_VAL))      $iPrecision = 2;
+            else if ($f > (2 - MIN_FLOAT_VAL))  $iPrecision = 3;
+            else                                $iPrecision = 4;
+        }
+        return strval(round($fVal, $iPrecision));
+
+    不传精度时按**量级**选档（>=10 → 2 位、>=2 → 3 位、其余 4 位）。
+    交易写入口用 ``strval_round($fCommission + $fTax, 3)`` 显式 3 位。
+
+    舍入与字符串化都委托 ``sql.historytable`` 的
+    :func:`mysql_round`（``_php_strval_float(php_round(...))``）——
+    ``php_round`` 是按 **PHP 8 实测口径**（最短十进制 half-away-from-zero）
+    写的，本模块不另造一套（core → ref/sql 会成环，只能延迟 import；
+    ``number_display_cell`` 也是这个模式）。
+    """
+    from sql.historytable import mysql_round
+
+    if precision is None:
+        magnitude = abs(_php_floatval(value))
+        if magnitude > (10.0 - MIN_FLOAT_VAL):
+            precision = 2
+        elif magnitude > (2.0 - MIN_FLOAT_VAL):
+            precision = 3
+        else:
+            precision = 4
+    return mysql_round(value, int(precision))
+
+
+def sql_clean_string(value: Any) -> str:
+    """对应 PHP ``SqlCleanString()``（``php/sql.php:147``）的**有效部分**。
+
+    PHP 是 ``UrlCleanString``（trim）再 ``mysqli_real_escape_string``。
+    本项目的 SQL 一律参数化，转义不再需要，**只保留 trim 语义**：
+    表单里的 ``' 100 '`` 与 ``'100'`` 必须视作同一个数，否则
+    ``_getStockCost`` 的 ``empty()`` 分支会判错。
+    """
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
+def _php_empty(value: Any) -> bool:
+    """对应 PHP ``empty()`` 对**字符串与标量**的语义。
+
+    真值集合：``'' / '0' / 0 / 0.0 / None / False``。
+    注意 ``'0.0'`` **不是** empty（两个非空字符串不同）—— 这是照抄的坑：
+    用户在佣金框里填 ``0`` 想清零，PHP 会当成"没填"走默认费率。
+    """
+    if value is None or value is False:
+        return True
+    if isinstance(value, str):
+        return value == "" or value == "0"
+    if isinstance(value, (int, float)):
+        return float(value) == 0.0
+    return not value
+
+
+def _php_eq_post_select(value: Any, expected: str) -> bool:
+    """对应 PHP ``$_POST['x'] == '1'`` / ``== '0'`` 的松比语义。
+
+    PHP 8 里数字串与数字串按**数值**比：``'1' == '1'`` 显然为真，
+    而 ``1 == '1'``（数字与数字串）也为真。Python 的 ``1 == '1'`` 是
+    False，所以要显式归一：两边都尝试转 float 再比，失败回落字符串比。
+    """
+    if isinstance(value, str):
+        if value == expected:
+            return True
+        try:
+            return float(value) == float(expected)
+        except ValueError:
+            return False
+    if isinstance(value, (int, float)):
+        return float(value) == float(expected)
+    return False
+
+
+def get_stock_quantity(params: Any) -> str:
+    """对应 PHP ``_getStockQuantity()``（``_submittransaction.php:5``）。
+
+    ::
+
+        $strQuantity = SqlCleanString($_POST['quantity']);
+        if ($_POST['type'] == '0')    // sell
+        {
+            $strQuantity = '-'.$strQuantity;
+        }
+
+    卖出（``type == '0'``）时在**串前**加负号 —— 数量始终以字符串形态
+    往下传（``Insert`` 直接入库，``AddSqlTransaction`` 再 ``intval``）。
+    注意加负号发生在 trim **之后**，``'-' + ''`` 得 ``'-'``（PHP 同款，
+    不设防）。
+    """
+    quantity = sql_clean_string(_post_value(params, "quantity"))
+    if _php_eq_post_select(_post_value(params, "type"), "0"):
+        quantity = "-" + quantity
+    return quantity
+
+
+def get_stock_cost(sym: Any, quantity: Any, price: Any, params: Any) -> str:
+    """对应 PHP ``_getStockCost()``（``_submittransaction.php:15``）。
+
+    ``sym`` 是 ``StockSymbol``（PHP 的 ``GetGroupItemSym`` 解出来的），
+    ``params`` 对应 ``$_POST``。返回 ``strval_round(..., 3)`` 的字符串
+    （直接进 ``fees`` 列）。
+
+    **六种默认佣金费率**（commission 框为空时按标的类型选）：
+
+    ============================  ==========================================
+    标的                          费率
+    ============================  ==========================================
+    新浪期货（``IsSinaFuture``）  固定 0.62
+    新浪外汇（``IsSinaForex``）   固定 15.0
+    A 股基金（``IsFundA``）       成交额 × 0.0001
+    A 股其它                      买 成交额 × 0.0002 / 卖 × 0.0015，
+                                  **保底 5 元**
+    港股（``IsSymbolH``）         成交额 × 0.002
+    其它（美股等）                <200 份固定 1 元，否则 0.005 × 份数；
+                                  卖出再加 成交额 × 0.000028（类似证监会费）
+    ============================  ==========================================
+
+    用户显式填了佣金（非 empty）时：``commissionselect == '1'`` 把值当
+    **千分比**（``× 成交额 / 1000``）；``taxselect`` 存在时税费同理，
+    且税费**只有显式分支才有**（默认费率分支恒 0）。
+
+    照抄的坑：``empty($strCommission)`` 把 ``'0'`` 也当"没填"，
+    所以佣金框填 ``0`` 清不掉佣金，反而走默认费率。
+    """
+    f_tax = 0.0
+    f_quantity = _php_floatval(quantity)
+    f_quantity_abs = abs(f_quantity)
+    f_amount = f_quantity_abs * _php_floatval(price)
+    str_commission = sql_clean_string(_post_value(params, "commission"))
+    if _php_empty(str_commission):
+        #: 默认费率分支。判定顺序照 PHP：期货 → 外汇 → A 股 → 港股 → 其它。
+        #: 顺序有意义：A 股里也有一批带 hf_/fx_ 前缀的符号，先判期货/外汇
+        #: 才不会落进 A 股分支。
+        if _call_sym(sym, "is_sina_future"):
+            f_commission = 0.62
+        elif _call_sym(sym, "is_sina_forex"):
+            f_commission = 15.0
+        elif _call_sym(sym, "is_symbol_a"):
+            if _call_sym(sym, "is_fund_a"):
+                f_commission = f_amount * 0.0001
+            else:
+                if f_quantity > 0.0:
+                    f_commission = f_amount * 0.0002
+                else:
+                    f_commission = f_amount * 0.0015
+                if f_commission < 5.0:
+                    f_commission = 5.0        # 五元保底
+        elif _call_sym(sym, "is_symbol_h"):
+            f_commission = f_amount * 0.002
+        else:
+            if f_quantity_abs < 200.0:
+                f_commission = 1.0
+            else:
+                f_commission = 0.005 * f_quantity_abs
+            if f_quantity < 0.0:
+                f_commission += f_amount * 0.000028
+    else:
+        f_commission = _php_floatval(str_commission)
+        if _php_eq_post_select(_post_value(params, "commissionselect"), "1"):
+            f_commission *= f_amount / 1000.0
+
+        if _post_has(params, "taxselect"):
+            f_tax = _php_floatval(sql_clean_string(_post_value(params, "tax")))
+            if _php_eq_post_select(_post_value(params, "taxselect"), "1"):
+                f_tax *= f_amount / 1000.0
+
+    return strval_round(f_commission + f_tax, 3)
+
+
+def _post_value(params: Any, key: str) -> Any:
+    """取 ``$_POST`` 值；缺失给 ``None``（PHP 未设键时访问会 notice）。"""
+    if params is None:
+        return None
+    if hasattr(params, "get"):
+        return params.get(key)
+    return None
+
+
+def _post_has(params: Any, key: str) -> bool:
+    """对应 PHP ``isset($_POST[$key])``：存在且非 None。"""
+    return _post_value(params, key) is not None
+
+
+def _call_sym(sym: Any, name: str) -> bool:
+    """调 ``StockSymbol`` 的判定方法；鸭子类型替身也认。
+
+    ``is_sina_forex`` 一类方法 PHP 侧返回的是**匹配到的前缀串**（空串
+    表示否），Python 侧保留了这个形状 —— 所以这里统一按真值收，
+    不要求返回 bool。
+    """
+    method = getattr(sym, name, None)
+    if method is None:
+        return False
+    return bool(method())
+
+
+def get_group_item_sym(item_id: Any, source: Any = None) -> Any:
+    """对应 PHP ``GetGroupItemSym()``（``_edittransactionform.php:5``）。
+
+    ::
+
+        $item_sql = new StockGroupItemSql();
+        $strStockId = $item_sql->GetStockId($strGroupItemId);
+        $strSymbol = SqlGetStockSymbol($strStockId);
+        return new StockSymbol($strSymbol);
+
+    item id → stock_id → 符号 → ``StockSymbol``。``source`` 是数据源
+    （``StockGroupItemSql`` 的构造入参）；查不到符号时返回 ``None``
+    （PHP 会给 ``new StockSymbol(false)``，本版不当真值用）。
+    """
+    from core.stockgroupsql import StockGroupItemSql
+    from core.stocksymbol import StockSymbol
+
+    item_sql = StockGroupItemSql(source)
+    stock_id = item_sql.get_stock_id(item_id)
+    if stock_id is None:
+        return None
+    from sql.stocksql import StockSql
+
+    stock_sql = StockSql(_connection_of(source))
+    symbol = stock_sql.get_symbol(stock_id)
+    if not symbol:
+        return None
+    return StockSymbol(symbol)
+
+
+def _connection_of(source: Any) -> Any:
+    """取数据源的连接（与 stockgroupsql 的 ``getattr(source, 'connection', source)`` 一致）。"""
+    return getattr(source, "connection", source)

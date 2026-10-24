@@ -18,7 +18,11 @@
 3. **符号解析不建 ref**：PHP 的 ``_getStockIdArray`` 对库里没有的符号
    会 ``StockGetReference`` 顺带入库；我们只认 ``stock`` 表里已有的符号，
    跳过的符号在结果里报数（不静默）。
-4. 删除成员不级联删交易（stocktransaction 未迁）。
+4. **删成员/删分组会级联删交易**（2026-10-24 反填）：PHP 的
+   ``SqlUpdateStockGroup`` 移除分支与 ``SqlDeleteStockGroupItemByGroupId``
+   都是先 ``trans_sql->Delete`` 再删 item 行；本地把后者合成一条
+   ``groupitem_id IN (...)``，语义相同（见
+   ``README_stocktransaction_migration.md`` 第三节）。
 """
 
 from __future__ import annotations

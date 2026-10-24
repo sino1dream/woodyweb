@@ -53,6 +53,15 @@ class FakeSource:
             {"id": 1, "stockgroup_id": 1, "stock_id": 2, "quantity": 0,
              "cost": 0.0, "record": 0},
         ]
+        #: 2026-10-24 ``stocktransaction`` 迁完后删成员/删分组会**级联删
+        #: 交易**（``sql_update_stock_group`` 移除分支与
+        #: ``sql_delete_stock_group_item_by_group_id``）。假库要认这两条 SQL。
+        self.stocktransaction = [
+            {"id": 1, "groupitem_id": 1, "quantity": "1000", "price": "1.65",
+             "fees": "0.165", "filled": "2026-10-15 10:30:00", "remark": ""},
+            {"id": 2, "groupitem_id": 1, "quantity": "-500", "price": "1.72",
+             "fees": "1.29", "filled": "2026-10-20 14:00:00", "remark": ""},
+        ]
         self._next = {"stockgroup": 2, "stockgroupitem": 2}
 
     # -- MySqlFundDataSource 的两个方法（路由与 stockgroupsql 都用） --------
@@ -93,7 +102,14 @@ class FakeCursor:
         self._rows = []
         self.rowcount = 0
         self.lastrowid = 0
-        handler = _HANDLERS.get(" ".join(sql.split()))
+        squeezed = " ".join(sql.split())
+        handler = _HANDLERS.get(squeezed)
+        if handler is None:
+            # 占位符个数随成员数变的语句（IN 列表）只能按形状匹配
+            for pattern, candidate in _REGEX_HANDLERS:
+                if pattern.match(squeezed):
+                    handler = candidate
+                    break
         if handler is None:
             raise AssertionError("测试 fake 不认识的 SQL: %s" % sql)
         handler(self, params)
@@ -239,6 +255,33 @@ def _h_all_symbols(cursor, params):
     cursor._rows = [{"symbol": r["symbol"]} for r in cursor.source.stock]
 
 
+# -- stocktransaction（删成员/删分组的级联清理） -----------------------------
+def _h_trans_count_by_item(cursor, params):
+    """``StockTransactionSql.count`` 的 COUNT 前置（``DeleteData`` 同款）。"""
+    n = sum(1 for r in cursor.source.stocktransaction
+            if str(r["groupitem_id"]) == str(params[0]))
+    cursor._rows = [{"n": n}]
+
+
+def _h_trans_delete_by_item(cursor, params):
+    item_id = params[0]
+    table = cursor.source.stocktransaction
+    before = len(table)
+    cursor.source.stocktransaction = [
+        r for r in table if str(r["groupitem_id"]) != str(item_id)]
+    cursor.rowcount = before - len(cursor.source.stocktransaction)
+
+
+def _h_trans_delete_in(cursor, params):
+    """``delete_all_by_ids``：``groupitem_id IN (%s, %s, ...)``。"""
+    wanted = {str(value) for value in params}
+    table = cursor.source.stocktransaction
+    before = len(table)
+    cursor.source.stocktransaction = [
+        r for r in table if str(r["groupitem_id"]) not in wanted]
+    cursor.rowcount = before - len(cursor.source.stocktransaction)
+
+
 _HANDLERS = {
     " ".join("SELECT * FROM stockgroup WHERE member_id = %s AND groupname = %s LIMIT 1".split()):
         _h_group_by_member_name,
@@ -272,7 +315,17 @@ _HANDLERS = {
         _h_delete_item_by_group,
     " ".join("SELECT symbol FROM stock".split()):
         _h_all_symbols,
+    " ".join("SELECT COUNT(*) AS n FROM `stocktransaction` WHERE `groupitem_id` = %s".split()):
+        _h_trans_count_by_item,
+    " ".join("DELETE FROM `stocktransaction` WHERE `groupitem_id` = %s".split()):
+        _h_trans_delete_by_item,
 }
+
+#: 占位符个数随入参变的语句（``IN (%s, %s, ...)``）按形状匹配。
+_REGEX_HANDLERS = [
+    (re.compile(r"^DELETE FROM `stocktransaction` WHERE `groupitem_id` IN "
+                r"\((?:%s(?:, %s)*)\)$"), _h_trans_delete_in),
+]
 
 
 def _squeezed(html):
@@ -403,6 +456,29 @@ class AdminRouteTest(unittest.TestCase):
         self.assertEqual(
             [r for r in self.source.stockgroupitem
              if str(r["stockgroup_id"]) == "1"], [])
+
+    def test_delete_cascades_transactions(self):
+        """删分组 → 删成员 → **也要删交易**（2026-10-24 交易表迁完后的反填）。
+
+        PHP 的 ``SqlDeleteStockGroupItemByGroupId`` 先 ``trans_sql->Delete``
+        再删 item；本地合成一条 ``groupitem_id IN (...)``，语义相同。
+        """
+        self.assertEqual(len(self.source.stocktransaction), 2)
+        self.client.post("/admin/group/1/delete")
+        self.assertEqual(self.source.stocktransaction, [])
+
+    def test_edit_removing_member_cascades_transactions(self):
+        """编辑时移除成员（diff 的删除侧）同样级联删交易。"""
+        self.client.post("/admin/group/submit", data={
+            "submit": "编辑",
+            "group_id": "1",
+            "groupname": "演示分组A",
+            "symbols": "QQQ",
+        })
+        item_ids = {str(r["id"]) for r in self.source.stockgroupitem}
+        self.assertEqual(
+            [r for r in self.source.stocktransaction
+             if str(r["groupitem_id"]) in item_ids], [])
 
     def test_delete_missing_group(self):
         response = self.client.post("/admin/group/999/delete")

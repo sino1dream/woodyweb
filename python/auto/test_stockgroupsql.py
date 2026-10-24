@@ -17,6 +17,7 @@ dispatch 本模块会发出的那几种固定形态 SQL。
 """
 
 import unittest
+from unittest import mock
 
 from core.stockgroupsql import (
     StockGroupItemSql,
@@ -419,16 +420,30 @@ class ModuleFunctionTest(unittest.TestCase):
              "cost": 0.0, "record": 0},
         ]
 
+    def _with_fake_trans(self, func, *args):
+        """跑一个会内部新建 ``StockGroupItemSql`` 的函数，注入假冒身。
+
+        删除链路 2026-10-24 起会清交易（原来"未迁跳过"的偏差已修复），
+        这些测试要断言新语义。
+        """
+        fake = FakeTransSql()
+        with mock.patch.object(StockGroupItemSql, "trans_sql", new=fake):
+            result = func(*args)
+        return result, fake
+
     def test_update_stock_group_diff(self):
         # 2 已有；41 新增；插入顺序=new 顺序
-        stats = sql_update_stock_group(self.conn, 1, ["41", "2"])
+        stats, _ = self._with_fake_trans(sql_update_stock_group, self.conn,
+                                         1, ["41", "2"])
         self.assertEqual(stats["added"], ["41"])
         self.assertEqual(stats["removed"], [])
 
         # 删掉 2、加 42；41 不动
-        stats = sql_update_stock_group(self.conn, 1, ["41", "42"])
+        stats, fake = self._with_fake_trans(sql_update_stock_group, self.conn,
+                                            1, ["41", "42"])
         self.assertEqual(stats["added"], ["42"])
         self.assertEqual(stats["removed"], ["2"])
+        self.assertEqual(fake.calls, [("delete", "1")])   # 先清交易再删 item
         remaining = [r["stock_id"] for r in self.conn.data["stockgroupitem"]]
         self.assertEqual(remaining, ["41", "42"])
 
@@ -437,15 +452,19 @@ class ModuleFunctionTest(unittest.TestCase):
         self.assertEqual(sql_get_stocks_array(self.conn, 1), ["SZ161125"])
 
     def test_delete_stock_group_items_first(self):
-        stats = sql_delete_stock_group(self.conn, 1)
+        stats, fake = self._with_fake_trans(sql_delete_stock_group,
+                                            self.conn, 1)
         self.assertEqual(stats, {"items": 1, "group": 1})
+        self.assertEqual(fake.calls, [("delete_all_by_ids", ["1"])])
         self.assertEqual(self.conn.data["stockgroupitem"], [])
         self.assertEqual(self.conn.data["stockgroup"], [])
 
     def test_delete_by_member_id(self):
         self.conn.data["stockgroup"].append(
             {"id": 2, "member_id": 1, "groupname": "分组B"})
-        self.assertEqual(sql_delete_stock_group_by_member_id(self.conn, 1), 2)
+        deleted, fake = self._with_fake_trans(
+            sql_delete_stock_group_by_member_id, self.conn, 1)
+        self.assertEqual(deleted, 2)
         self.assertEqual(self.conn.data["stockgroup"], [])
 
     def test_get_stock_group_id(self):
@@ -520,6 +539,137 @@ class GroupNameGuardTest(unittest.TestCase):
     def test_prefix_once(self):
         self.assertEqual(prefix_reserved_group_name("QQQ"), "@QQQ")
         self.assertEqual(prefix_reserved_group_name("@QQQ"), "@QQQ")
+
+
+class FakeTransSql:
+    """``StockTransactionSql`` 的假冒身：只记录转发，不碰 SQL。"""
+
+    def __init__(self):
+        self.calls = []
+
+    def count(self, item_id):
+        self.calls.append(("count", item_id))
+        return 7
+
+    def get_record(self, item_id, start=0, num=0):
+        self.calls.append(("get_record", item_id, start, num))
+        return [{"id": 1}]
+
+    def count_all(self, ids):
+        self.calls.append(("count_all", list(ids)))
+        return 9
+
+    def get_all(self, ids, start=0, num=0):
+        self.calls.append(("get_all", list(ids), start, num))
+        return [{"id": 1}]
+
+    def delete(self, item_id):
+        self.calls.append(("delete", item_id))
+        return 1
+
+    def delete_all_by_ids(self, ids):
+        self.calls.append(("delete_all_by_ids", list(ids)))
+        return len(ids)
+
+
+class StockTransactionForwardTest(unittest.TestCase):
+    """``StockGroupItemSql`` 的四个交易查询（``sqlstockgroup.php:84-116``）。
+
+    注入假冒身（``_trans_sql``），验证的是"按 stock_id → item id 的转发
+    与空值三态"，不是交易表本身的 SQL（那个在
+    ``test_stocktransactiontable.py``）。
+    """
+
+    def setUp(self):
+        self.conn = FakeConnection()
+        self.conn.data["stockgroupitem"] = [
+            {"id": 1, "stockgroup_id": 1, "stock_id": "2", "quantity": 0,
+             "cost": 0.0, "record": 0},
+            {"id": 5, "stockgroup_id": 1, "stock_id": "3", "quantity": 0,
+             "cost": 0.0, "record": 0},
+        ]
+        self.items = StockGroupItemSql(self.conn, 1)
+        self.items._trans_sql = FakeTransSql()
+
+    def test_count_stock_transaction(self):
+        self.assertEqual(self.items.count_stock_transaction("2"), 7)
+        self.assertEqual(self.items._trans_sql.calls[-1], ("count", "1"))
+
+    def test_count_stock_transaction_missing_member(self):
+        """本分组没这只股票 → 0（PHP 同款，注意不是 None）。"""
+        self.assertEqual(self.items.count_stock_transaction("42"), 0)
+        self.assertEqual(self.items._trans_sql.calls, [])
+
+    def test_get_stock_transaction_passes_limit(self):
+        rows = self.items.get_stock_transaction("2", 5, 10)
+        self.assertEqual(rows, [{"id": 1}])
+        self.assertEqual(self.items._trans_sql.calls[-1],
+                         ("get_record", "1", 5, 10))
+
+    def test_get_stock_transaction_missing_member(self):
+        self.assertIsNone(self.items.get_stock_transaction("42"))
+
+    def test_get_stock_transaction_empty_becomes_list(self):
+        """PHP 的 GetData 无行给 false；本模块统一成空列表（docstring 有记）。"""
+        self.items._trans_sql.get_record = lambda *a, **k: None
+        self.assertEqual(self.items.get_stock_transaction("2"), [])
+
+    def test_count_all_stock_transaction(self):
+        self.assertEqual(self.items.count_all_stock_transaction(), 9)
+        self.assertEqual(self.items._trans_sql.calls[-1],
+                         ("count_all", ["1", "5"]))
+
+    def test_count_all_stock_transaction_empty_group(self):
+        self.items.get_id_array = lambda: []
+        self.assertEqual(self.items.count_all_stock_transaction(), 0)
+
+    def test_get_all_stock_transaction_passes_limit(self):
+        rows = self.items.get_all_stock_transaction(0, 20)
+        self.assertEqual(rows, [{"id": 1}])
+        self.assertEqual(self.items._trans_sql.calls[-1],
+                         ("get_all", ["1", "5"], 0, 20))
+
+    def test_get_all_stock_transaction_empty_group(self):
+        self.items.get_id_array = lambda: []
+        self.assertIsNone(self.items.get_all_stock_transaction())
+
+
+class TransactionCascadeTest(unittest.TestCase):
+    """删成员/分组时先清交易（2026-10-24 反填）。
+
+    patch 类属性 ``StockGroupItemSql.trans_sql`` —— 删除函数内部自己造
+    ``StockGroupItemSql`` 实例，没法给单个实例注入。
+    """
+
+    def setUp(self):
+        self.conn = FakeConnection()
+        self.conn.data["stockgroup"] = [
+            {"id": 1, "member_id": 1, "groupname": "分组A"},
+        ]
+        self.conn.data["stockgroupitem"] = [
+            {"id": 1, "stockgroup_id": 1, "stock_id": "2", "quantity": 0,
+             "cost": 0.0, "record": 0},
+        ]
+
+    def test_update_stock_group_removes_transactions(self):
+        """diff 移除分支：先 trans_sql.delete 再 delete_by_id（PHP 原序）。"""
+        fake = FakeTransSql()
+        with mock.patch.object(StockGroupItemSql, "trans_sql", new=fake):
+            stats = sql_update_stock_group(self.conn, 1, ["41"])
+        self.assertEqual(stats["removed"], ["2"])
+        self.assertEqual(fake.calls, [("delete", "1")])
+        self.assertEqual(self.conn.data["stockgroupitem"],
+                         [{"id": 2, "stockgroup_id": 1, "stock_id": "41",
+                           "quantity": 0, "cost": 0.0, "record": 0}])
+
+    def test_delete_stock_group_clears_transactions(self):
+        """删分组：批量删交易走在 delete_all 前面。"""
+        fake = FakeTransSql()
+        with mock.patch.object(StockGroupItemSql, "trans_sql", new=fake):
+            stats = sql_delete_stock_group(self.conn, 1)
+        self.assertEqual(stats["items"], 1)
+        self.assertEqual(fake.calls, [("delete_all_by_ids", ["1"])])
+        self.assertEqual(self.conn.data["stockgroupitem"], [])
 
 
 if __name__ == "__main__":

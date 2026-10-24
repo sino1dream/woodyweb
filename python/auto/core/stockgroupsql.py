@@ -319,12 +319,13 @@ class StockGroupItemSql:
     ``WHERE stockgroup_id = ''``）。本模块保留同一形状：``group_id=None``
     表示无分组，写操作照 PHP 拒绝或让调用方别那么用。
 
-    PHP 的 ``$trans_sql``（``StockTransactionSql``）在本模块**没有** ——
-    stocktransaction 表未迁，凡 PHP 顺带删交易的地方（``SqlUpdateStockGroup``
-    的移除分支、``SqlDeleteStockGroupItemByGroupId``）都跳过，见各方法
-    注释里的"已知偏差"标注。
+    PHP 的 ``$this->trans_sql = new StockTransactionSql()``
+    （``sqlstockgroup.php:28``）在本模块对应 :attr:`trans_sql` 属性 ——
+    **懒造 + 可注入**：PHP 两个 Sql 类同层互引，Python 的分层是
+    ``sql → core``、反向禁止（``sql/__init__.py`` 的依赖方向），故不能
+    顶部 import，只能延迟到第一次用到时。测试可预先给
+    ``item_sql._trans_sql`` 注假冒身避免连库。
     """
-
     TABLE = "stockgroupitem"
     #: ``Add_id(TABLE_STOCK_GROUP)``
     KEY = "stockgroup_id"
@@ -332,6 +333,21 @@ class StockGroupItemSql:
     def __init__(self, source: Any, group_id: Any = None):
         self._connection = getattr(source, "connection", source)
         self.group_id = group_id
+        #: PHP 的 ``$this->trans_sql = new StockTransactionSql()``
+        #: （``sqlstockgroup.php:28``）—— 交易表访问入口。**懒造**：
+        #: PHP 侧两个 Sql 类同层互引，而 Python 的分层是
+        #: ``sql → core``、反向禁止（``sql/__init__.py`` 的依赖方向），
+        #: 所以这里不能顶部 import，只能在第一次用到时延迟 import。
+        #: 测试可注假冒身（``trans_sql_override``）避免连库。
+        self._trans_sql = None
+
+    @property
+    def trans_sql(self) -> Any:
+        """对应 PHP 的 ``GetTransSql()`` / 直接属性访问 ``$sql->trans_sql``。"""
+        if self._trans_sql is None:
+            from sql.stocktransactiontable import StockTransactionSql
+            self._trans_sql = StockTransactionSql(self._connection)
+        return self._trans_sql
 
     # -- 内部小工具（与 StockGroupSql 同款，不继承以避免暴露 SQL 拼装） --
     def _fetchone(self, sql: str, params: tuple) -> dict | None:
@@ -477,6 +493,52 @@ class StockGroupItemSql:
             (stock_id,))
         return _int(row["n"]) if row else 0
 
+    # -- 交易查询（``sqlstockgroup.php:84-116`` 的四个方法） ------------------
+    # 这一组是"按 stock_id 问交易"的便捷层：先把 stock_id 换成本分组的
+    # groupitem_id，再转发给 trans_sql。PHP 取不到成员时给 false / 0。
+    def count_stock_transaction(self, stock_id: Any) -> int:
+        """对应 ``CountStockTransaction($strStockId)``。
+
+        取不到成员（本分组没这只股票）→ **0**（PHP 同款，注意与
+        :meth:`count` 的空键返回 ``None`` 不同：这里先过 ``GetId``）。
+        """
+        item_id = self.get_id(stock_id)
+        if item_id is None:
+            return 0
+        count = self.trans_sql.count(item_id)
+        return 0 if count is None else int(count)
+
+    def get_stock_transaction(self, stock_id: Any, start: Any = 0,
+                              num: Any = 0) -> Any:
+        """对应 ``GetStockTransaction($strStockId, $iStart, $iNum)``。
+
+        取不到成员 → ``None``（PHP 给 ``false``）。有成员但没交易时
+        ``trans_sql.get_record`` 给空列表（PHP 的 ``GetData`` 无行也返回
+        ``false`` —— 这里统一成空列表，调用方判空的方式一致）。
+        """
+        item_id = self.get_id(stock_id)
+        if item_id is None:
+            return None
+        return self.trans_sql.get_record(item_id, start, num) or []
+
+    def count_all_stock_transaction(self) -> int:
+        """对应 ``CountAllStockTransaction()``：本分组全部成员的交易总数。"""
+        item_ids = self.get_id_array()
+        if not item_ids:
+            return 0
+        return self.trans_sql.count_all(item_ids)
+
+    def get_all_stock_transaction(self, start: Any = 0, num: Any = 0) -> Any:
+        """对应 ``GetAllStockTransaction($iStart, $iNum)``。
+
+        分组无成员 → ``None``（PHP 给 ``false``）。排序同样是
+        ``filled`` DESC（``trans_sql.get_all`` 的约定）。
+        """
+        item_ids = self.get_id_array()
+        if not item_ids:
+            return None
+        return self.trans_sql.get_all(item_ids, start, num) or []
+
     # -- 写 ----------------------------------------------------------------
     def insert(self, stock_id: Any) -> int | None:
         """对应 ``Insert($strStockId)``：往本分组加一个成员。
@@ -520,11 +582,12 @@ class StockGroupItemSql:
     def delete_by_id(self, item_id: Any) -> int:
         """对应 ``DeleteById()``：删一个成员。
 
-        **已知偏差**：PHP 的删除入口（``SqlUpdateStockGroup`` 移除分支、
-        ``SqlDeleteStockGroupItemByGroupId``）会先
-        ``$sql->trans_sql->Delete($strId)`` 清掉该成员的交易记录，
-        再删 item。stocktransaction 表未迁，这两处都跳过那一步 ——
-        后果是"删成员不删交易"，等交易体系迁完后要补上（README 有记）。
+        **只删 item 行，不碰交易** —— PHP 的 ``DeleteById`` 同样不删，
+        交易清理在**调用方**（``SqlUpdateStockGroup`` 移除分支、
+        ``SqlDeleteStockGroupItemByGroupId`` 先 ``trans_sql->Delete``
+        再调本方法）。2026-10-24 交易表迁完后，那两个调用方已反填
+        （见 :func:`sql_update_stock_group` 与
+        :func:`sql_delete_stock_group_item_by_group_id`）。
 
         无 ``LIMIT 1``：PHP 的 ``DeleteById`` 不传 limit，同
         :meth:`StockGroupSql.delete_by_id` 的说明。
@@ -622,8 +685,9 @@ def sql_update_stock_group(source: Any, group_id: Any,
     3. ``arOld`` 里不在 ``arNew`` 的 → 先 ``trans_sql->Delete`` 再
        ``DeleteById``。
 
-    第 3 步的交易清理在**本模块跳过**（stocktransaction 未迁），只删
-    item —— 与 :meth:`StockGroupItemSql.delete_by_id` 的偏差说明一致。
+    第 3 步的交易清理 2026-10-24 已反填（stocktransaction 表迁完）：
+    删成员前先把它的成交记录清掉，否则会留下**孤儿交易**（MyISAM 的
+    FK 被静默忽略，没有级联）。
 
     返回 ``{'added': [...], 'removed': [...]}`` 给后台页做结果提示
     （PHP 只 ``trigger_error`` 一行 debug，页面无反馈；我们给个反馈，
@@ -643,7 +707,8 @@ def sql_update_stock_group(source: Any, group_id: Any,
     removed = []
     for item_id, stock_id in old_map.items():
         if stock_id not in new_set:
-            # PHP: $sql->trans_sql->Delete($strId);  —— 未迁，跳过
+            # PHP: $sql->trans_sql->Delete($strId); $sql->DeleteById($strId);
+            item_sql.trans_sql.delete(item_id)
             item_sql.delete_by_id(item_id)
             removed.append(stock_id)
 
@@ -653,10 +718,17 @@ def sql_update_stock_group(source: Any, group_id: Any,
 def sql_delete_stock_group_item_by_group_id(source: Any, group_id: Any) -> int:
     """对应 ``SqlDeleteStockGroupItemByGroupId($strGroupId)``。
 
-    删一个分组的全部成员。PHP 对每个 item 先 ``trans_sql->Delete`` ——
-    跳过（未迁）。返回删掉的 item 数。
+    删一个分组的全部成员。PHP 对每个 item 先 ``trans_sql->Delete``
+    （``sqlstockgroup.php:296-300``）—— 2026-10-24 已反填。
+    返回删掉的 item 数。
     """
     item_sql = StockGroupItemSql(source, group_id)
+    # PHP 对每个 item 先删交易再 DeleteAll；本模块用一条
+    # ``groupitem_id IN (...)`` 批量删交易，再删全部 item
+    # （语义等价：MyISAM 无级联，交易必须走在 item 前面）。
+    item_ids = item_sql.get_id_array()
+    if item_ids:
+        item_sql.trans_sql.delete_all_by_ids(item_ids)
     return item_sql.delete_all()
 
 
@@ -855,6 +927,11 @@ for _camel, _snake in (
     ("Insert", "insert"),
     ("Update", "update"),
     ("DeleteAll", "delete_all"),
+    #: 交易查询四件（``sqlstockgroup.php:84-116``）
+    ("CountStockTransaction", "count_stock_transaction"),
+    ("GetStockTransaction", "get_stock_transaction"),
+    ("CountAllStockTransaction", "count_all_stock_transaction"),
+    ("GetAllStockTransaction", "get_all_stock_transaction"),
 ):
     if hasattr(StockGroupItemSql, _snake):
         setattr(StockGroupItemSql, _camel, getattr(StockGroupItemSql, _snake))
