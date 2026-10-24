@@ -265,6 +265,24 @@ def build_transaction_form(source: Any, group_id: Any, submit: str,
     ``common_phrases``  常用备注（``CommonPhraseSql`` 未迁，恒空）
     ==================  ==================================================
     """
+    #: PHP 的编辑分支先解出分组再建 ``StockGroupItemSql``（``:143-159``）：
+    #: ``if (($strGroupId = SqlGetStockGroupId($record['groupitem_id'])) == false) return;``
+    #: —— **分组号是从交易记录反查的**，不是 ``?groupid=`` 给的那个。
+    #: 顺序不能倒：用错了分组，成员下拉就是另一组的成员。
+    if trans_id:
+        from sql.stocktransactiontable import StockTransactionSql
+
+        record = StockTransactionSql(_connection_of(source)).get_record_by_id(
+            trans_id)
+        if record is None:
+            return None
+        from core.stockgroupsql import sql_get_stock_group_id
+
+        resolved = sql_get_stock_group_id(source, record.get("groupitem_id"))
+        if resolved is None:
+            return None
+        group_id = resolved
+
     item_sql = StockGroupItemSql(source, group_id)
     prices = get_group_item_price_array(item_sql, history_sql=history_sql)
     if not prices:
@@ -279,12 +297,7 @@ def build_transaction_form(source: Any, group_id: Any, submit: str,
     remark = ""
 
     if trans_id:
-        from sql.stocktransactiontable import StockTransactionSql
-
-        record = StockTransactionSql(_connection_of(source)).get_record_by_id(
-            trans_id)
-        if record is None:
-            return None
+        #: ``record`` 在上面那一段已经取过（反查分组要用），这里直接用。
         item_id = record.get("groupitem_id")
         raw_quantity = str(record.get("quantity") or "")
         if _php_intval(raw_quantity) < 0:

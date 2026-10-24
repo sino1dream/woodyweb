@@ -241,6 +241,18 @@ class BuildFormTest(unittest.TestCase):
                                       trans_id=10, history_sql=self.history)
         self.assertEqual(form["commission"], "14.4")
 
+    def test_edit_resolves_group_from_record(self):
+        """编辑时分组号是**从交易记录反查**的（``:144``），不是入参给的那个。
+
+        入参给一个空分组（99）也要能出表单 —— 否则改一笔交易会因为
+        ``?groupid=`` 传错而读不到成员列表。
+        """
+        form = build_transaction_form(self.db, 99, SUBMIT_EDIT, trans_id=2,
+                                      history_sql=self.history)
+        self.assertIsNotNone(form)
+        self.assertEqual(form["quantity"], "500")
+        self.assertTrue(form["symbols"])
+
     def test_edit_missing_record_returns_none(self):
         self.assertIsNone(build_transaction_form(
             self.db, GROUP_ID, SUBMIT_EDIT, trans_id=999,
