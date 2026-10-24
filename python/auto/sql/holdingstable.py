@@ -57,6 +57,7 @@ PHP ``HoldingsSql``                  本模块
 ``GetAll($strStockId)``              :meth:`HoldingsSql.get_all`
 ``GetHoldingsArray($strStockId)``    :meth:`HoldingsSql.get_holdings_array`
 ``InsertHoldingId(...)``             :meth:`HoldingsSql.insert`
+``DeleteAll($strStockId)``           :meth:`HoldingsSql.delete_all`
 ``BuildOrderBy()``（``ratio DESC``）  :meth:`HoldingsSql.get_all` 内建
 ===================================  ==========================================
 
@@ -175,6 +176,27 @@ class HoldingsSql:
             written += 1
         return written
 
+    def delete_all(self, stock_id: Any) -> Any:
+        """对应 PHP ``KeySql::DeleteAll()``（``php/sql/sqlkey.php:73``）：删光这只基金的明细。
+
+        两个写入入口都会先调它再逐行插（"先清后写"语义）：
+
+        * ``updater/etfholdings.py`` —— 交易所申赎清单下载完成后整份替换；
+        * ``updater/holdingsupdater.py::update_stock_option_holdings`` ——
+          管理员提交新的持仓编码串。
+
+        与 ``write_date`` 一样是**幂等**的：删一个不存在的集合只是 0 行受影响。
+        """
+        cursor = self.connection.cursor()
+        try:
+            cursor.execute(
+                "DELETE FROM `%s` WHERE stock_id = %%s" % self.table,
+                (stock_id,),
+            )
+            return cursor.rowcount
+        finally:
+            cursor.close()
+
 
 class HoldingsDateSql:
     """``holdingsdate`` 表：持仓清单的更新日。
@@ -228,5 +250,7 @@ class HoldingsDateSql:
 setattr(HoldingsSql, "GetHoldingsArray", HoldingsSql.get_holdings_array)
 setattr(HoldingsSql, "GetAll", HoldingsSql.get_all)
 setattr(HoldingsSql, "Count", HoldingsSql.count)
+setattr(HoldingsSql, "DeleteAll", HoldingsSql.delete_all)
+setattr(HoldingsSql, "InsertHoldingId", HoldingsSql.insert)
 setattr(HoldingsDateSql, "ReadDate", HoldingsDateSql.read_date)
 setattr(HoldingsDateSql, "WriteDate", HoldingsDateSql.write_date)

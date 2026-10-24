@@ -25,10 +25,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from decimal import Decimal, ROUND_HALF_UP
 from typing import Any, Sequence
 
 from sql.quotestore import stock_get_percentage
 from core.stockdata import rtrim0
+# ``sql`` → ``ref`` 是允许的依赖方向（见 ``sql/__init__.py`` 的依赖方向说明）。
+# 这两个下划线函数是 PHP ``floatval`` / ``strval`` 的口径实现，持仓测算表的
+# ``mysql_round`` 要原样复用，不在本文件再抄一份（抄了就会有两处需要同步）。
+from ref.stockref import _php_floatval, _php_strval_float  # noqa: E402
 
 
 # 对应 PHP ``php/ui/table.php:4`` 的 ``define('TABLE_COMMON_DISPLAY', 10)``。
@@ -37,6 +42,9 @@ TABLE_COMMON_DISPLAY = 10
 
 # 对应 PHP ``MIN_FLOAT_VAL``：小于这个值就当 0 处理，避免除零与噪声。
 MIN_FLOAT_VAL = 0.0000005
+
+#: ``php/debug.php:12`` 的 ``FLOAT_PRECISION``，``mysql_round`` 的默认精度。
+FLOAT_PRECISION = 6
 
 
 # ---------------------------------------------------------------------------
@@ -170,6 +178,51 @@ def format_ratio_display(value: Any, precision: int = 4) -> str:
         return str(value)
 
 
+def _to_float(value: Any) -> float:
+    """按 PHP ``floatval`` 口径转 float；任何输入都得到数值（不抛错）。
+
+    PHP 的 ``round()`` / ``number_format()`` 内部都会先 ``floatval``，所以
+    ``round('abc', 2)`` 是 ``0.0`` 而不是错误 —— 这里照抄。
+    """
+    return _php_floatval(value)
+
+
+def php_round(value: Any, digits: int) -> float:
+    """PHP ``round($fVal, $iDigits)``：**最短十进制表示**上的 half-away-from-zero。
+
+    PHP 的 ``round()`` / ``number_format()`` 不是按 double 的二进制精确值舍入，
+    而是先把值化成最短往返十进制串（``repr`` 那一层语义，PHP 内部是预舍入到
+    15 位有效数字，与 ``repr`` 的最短表示在实用范围内等价），再做十进制
+    half-up。实测（``php -n`` 8.0.10）::
+
+        round(2.675, 2)  === 2.68      Python round(2.675, 2)  === 2.67
+        round(1.005, 2)  === 1.01      Python round(1.005, 2)  === 1.0
+        round(0.125, 2)  === 0.13      Python round(0.125, 2)  === 0.12
+        round(0.045, 2)  === 0.05      Python round(0.045, 2)  === 0.04
+
+    **为什么必须照抄**：持仓测算表的「旧价格」列入参是 MySQL 的
+    ``adjclose`` 串（``"3.675"`` 这种三位小数），第 3 位小数为 5 时两种
+    口径必然分叉 —— 而 ``stockhistory`` 表里这类值到处都是。
+    """
+    quantum = Decimal(1).scaleb(-int(digits))
+    # Decimal(repr(x))：repr 给出该 double 的最短往返十进制表示
+    return float(Decimal(repr(_to_float(value))).quantize(quantum, rounding=ROUND_HALF_UP))
+
+
+def mysql_round(value: Any, precision: int = FLOAT_PRECISION) -> str:
+    """PHP ``mysql_round($str, $iPrecision)``（``php/debug.php:34``）。
+
+    原式是 ``strval(round(floatval($str), $iPrecision))``，两个细节：
+
+    * ``floatval`` 语义 —— 空串 / 非数字串得 0.0（:func:`php_round` 内部
+      已按 ``floatval`` 口径转换，见 :func:`_to_float`）；
+    * 结果走 **``strval``** 而不是定点格式 —— 尾随零被削掉
+      （``mysql_round('2.3995', 2)`` = ``'2.4'``），**负零保留**
+      （``mysql_round(-0.004, 2)`` = ``'-0'``，PHP 实测）。
+    """
+    return _php_strval_float(php_round(value, precision))
+
+
 def php_number_format(value: Any, precision: int = 2) -> str:
     """PHP ``number_format($fVal, $precision)``：定点、**不削尾零**、不去负零。
 
@@ -185,15 +238,29 @@ def php_number_format(value: Any, precision: int = 2) -> str:
       —— 仓位那一格，还要拿它跟 ``number_format($ref->GetPosition(), 2)``
         做**字符串比较**来决定行底色，所以尾零不能削；
     * ``_getFundPositionStr()``（``php/ui/fundestparagraph.php:135``）
-      —— 估值表上方那行「值使用0.95。」。
+      —— 估值表上方那行「值使用0.95。」；
+    * 持仓测算表（``woody/res/holdingscn.php`` 的七列）—— 列值全是算出来的
+      比例与涨幅，边界值密集，舍入口径必须与 PHP 逐格一致。
 
-    千分位逗号没有实现：这两个调用点的入参（仓位、反算仓位）都远小于 1000，
-    用不到的语义不加。
+    ## 舍入口径：最短十进制 half-up，负零归正
+
+    PHP 8 实测：``number_format(2.675, 2)`` = ``'2.68'``、``number_format(1.005, 2)``
+    = ``'1.01'``、``number_format(0.125, 2)`` = ``'0.13'``（Python 的 ``'%.2f'``
+    分别给 ``'2.67'`` / ``'1.00'`` / ``'0.12'``）；而结果为零时**负号被去掉**：
+    ``number_format(-0.004, 2)`` = ``'0.00'``、``number_format(-0.00004, 4)``
+    = ``'0.0000'``。所以这里按 :func:`php_round` 的十进制口径舍入后，再对
+    ``== 0`` 的结果取绝对值。
+
+    千分位逗号没有实现：三个调用点的入参（仓位、反算仓位、持仓比例）都远小于
+    1000，用不到的语义不加。
     """
-    try:
-        return "%.*f" % (precision, float(value))
-    except (TypeError, ValueError):
-        return str(value)
+    rounded = Decimal(repr(_to_float(value))).quantize(
+        Decimal(1).scaleb(-int(precision)), rounding=ROUND_HALF_UP
+    )
+    if rounded == 0:
+        # PHP 的 number_format 在结果为零时不带负号（负零归正）
+        rounded = abs(rounded)
+    return str(rounded)
 
 
 def format_int_display(value: Any) -> str:
@@ -495,6 +562,42 @@ class DailyCloseSql:
     def get_close(self, stock_id: Any, date: Any) -> Any:
         """对应 PHP ``GetClose()``。"""
         row = self.get_record(stock_id, date)
+        return row["close"] if row else None
+
+    def get_record_now(self, stock_id: Any) -> Any:
+        """最新一行（按 ``date DESC``），对应 PHP ``GetRecordNow()``。
+
+        PHP 的 ``KeySql::GetRecordNow()``（``php/sql/sqlkey.php:70``）就是
+        ``GetSingleData(where_key, order_by)``，而 ``DailyCloseSql`` 的
+        ``BuildOrderBy()`` 恒为 ``date DESC``（``php/sql/sqldailyclose.php:31``），
+        所以语义是"这只标的最新一个交易日那一行"。
+
+        ``_updateStockHoldings``（``woody/res/php/_qdiimix.php:51``）拿
+        ``NetValueHistorySql::GetDateNow()`` 当"净值到哪天"的判据 —— 没有这个
+        方法，持仓更新编排就不知道净值新不新鲜。
+        """
+        columns = ", ".join("`%s`" % name for name in self.columns)
+        return self._fetchone(
+            "SELECT %s FROM `%s` WHERE stock_id = %%s ORDER BY `date` DESC LIMIT 1"
+            % (columns, self.table),
+            (stock_id,),
+        )
+
+    def get_date_now(self, stock_id: Any) -> Any:
+        """对应 PHP ``GetDateNow()``：最新一行的日期；一行都没有返回 ``None``。
+
+        PHP 用 ``_getDateString('GetRecordNow', ...)``，取不到返回 ``false``。
+        """
+        row = self.get_record_now(stock_id)
+        return row["date"] if row else None
+
+    def get_close_now(self, stock_id: Any) -> Any:
+        """对应 PHP ``GetCloseNow()``：最新一行的收盘值；没有返回 ``None``。
+
+        ``_HoldingsCsvFile::CalcCurrency()``（``woody/res/php/_holdingscsvfile.php:70``）
+        用 ``NetValueHistorySql::GetClose()`` 取不到时**回落**到它拿汇率中间价。
+        """
+        row = self.get_record_now(stock_id)
         return row["close"] if row else None
 
     def get_close_prev(self, stock_id: Any, date: Any) -> Any:

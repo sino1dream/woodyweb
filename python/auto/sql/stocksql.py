@@ -24,6 +24,13 @@ PHP 里 ``StockSql extends KeyNameSql extends TableSql``，构造函数里除了
 ``python/dbtools/``（见 ``build_schema.py`` / ``seed_demo_data.py``），
 页面层不需要写 ``stock`` 表。
 
+**2026-10-24 补写方法**：持仓写入链路（``updater/holdingsupdater.py``、
+``updater/etfholdings.py``）要从交易所申赎清单里**新建成分股符号** ——
+PHP 那边是 ``_HoldingsCsvFile::InsertHolding()`` 调
+``StockSql::InsertSymbol()``（``php/sql/sqlstocksymbol.php:156``）。
+所以 ``insert_symbol`` / ``write_symbol`` 必须在这一层，与上面"页面层不写
+stock 表"的旧结论不冲突：写的是**持仓明细链路**，不是页面。
+
 ## 排序与 limit 都照抄 PHP
 
 * 排序恒为 ``symbol ASC``（``KeyNameSql::GetAll()`` 里写死）；
@@ -119,6 +126,57 @@ class StockSql:
         )
         return row[STOCK_KEY_NAME] if row else None
 
+    # -- 写 -----------------------------------------------------------------
+    def insert_symbol(self, symbol: str, name: Any) -> Any:
+        """对应 PHP ``InsertSymbol()``（``php/sql/sqlstocksymbol.php:156``）。
+
+        没有这个符号才建行，返回新行的 ``id``；已存在返回 ``None``
+        （PHP 返回 ``false``）。**调用方是持仓写入链路**：交易所申赎清单里
+        的每个成分股都要先确保在 ``stock`` 表里有一行，否则
+        ``GetId()`` 取不到 id，整行持仓写不进去。
+
+        与 ``write_symbol`` 的分工照抄 PHP：``InsertSymbol`` 只插不改，
+        ``WriteSymbol`` 才是"没有就插、有就改名"的那个。
+        """
+        if self.get_record(symbol) is not None:
+            return None
+        return self.write_symbol(symbol, name)
+
+    def write_symbol(self, symbol: str, name: Any) -> Any:
+        """对应 PHP ``WriteSymbol()``（``php/sql/sqlstocksymbol.php:137``）。
+
+        * 符号不存在 → 插入，返回新行 ``id``；
+        * 已存在且**名称不同** → 改名，返回 ``None``；
+        * 已存在且名称相同 → 什么都不做，返回 ``None``。
+
+        PHP 的 ``SqlCleanString()`` 在这里被吃掉了 —— 它是
+        ``mysqli_real_escape_string`` 一类的 SQL 清理，本版全线参数化查询，
+        再由驱动自己转义，所以没有对应物。
+        """
+        record = self.get_record(symbol)
+        if record is not None:
+            if name is not None and name != record[STOCK_NAME_COLUMN]:
+                cursor = self.connection.cursor()
+                try:
+                    cursor.execute(
+                        "UPDATE `%s` SET `%s` = %%s WHERE `id` = %%s"
+                        % (STOCK_TABLE, STOCK_NAME_COLUMN),
+                        (name, record["id"]),
+                    )
+                finally:
+                    cursor.close()
+            return None
+        cursor = self.connection.cursor()
+        try:
+            cursor.execute(
+                "INSERT INTO `%s` (`%s`, `%s`) VALUES (%%s, %%s)"
+                % (STOCK_TABLE, STOCK_KEY_NAME, STOCK_NAME_COLUMN),
+                (symbol, name),
+            )
+            return cursor.lastrowid
+        finally:
+            cursor.close()
+
     # -- 内部 -------------------------------------------------------------
     def _fetchone(self, sql: str, params: Sequence[Any] = ()) -> Any:
         cursor = self.connection.cursor()
@@ -156,3 +214,6 @@ def stock_paging_columns(start: int, num: int, total: int) -> tuple:
 # PHP 原名别名（见 AGENTS.md：保留 camelCase 别名）
 # ---------------------------------------------------------------------------
 SqlBuildLimit = build_limit
+InsertSymbol = StockSql.insert_symbol
+WriteSymbol = StockSql.write_symbol
+GetId = StockSql.get_id

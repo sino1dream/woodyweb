@@ -32,7 +32,10 @@ from sql.historytable import (
     format_ratio_display,
     format_turnover_display,
     is_table_common_display,
+    mysql_round,
     percentage_change,
+    php_number_format,
+    php_round,
     stock_calc_hedge,
     use_same_day_net_value,
 )
@@ -586,6 +589,77 @@ class SwitchDatesTest(unittest.TestCase):
         rows = [("2026-10-19", "3.10"), ("2026-10-16", ""), ("2026-10-15", "3.00")]
         self.assertEqual(self._table(rows).get_switch_dates("1"),
                          ["2026-10-19", "2026-10-16"])
+
+
+class PhpRoundingTest(unittest.TestCase):
+    """``php_number_format`` / ``mysql_round`` / ``php_round`` 的 PHP 口径。
+
+    **期望值全部来自本地 PHP 8.0.10 的逐例实测**（不是手推的数学）：
+    ``php -n -d display_errors=stderr`` 跑 ``number_format`` / ``round`` /
+    ``strval`` 三件套，23 个用例逐位核对过。要点：
+
+    * PHP 的舍入按**最短十进制表示**做 half-away-from-zero（``2.675`` 的二进制
+      值虽然小于 2.675，PHP 仍然给 ``2.68``），Python 的 ``"%.2f"`` 按二进制
+      精确值 half-even（``2.675`` → ``'2.67'``）—— 两者在 ``.xx5`` 边界**必然
+      分叉**，而持仓测算表的「旧价格」列入参正是 MySQL 的三位小数串；
+    * ``number_format`` **结果为零时负号去掉**（``-0.004`` → ``'0.00'``）；
+    * ``mysql_round`` = ``strval(round(floatval(str), n))``：**保留 ``-0``**、
+      **削掉尾零**（``2.3995`` → ``'2.4'``）。
+    """
+
+    def test_number_format_half_away_from_zero_on_shortest_repr(self):
+        """.xx5 边界：PHP 按最短十进制 half-up，不是二进制 half-even。"""
+        cases = [
+            (2.675, 2, "2.68"),      # "%.2f" 会给 '2.67'
+            (1.005, 2, "1.01"),      # "%.2f" 会给 '1.00'
+            (0.125, 2, "0.13"),
+            (0.045, 2, "0.05"),
+            (100.035, 2, "100.04"),
+            (30.685, 2, "30.69"),
+            (2.3995, 2, "2.40"),     # 保留两位，不削尾零（与 mysql_round 不同）
+            (-2.675, 2, "-2.68"),    # 远离零方向，不是朝正数
+        ]
+        for value, digits, expected in cases:
+            with self.subTest(value=value, digits=digits):
+                self.assertEqual(php_number_format(value, digits), expected)
+
+    def test_number_format_negative_zero_becomes_positive(self):
+        """``number_format(-0.004, 2)`` 在 PHP 里是 ``'0.00'`` —— 负号去掉。"""
+        self.assertEqual(php_number_format(-0.004, 2), "0.00")
+        self.assertEqual(php_number_format(-0.00004, 4), "0.0000")
+
+    def test_number_format_keeps_trailing_zeros(self):
+        """``number_format`` 的另一半语义：位数不够要补零（尾行第 3 格的空格
+        与第 4 格的百分号都依赖这个行为）。"""
+        self.assertEqual(php_number_format(1.0, 2), "1.00")
+        self.assertEqual(php_number_format(0.0, 4), "0.0000")
+
+    def test_mysql_round_trims_trailing_zeros(self):
+        """``mysql_round`` = ``strval(round(...))``：尾零削掉。"""
+        self.assertEqual(mysql_round(2.3995, 2), "2.4")
+        self.assertEqual(mysql_round(1.0005, 2), "1")
+        self.assertEqual(mysql_round("1500.0", 2), "1500")
+        self.assertEqual(mysql_round("3.675", 2), "3.68")
+
+    def test_mysql_round_keeps_negative_zero(self):
+        """与 ``number_format`` 相反：``strval(round(-0.004, 2))`` 是 ``'-0'``。"""
+        self.assertEqual(mysql_round(-0.004, 2), "-0")
+
+    def test_mysql_round_default_precision_is_six(self):
+        """``FLOAT_PRECISION = 6``：``mysql_round('2.3995123')`` 只到 6 位。"""
+        self.assertEqual(mysql_round("2.3995123"), "2.399512")
+        self.assertEqual(mysql_round("2.39951235"), "2.399512")
+
+    def test_php_round_returns_float(self):
+        """``php_round`` 返回 float（给还需要的算术用），不是字符串。"""
+        self.assertEqual(php_round(2.675, 2), 2.68)
+        self.assertIsInstance(php_round(2.675, 2), float)
+
+    def test_unparsable_input_is_zero(self):
+        """PHP ``floatval`` 口径：空串 / 垃圾串 → 0.0，不抛错。"""
+        self.assertEqual(php_number_format("", 2), "0.00")
+        self.assertEqual(php_number_format("abc", 2), "0.00")
+        self.assertEqual(mysql_round("", 2), "0")
 
 
 if __name__ == "__main__":
