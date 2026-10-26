@@ -147,7 +147,11 @@ PHP 原文（``php/stock/stocksymbol.php:1173``）::
    沿用详情页"宁可少一块，也不摆空表让人以为数据丢了"的既定做法。
 5. **建不出引用对象的符号跳过**（PHP 会直接 fatal）。
 6. **``php/stocklink.php`` 里的基金公司链接区不迁**（``GetEFundSoftwareLinks``
-   等二十来个函数）—— 那是页面页脚，本项目还没有那一块。
+   等二十来个函数）—— 那是页面底部的"基金公司软件"外链区，本项目还没有那一块。
+   注意别和 ``$acct->EchoLinks()``（"相关链接"页脚）搞混：**后者已经迁了**
+   （``web/services/site_links.py`` + ``base.html`` 两段页脚，
+   见 ``README_exhaustive_holdings_migration.md`` §8.5）；
+   这一条说的是 ``stocklink.php`` 那组针对具体基金公司站点的外链，仍未迁。
 
 ## 七、文件
 

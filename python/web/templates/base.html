@@ -45,7 +45,27 @@
     {% block content %}{% endblock %}
   </main>
   <footer class="site-footer {% if main_class == 'wide' %}wide{% endif %}">
-    Python 迁移第一版，仅展示已迁移的基金估值数据。
+    {# 页脚导航 —— 对应 PHP 每个页面末尾的 $acct->EchoLinks()
+       （woody/res/php/_stockaccount.php:126）。两段：本站点入口 +
+       生产端对照，数据由 web/services/site_links.py 给，顺序照 PHP：
+       工具页 → 股票菜单 → 个人 → 管理员 → 分类。
+
+       修不好就整段不出现（服务层的 safe_footer_sections 兜异常）——
+       页脚拼错不该让业务页面 500。 #}
+    {% for section in footer_sections %}
+      <div class="footer-links">
+        <span class="footer-label">{{ section.title }}</span>
+        {% for link in section.links %}
+          {# 外链带 ↗ 并新窗口打开：点过去是生产端站点，先让人有预期 #}
+          {% if link.external %}
+            <a href="{{ link.url }}" target="_blank" rel="noopener noreferrer">{{ link.text }}&nbsp;&#8599;</a>
+          {% else %}
+            <a href="{{ link.url }}">{{ link.text }}</a>
+          {% endif %}
+        {% endfor %}
+      </div>
+    {% endfor %}
+    <div class="footer-note">Python 迁移第一版，仅展示已迁移的基金估值数据。</div>
   </footer>
 </body>
 </html>

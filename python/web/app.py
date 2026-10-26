@@ -38,6 +38,8 @@ from web.services.calibration_service import (
 )
 from web.services.reference_service import ReferenceService, default_reference_service_factory
 from web.services.status_service import default_status_service_factory
+from web.services.admin_auth import is_admin
+from web.services.site_links import safe_footer_sections
 from web.services.sma_service import SmaService, default_sma_service_factory
 from web.services.stock_service import StockService, default_stock_service_factory
 from web.services.trading_service import TradingService, default_trading_service_factory
@@ -212,6 +214,33 @@ def create_app(
 
     init_app(app)
     register_blueprints(app)
+
+    @app.context_processor
+    def inject_footer_links():
+        """给 ``base.html`` 的页脚注入 ``EchoLinks()`` 那两段链接。
+
+        为什么用 context processor 而不是每个视图各传一次：PHP 那边
+        ``EchoLinks()`` 是**每个页面 ``EchoAll()`` 末尾**的一句调用
+        （见 ``web/services/site_links.py`` 的模块 docstring），要的就是
+        "所有页面都有"。放到 ``base.html`` 的上下文里是同一语义，且新增
+        页面不用记得传。
+
+        ``symbol`` / ``group`` 从 ``request.view_args`` 取 —— 那是路由已经
+        匹配掉的变量（``/stock/<symbol>`` 的符号、``/fund/<group>`` 的分组），
+        页脚据此补一条详情页链接、并把当前分组从列表中排除。
+
+        **永远不抛异常**：页脚拼错不该让整页 500，见
+        ``site_links.safe_footer_sections``。
+        """
+        view_args = request.view_args or {}
+        return {
+            "footer_sections": safe_footer_sections(
+                url_for,
+                symbol=view_args.get("symbol"),
+                current_group=view_args.get("group"),
+                is_admin=is_admin(),
+            ),
+        }
 
     @app.errorhandler(FundNotFoundError)
     def handle_fund_not_found(exc: FundNotFoundError):

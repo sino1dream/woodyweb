@@ -28,10 +28,12 @@ verify    「验证最激进数据」           克莱姆法则解"最激进"的
 
 * **没有账号层**：PHP 整页在 ``$acct->EchoStockGroup()`` 后面，还带
   ``GetEditInput()`` 的阈值表单；本版的登录态收敛成路由参数（固定 demo
-  身份、权限闸门恒开，与 admin 分组页同一套路），阈值走 ``?input=``；
-* **管理员写入链接不生成**：PHP 在"仓位合理但比例不匹配"时给一个
-  ``submitholdings.php`` 的确认链接。写回仓位需要管理员校验，而账号体系暂缓，
-  所以这里恒不生成（``core.exhaustiveholdings.position_cell`` 留了注入口）。
+  身份、权限闸门由 ``web/services/admin_auth.py`` 真判），阈值走 ``?input=``；
+* **管理员写入控件由路由造 HTML**：PHP 的"确认更新持仓"是
+  ``GetOnClickLink()`` 拼的一个 GET 链接。本版写操作一律 POST，所以那一格
+  是一个 ``<form>`` + ``<button>``；服务层只负责算载荷与确认话术
+  （``encode_holdings_payload`` / ``confirm_update_question``），HTML 由
+  路由注入（``update_form_builder``）—— 服务层不认识 ``url_for``。
 """
 
 from __future__ import annotations
@@ -45,8 +47,11 @@ install_paths()
 from core.exhaustiveholdings import (  # noqa: E402
     DEFAULT_EXHAUSTIVE_ROWS,
     HOLDINGS_NETVALUE_DIFF,
-    ExhaustiveHoldingsCalculator,
+    UpdateCell,
+    confirm_update_question,
+    encode_holdings_payload,
     get_quarter_holdings_extra,
+    ExhaustiveHoldingsCalculator,
     switch_date_pairs,
 )
 from ref.holdingsref import StockGetHoldingsReference  # noqa: E402
@@ -54,6 +59,7 @@ from sql.historytable import (  # noqa: E402
     NetValueHistorySql,
     QuarterReportSql,
     TableRow,
+    php_number_format,
 )
 from ui.uicolumn import (  # noqa: E402
     STOCK_DISP_POSITION,
@@ -164,11 +170,20 @@ def _display_of(ref: Any) -> str:
 
 
 def _row(cells: list, match: bool = False, background: str = "") -> TableRow:
-    """cells 已是 ``(文本, 颜色)`` 二元组或纯文本 —— ``TableRow.add`` 两种都收。"""
+    """cells 已是 ``(文本, 颜色)`` 二元组或纯文本 —— ``TableRow.add`` 两种都收。
+
+    :class:`~core.exhaustiveholdings.UpdateCell` 的那一格要记进
+    ``row.html_indexes``（模板对那几个下标不转义）—— 那是管理员的
+    "确认更新持仓"控件，是 HTML 不是文本。
+    """
     row = TableRow(match=match, background=background)
     for cell in cells:
         if isinstance(cell, tuple) and len(cell) == 2:
-            row.add(cell[0], cell[1])
+            text, color = cell
+            if isinstance(text, UpdateCell):
+                row.html_indexes.append(len(row.cells))
+                text = str(text)
+            row.add(text, color)
         else:
             row.add(cell)
     return row
@@ -177,9 +192,17 @@ def _row(cells: list, match: bool = False, background: str = "") -> TableRow:
 class ExhaustiveHoldingsService:
     """把一只基金的穷举持仓页装配成模板要的 dict。"""
 
-    def __init__(self, source: Any = None):
+    def __init__(self, source: Any = None, update_form_builder: Any = None):
         #: 数据源（``MySqlFundDataSource``）：查持仓明细、净值历史、季报
         self.source = source
+        #: 管理员"确认更新持仓"控件的 HTML 构造器。契约::
+        #:
+        #:     update_form_builder(symbol, payload, position_text, question) -> html
+        #:
+        #: ``payload`` 是写回条的编码串（``"GLD":"101.00"``），``question``
+        #: 是确认话术（已去掉双引号）。**为 None 时不生成控件** —— 路由
+        #: 只在管理员时传它，服务层因此不需要自己判权限。
+        self.update_form_builder = update_form_builder
 
     # -- 对外 -------------------------------------------------------------
     def get_page(
@@ -210,6 +233,7 @@ class ExhaustiveHoldingsService:
         percentage = HOLDINGS_NETVALUE_DIFF if threshold is None else float(threshold)
         calculator = ExhaustiveHoldingsCalculator(
             holdings_ref, net_sql, percentage / 100.0, count, admin=admin,
+            update_href=self._update_href_of(symbol, holdings_ref, admin),
         )
 
         page = {
@@ -324,6 +348,28 @@ class ExhaustiveHoldingsService:
         }
 
     # -- 取数 -------------------------------------------------------------
+    def _update_href_of(self, symbol: str, holdings_ref: Any, admin: bool):
+        """拼出 ``position_cell`` 要的回调；不该给控件时返回 ``None``。
+
+        三道闸：不是管理员 / 没注入 HTML 构造器 / 服务没拿到 ref —— 任一不满足
+        就返回 ``None``，``position_cell`` 于是只显示数字。**权限判定不在这里**
+        （``admin`` 由路由从 ``admin_auth.is_admin()`` 传进来），这里只做
+        "有没有能力渲染"的判断。
+        """
+        if not admin or self.update_form_builder is None:
+            return None
+
+        def symbol_of(stock_id: Any) -> str:
+            return _stock_symbol(holdings_ref, stock_id)
+
+        def update_href(ratios: dict, position: float) -> str:
+            payload = encode_holdings_payload(ratios, position, symbol_of)
+            position_text = php_number_format(position, 2)
+            question = confirm_update_question(payload, position_text)
+            return self.update_form_builder(symbol, payload, position_text, question)
+
+        return update_href
+
     def _build_holdings_ref(self, symbol: str) -> Any:
         """``new HoldingsReference($strSymbol)``；连不上库时返回 ``None``。"""
         try:
@@ -360,9 +406,11 @@ def build_exhaustive_page(
     threshold: Optional[float] = None,
     num: int = DEFAULT_EXHAUSTIVE_ROWS,
     admin: bool = False,
+    update_form_builder: Any = None,
 ) -> Optional[dict]:
     """一步到位的便捷函数（路由与测试都用它）。"""
-    return ExhaustiveHoldingsService(source).get_page(
+    return ExhaustiveHoldingsService(
+        source, update_form_builder=update_form_builder).get_page(
         symbol, threshold=threshold, num=num, admin=admin)
 
 

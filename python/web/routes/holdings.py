@@ -28,7 +28,15 @@ from __future__ import annotations
 
 from typing import Any
 
-from flask import Blueprint, current_app, render_template, request, url_for
+from flask import (
+    Blueprint,
+    current_app,
+    flash,
+    redirect,
+    render_template,
+    request,
+    url_for,
+)
 
 from web.bootstrap import install_paths
 
@@ -39,6 +47,7 @@ from core.exhaustiveholdings import (  # noqa: E402
     DEFAULT_EXHAUSTIVE_ROWS,
     HOLDINGS_NETVALUE_DIFF,
 )
+from web.services.admin_auth import denied_message, is_admin  # noqa: E402
 from web.services.holdings_service import HoldingsService  # noqa: E402
 
 
@@ -61,6 +70,34 @@ def _get_history_service():
     """净值记录段落服务（``EchoNetValueHistoryParagraph``）。"""
     factory = current_app.extensions.get("history_service_factory")
     return None if factory is None else factory()
+
+
+def _source():
+    """写入口取数据源：``holdings_write_source_factory`` → ``admin_source_factory``
+    → 请求级库连接。
+
+    三级回落是为了两条路都能注入：管理页的测试注 ``admin_source_factory``，
+    持仓写入口的测试注 ``holdings_write_source_factory``；都没有才连库。
+    """
+    for key in ("holdings_write_source_factory", "admin_source_factory"):
+        factory = current_app.extensions.get(key)
+        if factory is not None:
+            return factory()
+    from core.stockdata import MySqlFundDataSource
+    from web.db import get_db
+
+    return MySqlFundDataSource(get_db())
+
+
+def _process_admin_holdings(source, symbol, params, *, admin):
+    """薄包一层 ``updater.holdingsupdater.process_admin_holdings``。
+
+    包一层的唯一理由是**可替换**：路由测试要验"非管理员一个字节都不写"，
+    真实现会连库。测试 monkeypatch 本函数即可。
+    """
+    from updater.holdingsupdater import process_admin_holdings
+
+    return process_admin_holdings(source, symbol, params, admin=admin)
 
 
 def _get_service() -> HoldingsService:
@@ -131,13 +168,74 @@ def _get_exhaustive_service():
 
     与 ``_get_service`` 同一套约定：默认实现从**现有**工厂取 ``source``,
     不新增 app 级工厂注册。
+
+    管理员写入控件的 HTML 构造器**在这里注入**（``update_form_builder``）——
+    服务层不认识 ``url_for``，`<form action>` 只能在这一层拼。
+    非管理员时也照传，是否真的用得上由服务层按 ``admin`` 判定。
     """
     factory = current_app.extensions.get("exhaustive_holdings_service_factory")
     if factory is not None:
         return factory()
     from web.services.exhaustive_holdings_service import ExhaustiveHoldingsService
 
-    return ExhaustiveHoldingsService(getattr(_get_reference_service(), "source", None))
+    return ExhaustiveHoldingsService(
+        getattr(_get_reference_service(), "source", None),
+        update_form_builder=_update_holdings_form,
+    )
+
+
+def _update_holdings_form(symbol: str, payload: str, position_text: str,
+                          question: str) -> str:
+    """管理员那一格的 HTML：一个带确认弹窗的 POST 表单。
+
+    对应 PHP ``__getPosDisplay`` 里那句（``exhaustiveholdingscn.php:43``）::
+
+        GetOnClickLink(PATH_STOCK.'submitholdings.php?symbol=…&holdings='.urlencode($str),
+                       '确认更新持仓'.$str.'和仓位'.$strPos.'？', $strPos)
+
+    ## 为什么不是链接
+
+    PHP 那个链接点了就 GET —— 一个查询串带副作用。本站点从后台分组页起
+    就定了"写操作一律 POST"（``routes/admin.py`` 的取舍 1），这里照办：
+    载荷进 hidden input，``onsubmit`` 里弹确认。
+
+    ## 为什么按钮文本是仓位数字
+
+    PHP 的链接显示文本就是 ``$strPos``（仓位），点之前看到的就是"1.01"这个
+    数字。保持同形：数字本身就是"点它能把这个数写回去"的意思，旁边不加
+    "更新"字样。``title`` 放完整说明，鼠标悬停才看到。
+
+    ## 转义
+
+    ``question`` 里已经去掉了双引号（``GetOnClickLink`` 的口径），但它还含
+    单引号风险 —— 话术是拼出来的（``确认更新持仓GLD:101.00和仓位1.01？``），
+    没有用户自由输入，所以照 PHP 只做"去双引号"。载荷与符号走 Jinja 自动
+    转义前先 ``markupsafe.escape``，避免符号里出现 ``"`` 时截断属性。
+
+    表单形态与 ``admin_groups.html`` 的"删除"按钮一致（
+    ``style="display:inline"`` + ``class="link-button"``），站点里只有一套
+    表格内按钮的样式。
+    """
+    from markupsafe import escape
+
+    return (
+        '<form method="post" action="%s" style="display:inline;"'
+        ' onsubmit="return confirm(\'%s\')">'
+        '<input type="hidden" name="symbol" value="%s">'
+        '<input type="hidden" name="holdings" value="%s">'
+        '<button type="submit" class="link-button"'
+        ' title="把算出来的比例 %s 和仓位 %s 写回库（对应 PHP submitholdings.php）">'
+        '%s</button>'
+        '</form>'
+    ) % (
+        url_for("holdings.submit_holdings"),
+        escape(question),
+        escape(symbol),
+        escape(payload),
+        escape(payload),
+        escape(position_text),
+        escape(position_text),
+    )
 
 
 def _resolve_threshold(raw):
@@ -172,8 +270,9 @@ def exhaustive_holdings_page(symbol: str):
 
     **没有账号层**：PHP 是 ``SymbolAccount`` + ``$acct->EchoStockGroup()``
     （登录 + 分组可见性）。本项目的账号体系暂缓，按 admin 分组页的既定做法
-    收敛成"固定 demo 身份 + 权限闸门恒开"，所以这里不带任何鉴权参数,
-    直接从 URL 取符号 —— 用户要的就是"不用登录客户界面，直接跳转"。
+    收敛成"固定 demo 身份"—— 但"是不是管理员"是真判的
+    （``web/services/admin_auth.is_admin()``，比对 ``ADMIN_EMAIL``），
+    只是演示环境的默认身份就是管理员，所以不用登录也能看到写入控件。
 
     阈值走 ``?input=``（GET）：这个参数只影响读，没有副作用，保留 GET 是
     照抄 PHP 的表单形态（写操作才一律 POST，见 ``/transactions``）。
@@ -185,8 +284,8 @@ def exhaustive_holdings_page(symbol: str):
             symbol,
             threshold=threshold,
             num=DEFAULT_EXHAUSTIVE_ROWS,
-            #: 管理员写入链接恒关（见 core.exhaustiveholdings.position_cell）
-            admin=False,
+            #: PHP 传 ``$acct->IsAdmin()`` —— 决定"确认更新持仓"控件给不给
+            admin=is_admin(),
         )
     return render_template(
         "exhaustive_holdings.html",
@@ -195,4 +294,217 @@ def exhaustive_holdings_page(symbol: str):
         threshold_input=threshold_input,
         default_threshold=HOLDINGS_NETVALUE_DIFF,
         skipped_by_input=not render,
+        is_admin=is_admin(),
     )
+
+
+# ---------------------------------------------------------------------------
+# 管理员写入口（woody/res/submitholdings.php）
+# ---------------------------------------------------------------------------
+@holdings_bp.route("/holdings/submit", methods=["POST"])
+def submit_holdings():
+    """把穷举表算出来的比例写回库（PHP ``submitholdings.php``）。
+
+    对应 PHP ``_AdminHoldingsAccount::AdminProcess()``::
+
+        if ($strHoldings = UrlGetQueryValue('holdings'))
+        {
+            $ref = new HoldingsReference($strSymbol);
+            if ($strDate = $ref->GetHoldingsDate())
+                UpdateStockOptionHoldings($strStockId, $strDate, $strHoldings);
+        }
+        if ($strPosition = UrlGetQueryValue('fundposition'))
+            $pos_sql->WriteVal($strStockId, $strPosition);
+
+    ## 与 PHP 的三处差异
+
+    1. **POST 不是 GET**（本站点写操作一律 POST）；
+    2. **权限闸门真的判**：PHP 的 ``AdminRun()`` 里 ``if ($this->IsAdmin())``
+       是唯一一道闸；这里把判定结果当 ``admin=`` 传给
+       ``process_admin_holdings``，非管理员一个字节都不写库；
+    3. 表单里没有 ``login``/``email`` 字段：PHP 用它查会员，本地只写符号的
+       持仓（``fundposition`` 分支同理），与账号体系暂缓一致。
+    """
+    symbol = (request.form.get("symbol") or "").strip()
+    if not is_admin():
+        return render_template(
+            "error.html", message=denied_message(), status=403), 403
+    if not symbol:
+        return render_template(
+            "error.html", message="缺少 symbol 参数。", status=400), 400
+
+    params: dict = {}
+    if request.form.get("holdings"):
+        params["holdings"] = request.form["holdings"]
+    if request.form.get("fundposition"):
+        params["fundposition"] = request.form["fundposition"]
+
+    result = _process_admin_holdings(_source(), symbol, params, admin=True)
+    if result.get("updated"):
+        flash("%s：持仓已更新（日期取库里现有的持仓日）。" % symbol)
+    elif params.get("holdings"):
+        flash("%s：没有写入 —— 编码串解析失败或取不到持仓日。" % symbol)
+    return redirect(url_for("holdings.exhaustive_holdings_page", symbol=symbol))
+
+
+# ---------------------------------------------------------------------------
+# 季报持仓写入口（woody/res/editquarterreportcn.php + submitstockoptions.php）
+# ---------------------------------------------------------------------------
+#: PHP ``_getStockOptionVal()`` 的 REPORT 分支在没有历史数据时给的样例值
+#: （``_editstockoptionform.php:293``）。照抄这个字面量：它同时充当"格式示例"
+#: —— 管理员看到就知道要写 ``"符号":百分比`` 的串。
+QUARTER_REPORT_SAMPLE = '"AAA":"60","BBB":"40"'
+
+#: ``_getStockOptionMemo()`` 的 REPORT 分支（``_editstockoptionform.php:342``）。
+QUARTER_REPORT_MEMO = "清空输入删除对应日期季报数据。"
+
+
+def _quarter_report_context(symbol: str) -> dict:
+    """季报编辑页要的取数：当前最新日期 / 该日期的值 / 错误说明。
+
+    对应 ``_getStockOptionDate()`` + ``_getStockOptionVal()`` 的 REPORT 分支
+    （``_editstockoptionform.php:44-47`` / ``:290-293``）::
+
+        $quarter_sql = new QuarterReportSql();
+        if ($strDate = $quarter_sql->GetDateNow($strStockId))  return $strDate;
+        return $strYMD;                                    // 今天
+
+        if ($strClose = $quarter_sql->GetCloseNow($strStockId))  return $strClose;
+        return '"AAA":"60","BBB":"40"';
+
+    取不到符号时 `stock_id` 为 `None`，两个默认值仍按 PHP 的口径给
+    （日期 = 今天、值 = 样例），页面能照常显示，只是写不进去 —— 与 PHP
+    遇到不存在的符号时表现一致（那边 `SqlGetStockId` 为假，
+    ``WriteDaily`` 会写进 ``stock_id = 0``；本版宁可不写，见路由的注释）。
+    """
+    from sql.historytable import QuarterReportSql
+    from sql.stocksql import StockSql
+
+    source = _source()
+    stock_sql = StockSql(getattr(source, "connection", None))
+    stock_id = None
+    try:
+        stock_id = stock_sql.get_id(symbol)
+    except Exception:
+        stock_id = None
+
+    date_text = ""
+    value_text = ""
+    quarter_sql = QuarterReportSql(getattr(source, "connection", None))
+    if stock_id:
+        try:
+            date_text = quarter_sql.get_date_now(stock_id) or ""
+            value_text = quarter_sql.get_close_now(stock_id) or ""
+        except Exception:
+            date_text, value_text = "", ""
+    return {
+        "symbol": symbol,
+        "stock_id": stock_id,
+        "date": date_text or today_ymd(),
+        "value": value_text or QUARTER_REPORT_SAMPLE,
+        "memo": QUARTER_REPORT_MEMO,
+    }
+
+
+def today_ymd() -> str:
+    """``GetNowYMD()->GetYMD()``：今天（``Y-m-d``，服务器本地时区）。"""
+    import datetime
+
+    return datetime.date.today().strftime("%Y-%m-%d")
+
+
+def _php_empty(text: Any) -> bool:
+    """PHP ``empty($strVal)`` 的字符串口径。
+
+    ``''`` 与 ``'0'`` **都算空** —— 这是 PHP 里最容易踩的一条：管理员想
+    把某天的季报改成 0（``'0'``）时，PHP 那边是**删除那一行**，不是写 0。
+    照抄，别"修正"成"只有空串才删"。
+    """
+    if text is None:
+        return True
+    text = str(text)
+    return text == "" or text == "0"
+
+
+@holdings_bp.route("/holdings/quarter/<symbol>", methods=["GET", "POST"])
+def quarter_report_page(symbol: str):
+    """季报持仓编辑页（PHP ``editquarterreportcn.php`` → ``_editstockoption.php``）。
+
+    PHP 那个页面是**通用股票选项表单**的一张皮：``GetStockOptionArray()``
+    里十几个选项（分红 / 拆分 / EMA / 净值 / 校准 / 季报 …）共用同一个
+    ``_editstockoptionform.php`` 与 ``submitstockoptions.php``，靠
+    ``$_POST['submit']`` 的值分派。本版只迁 **REPORT（季报）** 这一支 ——
+    其余选项各自还需要一整条写链路（拆分要改复权价、分红要重算校准…），
+    不在这块范围里。
+
+    于是形态也跟着收敛成"专属表单"：日期 + 值两个框，比通用表单少
+    login/symbol 两个只读框（本地不写会员）。
+
+    ## 写入语义（``_updateOptionDailySql``，``_submitstockoptions.php:208``）
+
+    * 值 **empty**（含 ``'0'``）→ ``DeleteByDate(stock_id, date)``；
+    * 否则 → ``WriteDaily``（值没变就不写，见
+      :meth:`sql.historytable.DailyStringSql.write_daily`）。
+
+    ## 权限
+
+    与其它写入口一致：``is_admin()`` 为假直接 403，表单只读展示。
+    """
+    admin = is_admin()
+    if request.method == "POST":
+        if not admin:
+            return render_template(
+                "error.html", message=denied_message(), status=403), 403
+        return _submit_quarter_report(symbol)
+
+    context = _quarter_report_context(symbol)
+    return render_template(
+        "quarter_report.html",
+        admin=admin,
+        error="",
+        **context,
+    )
+
+
+def _submit_quarter_report(symbol: str):
+    """POST 分支：写或删一条季报记录，然后回到本页（POST-Redirect-GET）。"""
+    from sql.historytable import QuarterReportSql
+    from sql.stocksql import StockSql
+
+    date = (request.form.get("date") or "").strip()
+    value = request.form.get("value")
+    value = "" if value is None else str(value)
+
+    source = _source()
+    stock_sql = StockSql(getattr(source, "connection", None))
+    stock_id = None
+    try:
+        stock_id = stock_sql.get_id(symbol)
+    except Exception:
+        stock_id = None
+
+    def _back(error: str, status: int = 200):
+        context = _quarter_report_context(symbol)
+        context.update({"date": date or context["date"], "value": value})
+        return render_template(
+            "quarter_report.html", admin=is_admin(), error=error, **context), status
+
+    if not stock_id:
+        #: PHP 那边 `SqlGetStockId` 取不到会走 `stock_id = 0`（写进脏行）；
+        #: 本版拒绝 —— 季报本来就不该出现在一个库里没有的符号上。
+        return _back("stock 表里没有符号 %s，没有写入。" % symbol, 400)
+    if not date:
+        #: PHP ``InsertDaily`` 的第一道闸：`if ($strDate == '') return false;`
+        return _back("日期不能为空。", 400)
+
+    quarter_sql = QuarterReportSql(getattr(source, "connection", None))
+    if _php_empty(value):
+        deleted = quarter_sql.delete_by_date(stock_id, date)
+        flash("%s %s：已删除季报记录（%d 行）。" % (symbol, date, deleted))
+    else:
+        written = quarter_sql.write_daily(stock_id, date, value)
+        if written:
+            flash("%s %s：季报已写入。" % (symbol, date))
+        else:
+            flash("%s %s：值没有变化，未写入。" % (symbol, date))
+    return redirect(url_for("holdings.quarter_report_page", symbol=symbol))

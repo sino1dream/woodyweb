@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{# 季报持仓编辑页 —— woody/res/editquarterreportcn.php（→ php/_editstockoption.php
+   + _editstockoptionform.php 的 REPORT 分支）。
+
+   与 PHP 的关系：那边是**通用股票选项表单**（分红/拆分/EMA/净值/校准/季报…
+   十几个选项共用一张表单，靠 $_POST['submit'] 分派）。本地只迁季报这一支，
+   所以形态收敛成"日期 + 值"两个框 —— 少了 login / symbol 两个只读框，
+   因为本地不写会员（账号体系暂缓）。
+
+   值那一栏是"符号:百分比"的编码串，由 StockOptionDecodeHoldings 解回比例；
+   清空（或填 0）表示删除那一天 —— 见 _php_empty 的注释。 #}
+{% block title %}{{ symbol }} 季报持仓{% endblock %}
+{% block content %}
+  <h1>{{ symbol }} 季报持仓</h1>
+
+  <p class="table-note">
+    <code>{{ memo }}</code>
+    值的写法是 <code>"符号":百分比</code> 的编码串（例如 <code>"GLD":100</code>），
+    与生产端 <code>editquarterreportcn.php</code> 完全一致；
+    解析器会把比例归一化成合计 100。
+  </p>
+
+  {% if error %}
+    <ul class="flash"><li>{{ error }}</li></ul>
+  {% endif %}
+
+  {% if not admin %}
+    <p class="hint">
+      当前身份不是管理员，只能查看不能写。本地演示环境默认就是管理员身份
+      （<code>web/services/admin_auth.py</code>）；要把自己切成非管理员来验权限，
+      设环境变量 <code>PALMMICRO_ADMIN_EMAIL=someone@example.com</code> 即可。
+    </p>
+  {% endif %}
+
+  <form class="edit-input-form" method="post"
+        action="{{ url_for('holdings.quarter_report_page', symbol=symbol) }}">
+    <label for="date">日期</label>
+    <input type="text" id="date" name="date" size="12" value="{{ date }}"
+           {% if not admin %}readonly{% endif %}>
+
+    <label for="value">季报</label>
+    <textarea id="value" name="value" rows="6" cols="70"
+              {% if not admin %}readonly{% endif %}>{{ value }}</textarea>
+
+    <button type="submit" {% if not admin %}disabled{% endif %}>提交</button>
+  </form>
+
+  <p class="table-note">
+    提交后在 <a href="{{ url_for('holdings.exhaustive_holdings_page', symbol=symbol) }}">穷举持仓页</a>
+    的「季报持仓」表里立刻能看到 —— 那一表逐行对比季报比例与当前持仓比例，
+    不一致的行不标黄。
+  </p>
+
+  <p>
+    <a href="{{ url_for('holdings.exhaustive_holdings_page', symbol=symbol) }}">穷举持仓比例</a>
+    <a href="{{ url_for('holdings.holdings_page', symbol=symbol) }}">基金持仓</a>
+    <a href="{{ url_for('stock.stock_detail_page', symbol=symbol) }}">股票详情</a>
+  </p>
+{% endblock %}

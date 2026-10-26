@@ -169,9 +169,25 @@ class ExhaustiveRouteTest(unittest.TestCase):
         html = self.client.get("/holdings/exhaustive/SZ164701?input=2.5").get_data(as_text=True)
         self.assertIn('value="2.5"', html)
 
-    def test_admin_link_disabled(self):
-        """管理员写入链接恒关（账号体系暂缓）。"""
+    def test_admin_flag_is_true_for_demo_identity(self):
+        """``admin=`` 传的是 ``is_admin()`` —— 演示环境的默认身份就是管理员。
+
+        2026-10-26 之前这里是 ``False``（写入链接恒关，因为
+        ``process_admin_holdings`` 没有权限检查）。补上闸门之后不再需要关它，
+        所以断言反过来：**给管理员**，但闸门是真的（见
+        ``test_admin_flag_false_for_other_identity``）。
+        """
         self.client.get("/holdings/exhaustive/SZ164701")
+        self.assertTrue(self.service.calls[0]["admin"])
+
+    def test_admin_flag_false_for_other_identity(self):
+        """换成非管理员身份 → ``admin=False``（页面上的写入控件随之消失）。"""
+        import os
+
+        from unittest import mock
+
+        with mock.patch.dict(os.environ, {"PALMMICRO_ADMIN_EMAIL": "guest@example.com"}):
+            self.client.get("/holdings/exhaustive/SZ164701")
         self.assertFalse(self.service.calls[0]["admin"])
 
     def test_no_page_still_200(self):
@@ -179,6 +195,70 @@ class ExhaustiveRouteTest(unittest.TestCase):
         response = self.client.get("/holdings/exhaustive/SZ164701")
         self.assertEqual(200, response.status_code)
         self.assertIn("取不到该基金的持仓数据", response.get_data(as_text=True))
+
+
+class AdminUpdateFormTest(unittest.TestCase):
+    """管理员"确认更新持仓"控件：HTML 要透传，且只在服务层给的时候出现。
+
+    PHP 那一格是 ``GetOnClickLink()`` 拼好的 HTML（``exhaustiveholdingscn.php:43``），
+    由 ``EchoTableColumn($ar)`` 原样输出。本版走 ``TableRow.html_indexes``
+    透传 —— 如果漏了这个下标，页面上会看到 ``&lt;form`` 的转义源码，
+    按钮点不动而且很难发现是转义问题。
+    """
+
+    FORM = ('<form method="post" action="/holdings/submit" style="display:inline;"'
+            ' onsubmit="return confirm(\'确认更新持仓GLD:50.00和仓位1.00？\')">'
+            '<input type="hidden" name="holdings" value="\'\'">'
+            '<button type="submit" class="link-button">1.00</button></form>')
+
+    def _app(self):
+        service = FakeService()
+        row = TableRow(match=False)
+        for cell in ("2026-10-22", "1.546", "-2.64%", "0", "50"):
+            row.add(cell)
+        row.add(self.FORM)
+        row.html_indexes.append(5)
+        service.page["quarter"] = None
+        service.page["exhaustive"]["rows"] = [row]
+        app = create_app({"TESTING": True})
+        app.extensions["exhaustive_holdings_service_factory"] = lambda: service
+        return app
+
+    def test_form_html_is_not_escaped(self):
+        html = self._app().test_client().get(
+            "/holdings/exhaustive/SZ164701").get_data(as_text=True)
+        self.assertIn('<form method="post" action="/holdings/submit"', html)
+        self.assertNotIn("&lt;form", html)
+
+    def test_admin_note_mentions_clickable_position(self):
+        html = self._app().test_client().get(
+            "/holdings/exhaustive/SZ164701").get_data(as_text=True)
+        self.assertIn("仓位格是一个可点的数字", html)
+
+    def test_admin_note_hidden_for_non_admin(self):
+        import os
+
+        from unittest import mock
+
+        with mock.patch.dict(os.environ, {"PALMMICRO_ADMIN_EMAIL": "guest@example.com"}):
+            html = self._app().test_client().get(
+                "/holdings/exhaustive/SZ164701").get_data(as_text=True)
+        self.assertNotIn("仓位格是一个可点的数字", html)
+
+    def test_submit_holdings_denied_for_non_admin(self):
+        """非管理员 POST 写入口 → 403（闸门在路由上，不靠页面藏按钮）。"""
+        import os
+
+        from unittest import mock
+
+        with mock.patch.dict(os.environ, {"PALMMICRO_ADMIN_EMAIL": "guest@example.com"}):
+            response = self._app().test_client().post(
+                "/holdings/submit", data={"symbol": "SZ164701", "holdings": '"GLD":100'})
+        self.assertEqual(403, response.status_code)
+
+    def test_submit_holdings_missing_symbol(self):
+        response = self._app().test_client().post("/holdings/submit", data={})
+        self.assertEqual(400, response.status_code)
 
 
 class NoteLinkTest(unittest.TestCase):

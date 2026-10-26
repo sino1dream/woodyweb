@@ -57,12 +57,20 @@
     {% endif %}
 
     {# ---- ③ 季报持仓 ----
-         季报里出现过、但当前持仓没有的标的会额外占几列（服务层按同一顺序填格）。 #}
+         季报里出现过、但当前持仓没有的标的会额外占几列（服务层按同一顺序填格）。
+         标题旁的「编辑」指向季报写入口（PHP 的 editquarterreportcn.php）——
+         PHP 那边这个入口在账号后台的选项菜单里，本地放在这里最好找。 #}
     {% if page.quarter %}
-      <h2>{{ page.quarter.title }}</h2>
+      <h2>{{ page.quarter.title }}
+        <a class="table-note"
+           href="{{ url_for('holdings.quarter_report_page', symbol=symbol) }}">编辑</a>
+      </h2>
       {{ data_table(page.quarter, "holdings-quarter-table") }}
     {% else %}
-      <p class="table-note">库里没有该基金的季报持仓记录。</p>
+      <p class="table-note">
+        库里没有该基金的季报持仓记录。
+        <a href="{{ url_for('holdings.quarter_report_page', symbol=symbol) }}">新增一条季报</a>
+      </p>
     {% endif %}
 
     {% if not page.solvable %}
@@ -90,6 +98,10 @@
     <p class="table-note">
       黄底行 = 算出来的比例与库里现有持仓**逐格一致**；红字 = 负数比例或仓位落在
       0.25–1.25 之外（方程解崩了，多半是那几天的行情有缺口）。
+      {% if is_admin %}
+        仓位格是一个可点的数字（管理员才有）：点了确认就会把这一行算出来的
+        比例与仓位写回库，对应生产端的「确认更新持仓」链接。
+      {% endif %}
     </p>
   {% endif %}
 
