@@ -201,6 +201,8 @@ cd python/web && python -B -m unittest tests.test_quarter_report
 | `/holdings/exhaustive/SH513050` | 1 张表（current）+ "超过 4 只"提示 |
 | `/holdings/exhaustive/NOPE999` | 200 + "取不到该基金的持仓数据" |
 | `/fund/qdiilof/SZ164701` | 说明行里 `穷举持仓比例` 是链接，指向 `/holdings/exhaustive/SZ164701` |
+| `/holdings/quarter/SZ164701` | 200 + 日期/值两个框（值回填样例串或库里最新一条） |
+| `/holdings/quarter/NOPE999` | 200 + "没有符号"，**不摆表单**（POST 那支会 400） |
 
 季报 / 写回的往返冒烟走脚本（会真写库，但退出前一定复原）：
 
@@ -274,6 +276,11 @@ PHP 侧是 `editquarterreportcn.php` + `QuarterReportSql`。三处必须照抄�
    PHP 的 `empty()`（`''`/`'0'`/`0`/`None`/空容器都为真）。
 3. **日期是参数**（与管理员写回相反：那边日期取库里现有的持仓日）。季报日期
    可以是季末任意一天，所以没有周末闸门。
+
+**库里没有这个符号时连表单都不摆**：GET 只给一行提示（与穷举页
+`NOPE999 → 200 + 提示` 的取舍一致），POST 那支返回 400 并说明
+"stock 表里没有符号"。PHP 那边 `SqlGetStockId` 取不到会落到 `stock_id = 0`
+写脏行 —— 本版拒绝。
 
 数据层为此新增 `sql/historytable.py::DailyStringSql`（`DailyCloseSql` 的子类），
 与父类只有两处不同：

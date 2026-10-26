@@ -158,6 +158,17 @@ class DefaultValueTest(unittest.TestCase):
         self.assertIn('value="2026-09-30"', html)
         self.assertIn("&#34;GLD&#34;:100", html)
 
+    def test_unknown_symbol_hides_the_form(self):
+        """库里没有这个符号：不摆表单，只给提示。
+
+        POST 分支本来就会 400（"stock 表里没有符号"），但让人先填一遍再被拒
+        没意义 —— 与穷举页 ``NOPE999 → 200 + 提示`` 的取舍一致。
+        """
+        html = _app(FakeDb(symbols={})).test_client().get(
+            "/holdings/quarter/NOPE999").get_data(as_text=True)
+        self.assertIn("没有符号", html)
+        self.assertNotIn('name="value"', html)
+
 
 class SubmitTest(unittest.TestCase):
     def setUp(self):

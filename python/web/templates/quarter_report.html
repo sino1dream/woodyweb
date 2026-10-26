@@ -32,6 +32,15 @@
     </p>
   {% endif %}
 
+  {% if not stock_id %}
+    {# 库里没有这个符号：连表单都不摆。POST 分支会返回 400（"stock 表里没有符号"），
+       但让人先填一遍再被拒没意义 —— 与穷举页"NOPE999 → 200 + 提示"的取舍一致。 #}
+    <p class="hint">
+      <code>stock</code> 表里没有符号 <code>{{ symbol }}</code>，无法写季报 ——
+      先让这个符号进库（<code>dbtools/seed_p0_symbols.py</code>）再来。
+    </p>
+  {% else %}
+
   <form class="edit-input-form" method="post"
         action="{{ url_for('holdings.quarter_report_page', symbol=symbol) }}">
     <label for="date">日期</label>
@@ -44,6 +53,8 @@
 
     <button type="submit" {% if not admin %}disabled{% endif %}>提交</button>
   </form>
+
+  {% endif %}
 
   <p class="table-note">
     提交后在 <a href="{{ url_for('holdings.exhaustive_holdings_page', symbol=symbol) }}">穷举持仓页</a>
