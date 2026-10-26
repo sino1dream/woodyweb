@@ -130,6 +130,11 @@ def format_price_display(value: Any, prev: Any = None, precision: int = 3) -> tu
 def _trim_number_text(number: float, precision: int) -> str:
     """按 PHP 的 ``number_format`` + ``rtrim('0')`` + ``rtrim('.')`` 出文本。
 
+    **先按 :func:`php_round` 的十进制 half-up 舍入，再格式化**。只在格式化时
+    用 ``"%.*f"`` 会掉进 Python 的二进制 / 银行家舍入，与 PHP 在 *.5 边界上
+    必然分叉：``-2.5`` 到 0 位，PHP 的 ``number_format`` 给 ``-3``，
+    ``"%.0f" % -2.5`` 给 ``-2``（穷举持仓页的整数比例就踩在这个边界上）。
+
     **负零要归零**：PHP 的 ``number_format(-0.004, 2)`` 是 ``'0.00'`` ——
     **不带负号**，而 Python 的 ``'%.2f' % -0.004`` 是 ``'-0.00'``。
     于是 ``(-0.005, 0)`` 这一小段区间里的值（比如 -0.001 的手续费、
@@ -138,12 +143,12 @@ def _trim_number_text(number: float, precision: int) -> str:
     组）抓出来的，见那个脚本 docstring 的"这个脚本抓到的真 bug"一节
     与 pitfalls 第 51 条。
     """
+    rounded = php_round(number, precision)
     if precision <= 0:
-        # PHP 的 number_format(x, 0) 会四舍五入成整数（无小数点）
-        text = "%.0f" % number
+        text = "%.0f" % rounded
         # number_format(-0.4) 同样是 '0' 而不是 '-0'
         return text if text != "-0" else "0"
-    text = "%.*f" % (precision, number)
+    text = "%.*f" % (precision, rounded)
     text = text.rstrip("0").rstrip(".")
     return text if text not in ("", "-", "-0") else "0"
 
@@ -777,6 +782,31 @@ class SharesHistorySql(DailyCloseSql):
 
     def __init__(self, connection: Any):
         super().__init__(connection, "shareshistory")
+
+
+class QuarterReportSql(DailyCloseSql):
+    """``quarterreport`` 表：基金季报披露的持仓明细。
+
+    对应 PHP ``QuarterReportSql``（``php/sql/sqldailystring.php:33``），
+    而它自己是 ``DailyStringSql extends DailyCloseSql`` 的**空壳**——
+    只定表名，方法全在基类里（``GetAll`` / ``GetClose`` / ``GetRecord`` /
+    ``WriteDaily``）。所以这里同样只定表名。
+
+    ``close`` 列存的是**字符串**不是数字：内容是
+    ``submitholdings`` 那一族写进去的持仓编码串（
+    ``{"GLD":50,"SPY":50}`` 这类），由
+    :func:`updater.holdingsupdater.stock_option_decode_holdings` 解回比例。
+    这也是 ``DailyStringSql`` 存在的唯一理由 —— 表结构一样，
+    只是 ``close`` 的 ``VARCHAR`` 语义（PHP 的 ``WriteDaily`` 比较两个字符串
+    是否相等来决定 update 还是 insert）。
+
+    **本类不提供写方法**：季报数据由管理员在 PHP 侧
+    ``editquarterreport`` 页面维护，Python 侧暂未迁那一支（见
+    ``README_exhaustive_holdings_migration.md`` 的"未做"一节）。
+    """
+
+    def __init__(self, connection: Any):
+        super().__init__(connection, "quarterreport")
 
 
 # ---------------------------------------------------------------------------
