@@ -178,8 +178,11 @@ def cmd_admin(args) -> int:
     * ``--fundposition`` → ``?fundposition=<值>``：只写仓位。
 
     两者都没有时什么都不做（PHP 的 ``if ($strHoldings = ...)`` 同样是
-    "取到才动"）。**没有权限检查** —— PHP 的登录闸门在账号体系里暂缓，
-    见 ``updater/holdingsupdater.process_admin_holdings`` 的警告。
+    "取到才动"）。**权限闸门在这里传 ``admin=True``**：能执行本命令的人
+    已经等价于管理员（PHP 侧那个入口是 ``AdminRun()`` 里的
+    ``IsAdmin()``，本命令绕开的是网页登录，不是权限本身 —— CLI 从来不
+    对外暴露）。Web 入口传的是 ``admin=is_admin()``，见
+    ``web/services/admin_auth.py``。
     """
     source = _source()
     symbol = args.admin
@@ -208,7 +211,7 @@ def cmd_admin(args) -> int:
         source.connection.close()
         return 0
 
-    result = process_admin_holdings(source, symbol, params)
+    result = process_admin_holdings(source, symbol, params, admin=True)
     print("== %s（stock_id=%s）" % (symbol, result["stock_id"]))
     if "holdings" in params:
         print("   holdings：%s" % ("已写入" if result["updated"] else "未写入（见下）"))

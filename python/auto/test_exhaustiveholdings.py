@@ -10,7 +10,10 @@ import unittest
 
 from core.exhaustiveholdings import (
     DEFAULT_EXHAUSTIVE_ROWS,
+    UpdateCell,
     ExhaustiveHoldingsCalculator,
+    confirm_update_question,
+    encode_holdings_payload,
     holding_ratio_cell,
     number_display,
     parse_threshold,
@@ -179,21 +182,55 @@ class PositionCellTest(unittest.TestCase):
     def test_admin_link_only_when_mismatch(self):
         calls = []
 
-        def href(ratios, text):
-            calls.append((ratios, text))
+        def href(ratios, position):
+            calls.append((ratios, position))
             return "确认更新"
 
         cell, match = position_cell(0.95, 1.0, {"A": 50.0}, True, True, href)
         self.assertEqual(cell, ("确认更新", ""))
-        self.assertEqual(calls, [({"A": 50.0}, "1.00")])
+        #: 回调拿的是**未格式化的仓位**（float 1.0），不是文本 "1.00" ——
+        #: 载荷要 ratio × position，先看文本再反解会丢精度。
+        self.assertEqual(calls, [({"A": 50.0}, 1.0)])
+        self.assertIsInstance(cell[0], UpdateCell)
 
         cell, _ = position_cell(0.95, 0.95, {}, True, True, href)
         self.assertEqual(cell, ("0.95", ""))
         self.assertEqual(len(calls), 1)
 
     def test_no_link_for_non_admin(self):
-        cell, _ = position_cell(0.95, 1.0, {}, True, False, lambda r, t: "不该出现")
+        cell, _ = position_cell(0.95, 1.0, {}, True, False, lambda r, p: "不该出现")
         self.assertEqual(cell, ("1.00", ""))
+        self.assertNotIsInstance(cell[0], UpdateCell)
+
+
+class UpdatePayloadTest(unittest.TestCase):
+    """写回条载荷的三个口径（``exhaustiveholdingscn.php:36-43``）。"""
+
+    SYMBOLS = {181: "GLD", 182: "SPY"}
+
+    def test_payload_multiplies_ratio_by_position(self):
+        """``number_format($fRatio * $fPos, 2)`` —— 比例 × 仓位，值带两位尾零。"""
+        payload = encode_holdings_payload({181: 50.0}, 1.005, self.SYMBOLS.get)
+        self.assertEqual(payload, '"GLD":"50.25"')
+
+    def test_payload_uses_symbols_not_ids(self):
+        payload = encode_holdings_payload({181: 50.0, 182: 50.0}, 1.0,
+                                         self.SYMBOLS.get)
+        self.assertEqual(payload, '"GLD":"50.00","SPY":"50.00"')
+
+    def test_payload_falls_back_to_id_when_symbol_missing(self):
+        """查不到符号时给 ``#<id>``，不静默少一格（少一格会让 fPos 变小）。"""
+        payload = encode_holdings_payload({999: 100.0}, 1.0, self.SYMBOLS.get)
+        self.assertEqual(payload, '"#999":"100.00"')
+
+    def test_payload_empty(self):
+        self.assertEqual(encode_holdings_payload({}, 1.0, self.SYMBOLS.get), "")
+
+    def test_question_strips_double_quotes(self):
+        """问句里去掉双引号（``GetOnClickLink`` 的 ``str_replace``）。"""
+        question = confirm_update_question('"GLD":"50.00"', "1.01")
+        self.assertEqual(question, "确认更新持仓GLD:50.00和仓位1.01？")
+        self.assertNotIn('"', question)
 
 
 class PercentageCellTest(unittest.TestCase):

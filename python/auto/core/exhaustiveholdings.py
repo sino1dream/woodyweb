@@ -160,13 +160,27 @@ def holding_ratio_cell(value: Any, ratio: Any, match: bool) -> tuple:
     return ((text, "red") if text.startswith("-") else (text, "")), match
 
 
+class UpdateCell(str):
+    """一格**HTML**，不是文本：管理员的"确认更新持仓"控件。
+
+    为什么要一个 ``str`` 子类而不是"看文本是不是以 ``<`` 开头"：模板与
+    :class:`~sql.historytable.TableRow` 都会把格子当字符串处理，靠内容
+    猜类型在"比例恰好是负数 ""<"" "那种边界上会误判；子类是个显式标记，
+    :func:`_row` 见到它就记进 ``row.html_indexes``（模板对那几个下标不转义）。
+
+    PHP 那边这一格本来就是 ``GetOnClickLink()`` 拼好的 HTML 串，
+    ``EchoTableColumn($ar)`` 原样输出 —— 本类只是把这个"这里是 HTML"
+    的事实显式化，免得渲染层再猜一遍。
+    """
+
+
 def position_cell(
     ref_position: Any,
     position: Any,
     ratios: dict,
     match: bool,
     admin: bool = False,
-    update_href: Optional[Callable[[dict, str], str]] = None,
+    update_href: Optional[Callable[[dict, float], str]] = None,
 ) -> tuple:
     """``__getPosDisplay($ref, $fPos, $arRatio, &$bMatch, $bAdmin)``。
 
@@ -177,17 +191,24 @@ def position_cell(
     1. ``number_format($fPos, 2)`` 与 ``number_format($ref->GetPosition(), 2)``
        不等 → match False；
     2. ``0.25 < fPos < 1.25`` 是"合理仓位"区间：正常显示；**管理员且
-       不匹配**时 PHP 给一个"确认更新持仓"的 ``onclick`` 链接（把人算出来的
+       不匹配**时 PHP 给一个"确认更新持仓"的确认控件（把人算出来的
        比例写回库里）；
     3. 区间外（解崩了）→ 红字。
 
-    ## 与 PHP 的一处刻意差异：写入链接默认不给
+    ## ``update_href`` 是"渲染那个确认控件"的注入口
 
-    ``update_href`` 为 ``None``（默认）时**不生成那个链接**，只显示数字。
-    原因：写回仓位走 ``submitholdings.php``，需要管理员校验，而本项目的
-    账号体系暂缓（``process_admin_holdings`` 目前无权限检查，见
-    ``README_holdings_updater_migration.md``）。函数保留注入口，等权限补上
-    就能原样接回，不用改这里的判断。
+    PHP 那一格是一整段拼好的 HTML（``GetOnClickLink()`` 的输出），本版
+    不在这里拼 —— 模板才知道怎么发 POST。所以回调契约是::
+
+        update_href(ratios, float_position) -> html 字符串
+
+    ``ratios`` 是 ``{stock_id: 百分数}``（就是 ``$arNewRatio``，
+    **已经 ×100**），``float_position`` 是**未格式化的原始仓位**。
+    两个参数都要给：写回库的载荷是 ``ratio × position``，先看文本再反解
+    会丢精度（``1.0053`` 显示成 ``1.01``，载荷就从 100.53 变成 101.00）。
+
+    为 ``None`` 时**不生成控件**，只显示数字 —— 非管理员、或者根本没接入
+    写入口（CLI 之外的脚本）都走这一支。
     """
     text = php_number_format(float(position), 2)
     if not _php_number_equal(text, php_number_format(float(ref_position or 0.0), 2)):
@@ -197,9 +218,67 @@ def position_cell(
         #: PHP 是 ``$bMatch === false``（严格比较）—— 只有本行**确实**被打成
         #: False 才给链接；一进来就 False 的（上一格没匹配）也算。
         if admin and match is False and update_href is not None:
-            return ((update_href(ratios, text), ""), match)
+            return ((UpdateCell(update_href(ratios, float(position))), ""), match)
         return ((text, ""), match)
     return ((text, "red"), match)
+
+
+def encode_holdings_payload(ratios: dict, position: Any,
+                            symbol_of: Callable[[Any], str]) -> str:
+    """``DebugEncode($arJson)``：写回条的编码串（``submitholdings.php`` 的 ``holdings=``）。
+
+    PHP 原文（``exhaustiveholdingscn.php:36-43``）::
+
+        foreach ($arRatio as $strHoldingId => $fRatio)
+        {
+            $strHolding = SqlGetStockSymbol($strHoldingId);
+            $arJson[$strHolding] = number_format($fRatio * $fPos, 2);
+        }
+        $str = DebugEncode($arJson);          // json_encode 去掉最外层花括号
+
+    三个要点：
+
+    * **键换成符号**（库里存的是 stock_id，写回接口认符号）；
+    * **值 = 比例 × 仓位**（比例是百分数，仓位是 1 上下的小数，所以乘积
+      仍是百分数 —— ``100 × 1.01 = 101.00``，与 ``UpdateStockOptionHoldings``
+      的 ``fPos = total/100`` 正好对得上，一来一回不失真）；
+    * **值是字符串**（``number_format`` 的结果，保留两位尾零），所以
+      ``json_encode`` 出 ``"GLD":"101.00"`` 而不是 ``"GLD":101``。
+
+    符号查不到时退回 ``#<id>`` —— 与 ``web/services/exhaustive_holdings_service``
+    的列头同口径，宁可写进去一条查不到的符号让日志暴露问题，也不要静默
+    少写一格（少一格会让 ``fPos`` 变小、比例全错）。
+    """
+    items = []
+    for stock_id, ratio in (ratios or {}).items():
+        symbol = symbol_of(stock_id) if symbol_of else None
+        key = str(symbol) if symbol else "#%s" % stock_id
+        value = php_number_format(float(ratio) * float(position), 2)
+        items.append("%s:%s" % (_json_text(key), _json_text(value)))
+    #: ``DebugEncode`` 就是去掉 ``json_encode`` 的最外层 ``{}``
+    return ",".join(items)
+
+
+def _json_text(value: Any) -> str:
+    """``json_encode`` 一个字符串标量（含引号与转义）。
+
+    ``ensure_ascii=False`` 与全站其它地方一致（``app.json.ensure_ascii``），
+    符号都是 ASCII，这里只是不制造第二个口径。
+    """
+    import json
+
+    return json.dumps(str(value), ensure_ascii=False)
+
+
+def confirm_update_question(payload: str, position_text: Any) -> str:
+    """``'确认更新持仓'.$str.'和仓位'.$strPos.'？'``。
+
+    **载荷里的双引号在这里去掉**（``GetOnClickLink`` 的
+    ``str_replace('"', '', $strQuestion)``）：这句话要塞进
+    ``onsubmit="return confirm('…')"``，带双引号会把属性截断。
+    注意**只影响问句**，URL 里的载荷仍带引号（那边会 urlencode）。
+    """
+    return "确认更新持仓%s和仓位%s？" % (payload.replace('"', ''), position_text)
 
 
 # ---------------------------------------------------------------------------

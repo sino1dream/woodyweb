@@ -211,6 +211,9 @@ D:/python/python.exe -B -m auto.cli.holdingscli --admin SZ164701 \
 （`submitholdings.php:18` 的 `$ref->GetHoldingsDate()`），表单只改比例
 不改日期。
 
+CLI 调用 `process_admin_holdings` 时恒传 `admin=True`：命令行从来不对公网暴露，
+权限由"谁能在服务器上跑"承担。Web 侧则必须走 `admin_auth.is_admin()`（§7.1）。
+
 ## 7. 架构偏差：realtime 抓取只归 daemon
 
 PHP 的 `_updateStockHoldings` 挂在**页面渲染**里（`Create()` → 每次渲染
@@ -219,9 +222,48 @@ web 只读快照**，所以下载/写库编排放 `cli` 定时调用（建议挂
 凌晨窗口，与 `quotecli`/`fundestcli` 同一批）。
 
 `submitholdings.php` 外层的 `IsAdmin()` 登录闸门（账号体系）按用户要求暂缓，
-`process_admin_holdings` **不做任何权限检查** —— **接入 Web 路由前必须补上
-管理员校验**，否则就是一个未鉴权的写入口。这个警告也写在该函数的 docstring
-里，见 `holdingsupdater.process_admin_holdings`。
+但**闸门本身已经补上**（2026-10-26）：`process_admin_holdings` 的 `admin` 是
+**必填关键字参数**，见 §7.1。
+
+### 7.1 权限闸门的形状：必填关键字参数
+
+PHP 的结构是：
+
+```php
+if ($this->IsAdmin())        // 闸门在外面
+    $this->AdminProcess();   // 里面才是 "_updateStockHoldings"
+```
+
+只迁里面那半截，等于留了个**未鉴权的写入口**。所以本版把闸门做进函数签名：
+
+```python
+def process_admin_holdings(source, symbol, params,
+                          holdings_ref_builder=None, *, admin) -> dict:
+```
+
+| 决定 | 理由 |
+|---|---|
+| `admin` 是**必填**关键字参数 | 给默认值 = 没补洞。少写一个参数是 `TypeError`，不是静默放行 |
+| 关键字专用（`*`） | 防止按位置传错（第 5 个位置参数恰好是 `True` 的偶然写法） |
+| `admin=False` **立刻返回** `{"denied": True, ...}` | 一个字节都不碰数据源 —— 测试用"一碰 `connection` 就抛"的替身守住 |
+| 调用方如何取 admin | Web 侧 `web/services/admin_auth.is_admin()`；CLI 侧恒 `admin=True`（命令行不对外暴露） |
+
+返回值形状：
+
+```python
+{"symbol": str, "stock_id": int | None, "updated": bool,
+ "position": float | None, "denied": bool}
+```
+
+`denied=True` 时其余字段都是初始值，调用方靠它区分"被拒"与"没算出东西"。
+Web 路由 `/holdings/submit` 收到 `denied=True` 直接 403（`admin_auth.denied_message()`），
+不会把"解析失败"和"没权限"混成一条提示。
+
+`IsAdmin()` 的等价物只有一处：`admin_auth.current_admin_email() == ADMIN_EMAIL`
+（`woody@palmmicro.com`，`php/email.php:2`）。演示环境默认身份**就是**
+`ADMIN_EMAIL` 本身，所以"不用登录也看得到管理员控件"不是绕过了判断，而是默认
+身份恰好是管理员；`PALMMICRO_ADMIN_EMAIL=guest@example.com` 立刻掉到 `False`。
+
 
 ## 8. 已知偏差（相对 PHP，全部朝安全方向或形制方向）
 
@@ -233,6 +275,7 @@ web 只读快照**，所以下载/写库编排放 `cli` 定时调用（建议挂
 | 4 | `DebugDecode('')` 解出 `[]`（假值） | `debug_decode('')` 返回 `None` | 调用方的 `if` 判定等价 |
 | 5 | `_updateStockHoldings` 在页面渲染里跑 | CLI 定时跑 | 见 §7 |
 | 6 | `CsvFile` 基类的磁盘文件层（`StockDebugXml` / `StockSaveDebugCsv`） | 未迁，直接吃内存 bytes | 本项目没有"落盘再读回"的需要；harness 里用文件样本顶替 |
+| 7 | `IsAdmin()` 由 `AdminRun()` 在**调用处**判断 | `admin` 是 `process_admin_holdings` 的**必填关键字参数** | 闸门做进签名，漏传是 `TypeError` 而不是静默放行（见 §7.1） |
 
 ## 9. 验证
 
@@ -241,11 +284,13 @@ web 只读快照**，所以下载/写库编排放 `cli` 定时调用（建议挂
 stock_id 查汇率、#109 假库 WHERE 失配、#110 `static` 累计器与一用例一进程、
 #111 管理员入口的日期不是参数。
 
-### 9.1 单元测试（`auto/test_holdingsupdater.py`，35 个）
+### 9.1 单元测试（`auto/test_holdingsupdater.py`，38 个）
 
 * 解码：归一化、三种 falsy、未知符号、坏 JSON、空输入；
 * 写序：pos → date → delete → insert（用记录型替身断言顺序）；
 * 四道闸门逐条（含闭区间端点、港股混合豁免、两道"提前返回"）；
+* **管理员闸门三态**（`ProcessAdminHoldingsGateTest`）：`admin=False` 不碰数据源
+  且 `denied=True`；漏传 `admin` 抛 `TypeError`；`admin=True` 时 `denied=False`；
 * 深市 PCF 端到端（**合成样本**，不走网络）：现金两行、T-1 日期、
   `array_filter` 跳过 `159900`、港股补零、比例字符串落库、持仓日写入；
 * 假连接是一个 **SQL 子集解释器**（`WHERE` / `ORDER BY` / `LIMIT` /

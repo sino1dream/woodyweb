@@ -24,6 +24,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Any, Sequence
@@ -784,25 +785,142 @@ class SharesHistorySql(DailyCloseSql):
         super().__init__(connection, "shareshistory")
 
 
-class QuarterReportSql(DailyCloseSql):
+#: PHP 8 认定的"数字字符串"：允许前后空白、正负号、小数点（``.5``）、指数。
+#: 注意 PHP 8 比 PHP 7 严格 —— ``'abc'`` / ``'12abc'`` 都不算，而
+#: ``' 12 '`` 算（两侧空白自 PHP 8 起被容忍）。
+_NUMERIC_STRING_RE = re.compile(r"^\s*[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?\s*$")
+
+
+def php_text_equal(left: Any, right: Any) -> bool:
+    """PHP 8 的 ``$a == $b``，**两个操作数都是字符串**时的语义。
+
+    用在 :meth:`DailyStringSql.write_daily` 里替代 PHP 的
+    ``if ($record['close'] != $strClose)``。PHP 的规则是：
+
+    * 两个**数字字符串** → 按数值比（``'100' == '100.00'`` 为真，
+      ``'0' == '0.0'`` 为真）；
+    * 否则 → 按字节比（``'{"GLD":100}' == '{"GLD":100.01}'`` 为假）。
+
+    为什么要复刻这个双轨：季报的 ``close`` 列两种内容都有 —— 管理员手填的
+    百分比数字串，以及 ``"GLD":100`` 那种编码串（外层不带花括号，见
+    ``DebugEncode``）。如果一律按字节比，
+    ``'100.00'`` 改 ``'100'`` 会白白 UPDATE 一次（php 那边不会）；如果一律
+    按数值比，非数字串会被 ``floatval`` 成 0 而**永远相等** —— 症状是
+    "改了季报却存不进去"，且不报错。
+
+    ``None`` 按空串处理（PHP 的 ``null == ''`` 为真）。
+    """
+    a = "" if left is None else str(left)
+    b = "" if right is None else str(right)
+    if _NUMERIC_STRING_RE.match(a) and _NUMERIC_STRING_RE.match(b):
+        return float(a) == float(b)
+    return a == b
+
+
+class DailyStringSql(DailyCloseSql):
+    """``close`` 列存**字符串**的日频表。对应 PHP ``DailyStringSql``
+    （``php/sql/sqldailystring.php:4``）。
+
+    与父类唯一的区别就是 :meth:`write_daily` 的**比较方式**：父类的
+    ``WriteDaily``（PHP ``sqldailyclose.php:161``）是
+
+    .. code-block:: php
+
+        if (abs(floatval($record['close']) - floatval($strClose)) > MIN_FLOAT_VAL)
+
+    而 String 版是（``sqldailystring.php:16``）::
+
+        if ($record['close'] != $strClose)
+
+    两处副带差异，都是**照抄不动**：
+
+    * **没有周末闸门**。父类在 INSERT 分支有
+      ``if ($ymd->IsWeekend()) return false;``（新浪偶尔给周末的假数据），
+      String 版没有 —— 季报日期本来就可能是任意一天（季末），不能挡；
+    * String 版**不比较容差**。``'100.00'`` 与 ``'100'`` 在 PHP 8 里是
+      数值相等的数字串 → 视为相同、不写库；``'{"GLD":100}'`` 与
+      ``'{"GLD":100.01}'`` 不是数字串 → 按字节比较。这个双轨语义由
+      :func:`php_text_equal` 复刻。
+    """
+
+    # -- 写 ---------------------------------------------------------------
+    def _execute(self, sql: str, params: tuple = ()) -> Any:
+        """执行一条写语句并提交（与 ``auto`` 其它表模块的写法一致）。"""
+        cursor = self.connection.cursor()
+        try:
+            cursor.execute(sql, params)
+            self.connection.commit()
+            return cursor.rowcount
+        finally:
+            cursor.close()
+
+    def insert_daily(self, stock_id: Any, date: Any, close: Any) -> bool:
+        """``InsertDaily()``（``sqldailyclose.php:148``）。
+
+        两道前置闸照抄：**日期为空不写**；**已有同日行不写**
+        （``if ($this->GetRecord(...)) return false;``）—— 不是 upsert，
+        重复插入交给 ``UNIQUE (date, stock_id)`` 兜底会抛异常，所以先查。
+        """
+        if date is None or str(date) == "":
+            return False
+        if self.get_record(stock_id, date):
+            return False
+        rowcount = self._execute(
+            "INSERT INTO `%s` (stock_id, `date`, `close`) VALUES (%%s, %%s, %%s)" % self.table,
+            (stock_id, date, "" if close is None else str(close)),
+        )
+        return bool(rowcount)
+
+    def update_daily(self, record_id: Any, close: Any) -> bool:
+        """``UpdateDaily($strId, $strClose)``（``sqldailyclose.php:156``）。"""
+        rowcount = self._execute(
+            "UPDATE `%s` SET `close` = %%s WHERE id = %%s" % self.table,
+            ("" if close is None else str(close), record_id),
+        )
+        return bool(rowcount)
+
+    def delete_by_date(self, stock_id: Any, date: Any) -> int:
+        """``DeleteByDate()``（``sqldailyclose.php:201``）：返回删除行数。
+
+        PHP 返回 ``DeleteData()`` 的布尔值；这里给行数是为了让调用方能报
+        "删掉了几条"（路由的 flash 文案要用）。PHP 那边 ``WHERE`` 键是
+        ``(stock_id, date)``，靠 UNIQUE 保证最多删一行。
+        """
+        return self._execute(
+            "DELETE FROM `%s` WHERE stock_id = %%s AND `date` = %%s" % self.table,
+            (stock_id, date),
+        )
+
+    def write_daily(self, stock_id: Any, date: Any, close: Any) -> bool:
+        """``WriteDaily()``（``sqldailystring.php:16``）：有行比字符串，无行插入。
+
+        返回 ``True`` 表示真的写了库（PHP 无返回值，这是为路由 flash 加的口径）。
+        **值相同返回 ``False``** —— 与 PHP 的 ``return false;`` 同义。
+        """
+        record = self.get_record(stock_id, date)
+        if record:
+            if php_text_equal(record.get("close"), close):
+                return False
+            return self.update_daily(record.get("id"), close)
+        return self.insert_daily(stock_id, date, close)
+
+
+class QuarterReportSql(DailyStringSql):
     """``quarterreport`` 表：基金季报披露的持仓明细。
 
     对应 PHP ``QuarterReportSql``（``php/sql/sqldailystring.php:33``），
-    而它自己是 ``DailyStringSql extends DailyCloseSql`` 的**空壳**——
-    只定表名，方法全在基类里（``GetAll`` / ``GetClose`` / ``GetRecord`` /
-    ``WriteDaily``）。所以这里同样只定表名。
+    而它自己是 ``DailyStringSql`` 的**空壳**——只定表名，方法全在基类里
+    （``GetAll`` / ``GetClose`` / ``GetRecord`` / ``WriteDaily``）。所以这里
+    同样只定表名，写方法继承自 :class:`DailyStringSql`。
 
     ``close`` 列存的是**字符串**不是数字：内容是
-    ``submitholdings`` 那一族写进去的持仓编码串（
-    ``{"GLD":50,"SPY":50}`` 这类），由
-    :func:`updater.holdingsupdater.stock_option_decode_holdings` 解回比例。
-    这也是 ``DailyStringSql`` 存在的唯一理由 —— 表结构一样，
-    只是 ``close`` 的 ``VARCHAR`` 语义（PHP 的 ``WriteDaily`` 比较两个字符串
-    是否相等来决定 update 还是 insert）。
+    ``{"GLD":50,"SPY":50}`` 这一族的持仓编码串（季报里各成分股的百分比），
+    由 :func:`updater.holdingsupdater.stock_option_decode_holdings` 解回比例。
+    这也是 ``DailyStringSql`` 存在的唯一理由 —— 表结构一样，只是 ``close``
+    的 VARCHAR 语义（比较两个字符串是否相等来决定 update 还是 insert）。
 
-    **本类不提供写方法**：季报数据由管理员在 PHP 侧
-    ``editquarterreport`` 页面维护，Python 侧暂未迁那一支（见
-    ``README_exhaustive_holdings_migration.md`` 的"未做"一节）。
+    写入口见 ``/holdings/quarter/<symbol>``（对应 PHP
+    ``editquarterreportcn.php`` + ``submitstockoptions.php`` 的 REPORT 分支）。
     """
 
     def __init__(self, connection: Any):

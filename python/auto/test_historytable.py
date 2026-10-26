@@ -21,6 +21,7 @@ from sql.historytable import (
     DailyCloseSql,
     FundEstSql,
     NetValueHistorySql,
+    QuarterReportSql,
     SharesHistorySql,
     StockHistorySql,
     TableRow,
@@ -36,6 +37,7 @@ from sql.historytable import (
     percentage_change,
     php_number_format,
     php_round,
+    php_text_equal,
     stock_calc_hedge,
     use_same_day_net_value,
 )
@@ -49,12 +51,16 @@ class FakeCursor:
         self.rows = []
         self.sql = ""
         self.params = ()
+        #: 写语句的"影响行数"。INSERT/UPDATE/DELETE 一律回 1 ——
+        #: ``DailyStringSql`` 的写方法靠它判断"真的写了没有"。
+        self.rowcount = 0
 
     def execute(self, sql, params=()):
         self.sql = sql
         self.params = params
         self.connection.queries.append((sql, params))
         self.rows = self.connection.dispatch(sql, params)
+        self.rowcount = 1 if not sql.strip().startswith("SELECT") else len(self.rows)
 
     def fetchone(self):
         return self.rows[0] if self.rows else None
@@ -71,19 +77,26 @@ class FakeConnection:
 
     只实现 ``historytable`` 真正会发的那几种查询（COUNT / SELECT ... WHERE
     stock_id / ... AND date = / ... AND date <），够用且能验证生成的 SQL。
+    写语句不回放任何行，只记在 ``queries`` 里供断言。
     """
 
     def __init__(self, rows_by_table=None, counts=None):
         self.queries = []
         self.rows_by_table = rows_by_table or {}
         self.counts = counts or {}
+        self.commits = 0
 
     def cursor(self):
         return FakeCursor(self)
 
+    def commit(self):
+        self.commits += 1
+
     def dispatch(self, sql, params):
         table = self._table_of(sql)
         rows = list(self.rows_by_table.get(table, []))
+        if not sql.strip().startswith("SELECT"):
+            return []
         if "COUNT(*)" in sql:
             stock_id = params[0] if params else None
             return [{"n": self.counts.get(table, {}).get(stock_id, len(rows))}]
@@ -660,6 +673,93 @@ class PhpRoundingTest(unittest.TestCase):
         self.assertEqual(php_number_format("", 2), "0.00")
         self.assertEqual(php_number_format("abc", 2), "0.00")
         self.assertEqual(mysql_round("", 2), "0")
+
+
+class DailyStringSqlTest(unittest.TestCase):
+    """``DailyStringSql`` / ``QuarterReportSql`` —— ``php/sql/sqldailystring.php``。
+
+    重点在 ``WriteDaily`` 的**字符串比较**语义（与父类的浮点容差完全不同），
+    以及三道写语句闸门（空日期 / 已有行 / 值没变都不写）。
+    """
+
+    def _sql_of(self, connection, prefix):
+        return [sql for sql, _ in connection.queries if sql.strip().upper().startswith(prefix)]
+
+    def test_text_equal_numeric_strings_compare_by_value(self):
+        """PHP 8：两个数字串按数值比 —— ``'100' == '100.00'``。"""
+        self.assertTrue(php_text_equal("100", "100.00"))
+        self.assertTrue(php_text_equal("0", "0.0"))
+        self.assertTrue(php_text_equal(" 12 ", "12"))
+
+    def test_text_equal_non_numeric_compares_by_bytes(self):
+        """编码串不是数字串 —— 一个字符差也算不等。"""
+        self.assertFalse(php_text_equal('"GLD":100', '"GLD":100.01'))
+        self.assertTrue(php_text_equal('"GLD":100', '"GLD":100'))
+
+    def test_text_equal_handles_none_as_empty(self):
+        self.assertTrue(php_text_equal(None, ""))
+        self.assertFalse(php_text_equal(None, "0"))
+
+    def test_write_daily_unchanged_value_does_not_update(self):
+        """值相同 → 一句 UPDATE 都不发（PHP 的 ``return false``）。"""
+        connection = FakeConnection({"quarterreport": [
+            {"id": 7, "stock_id": 59, "date": "2026-09-30", "close": '"GLD":100'},
+        ]})
+        result = QuarterReportSql(connection).write_daily(59, "2026-09-30", '"GLD":100')
+        self.assertFalse(result)
+        self.assertEqual(self._sql_of(connection, "UPDATE"), [])
+        self.assertEqual(self._sql_of(connection, "INSERT"), [])
+
+    def test_write_daily_changed_value_updates(self):
+        connection = FakeConnection({"quarterreport": [
+            {"id": 7, "stock_id": 59, "date": "2026-09-30", "close": '"GLD":100'},
+        ]})
+        result = QuarterReportSql(connection).write_daily(59, "2026-09-30", '"GLD":60,"SPY":40')
+        self.assertTrue(result)
+        update = self._sql_of(connection, "UPDATE")
+        self.assertEqual(len(update), 1)
+        self.assertIn("`close` = %s", update[0])
+        self.assertEqual(connection.commits, 1)
+
+    def test_write_daily_inserts_when_missing(self):
+        connection = FakeConnection()
+        result = QuarterReportSql(connection).write_daily(59, "2026-09-30", '"GLD":100')
+        self.assertTrue(result)
+        insert = self._sql_of(connection, "INSERT")
+        self.assertEqual(len(insert), 1)
+        self.assertEqual(connection.queries[-1][1], (59, "2026-09-30", '"GLD":100'))
+
+    def test_insert_daily_rejects_empty_date(self):
+        """``if ($strDate == '') return false;`` —— 空日期不写。"""
+        connection = FakeConnection()
+        self.assertFalse(QuarterReportSql(connection).insert_daily(59, "", '"GLD":100'))
+        self.assertEqual(self._sql_of(connection, "INSERT"), [])
+
+    def test_insert_daily_rejects_existing_row(self):
+        """已有同日行不写（不是 upsert，重复插入会撞 UNIQUE）。"""
+        connection = FakeConnection({"quarterreport": [
+            {"id": 7, "stock_id": 59, "date": "2026-09-30", "close": '"GLD":100'},
+        ]})
+        self.assertFalse(QuarterReportSql(connection).insert_daily(59, "2026-09-30", "x"))
+        self.assertEqual(self._sql_of(connection, "INSERT"), [])
+
+    def test_delete_by_date_scopes_on_stock_and_date(self):
+        connection = FakeConnection()
+        QuarterReportSql(connection).delete_by_date(59, "2026-09-30")
+        sql, params = connection.queries[-1]
+        self.assertIn("DELETE FROM `quarterreport`", sql)
+        self.assertIn("stock_id = %s AND `date` = %s", sql)
+        self.assertEqual(params, (59, "2026-09-30"))
+
+    def test_weekend_guard_is_not_applied(self):
+        """String 版**没有**父类的周末闸门 —— 季报日期可以是季末任意一天。"""
+        connection = FakeConnection()
+        # 2026-09-30 是周三；换成 2026-09-27（周日）也必须能写进去
+        self.assertTrue(QuarterReportSql(connection).write_daily(59, "2026-09-27", '"GLD":100'))
+        self.assertEqual(len(self._sql_of(connection, "INSERT")), 1)
+
+    def test_table_name(self):
+        self.assertEqual(QuarterReportSql(FakeConnection()).table, "quarterreport")
 
 
 if __name__ == "__main__":

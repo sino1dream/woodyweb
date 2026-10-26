@@ -254,18 +254,39 @@ def update_stock_option_holdings(source: Any, stock_id: Any, date: Any, text: An
 
 
 def process_admin_holdings(source: Any, symbol: Any, params: Any,
-                           holdings_ref_builder: Callable[[Any], Any] = None) -> dict:
+                           holdings_ref_builder: Callable[[Any], Any] = None,
+                           *, admin: bool) -> dict:
     """对应 PHP ``_AdminHoldingsAccount::AdminProcess()``
     （``woody/res/submitholdings.php:8``）。
 
     ``params`` 是查询参数映射（``{'holdings': ..., 'fundposition': ...}``）。
-    返回 ``{"symbol", "stock_id", "updated", "position"}`` 便于调用方记账。
+    返回 ``{"symbol", "stock_id", "updated", "position", "denied"}`` 便于
+    调用方记账。
 
-    **登录闸门没有迁**：PHP 的 ``AdminRun()`` 外层还有 ``IsAdmin()``
-    （账号体系暂缓），所以这个方法本身**不做任何权限检查** —— 接入 Web
-    路由前必须先补上管理员校验，否则就是一个未鉴权的写入口。
+    ## ``admin`` 是**必填关键字参数**（2026-10-26 补的）
+
+    PHP 的 ``AdminRun()`` 干的是::
+
+        if ($this->IsAdmin())  $this->AdminProcess();
+        SwitchToSess();
+
+    也就是说**权限闸门在 ``AdminProcess`` 的外面**。本版原来只迁了里面那半
+    截（``AdminProcess``），留着"谁都能调这个函数"的口子 —— 一旦接到 Web
+    路由上就是未鉴权的写入口。现在把外圈那道 ``IsAdmin()`` 收进来当必填
+    参数：调用方必须显式说"我确认这是管理员"（``admin=True``）或把判定结果
+    原样传进来（``admin=is_admin()``，见 ``web/services/admin_auth.py``）。
+
+    没有默认值是**故意的** —— 给个默认 ``True`` 就等于没补这个洞。
+    ``admin=False`` 时一个字节都不写库，返回 ``denied=True``（PHP 那边是
+    "静默什么都不做"，连错误都没有）。
     """
-    result = {"symbol": symbol, "stock_id": None, "updated": False, "position": None}
+    result = {"symbol": symbol, "stock_id": None, "updated": False,
+              "position": None, "denied": False}
+    if not admin:
+        #: 闸门放在最前面：连 symbol 合法性都不判，避免"越权调用也能探出
+        #: 某个符号在不在库里"这种侧信道。
+        result["denied"] = True
+        return result
     symbol = _check_symbol(symbol)
     if not symbol:
         return result

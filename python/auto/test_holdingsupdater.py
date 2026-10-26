@@ -23,6 +23,7 @@ import unittest
 from updater.etfholdings import SzseHoldingsFile
 from updater.holdingsupdater import (
     debug_decode,
+    process_admin_holdings,
     stock_option_decode_holdings,
     update_stock_option_holdings,
     update_stock_holdings,
@@ -707,6 +708,48 @@ class SzseHoldingsParseTest(unittest.TestCase):
         self.assertIn("PDD", symbols)
         # 港股符号**补零到 5 位**（``ConvertHolding``）
         self.assertNotIn("1810", symbols)
+
+
+# ---------------------------------------------------------------------------
+# 管理员写入口的权限闸门（submitholdings.php 的 AdminRun）
+# ---------------------------------------------------------------------------
+class ProcessAdminHoldingsGateTest(unittest.TestCase):
+    """``process_admin_holdings`` 的 ``admin=`` 参数（2026-10-26 补的闸门）。
+
+    PHP 的 ``AdminRun()`` 是::
+
+        if ($this->IsAdmin())  $this->AdminProcess();
+
+    原来只迁了里面那半截，等于留着一个"谁调都能写"的函数。现在外圈那道
+    判断折成一个**必填关键字参数**：给默认值就等于没补这个洞。
+    """
+
+    class _Bomb:
+        """一碰就炸的数据源：证明 ``admin=False`` 时压根没走到取数。"""
+
+        @property
+        def connection(self):  # pragma: no cover - 真被访问就是测试失败
+            raise AssertionError("admin=False 时不应该碰数据源")
+
+    def test_denied_returns_without_touching_source(self):
+        result = process_admin_holdings(
+            self._Bomb(), "SZ164701", {"holdings": '"GLD":100'}, admin=False)
+        self.assertTrue(result["denied"])
+        self.assertFalse(result["updated"])
+        self.assertIsNone(result["stock_id"])
+        self.assertIsNone(result["position"])
+
+    def test_admin_flag_is_required_keyword(self):
+        """漏传 ``admin`` 直接 TypeError —— 不给"忘了判权限"的机会。"""
+        with self.assertRaises(TypeError):
+            process_admin_holdings(FakeSource(FakeConnection()), "SZ164701", {})
+
+    def test_denied_flag_is_false_when_authorized(self):
+        """授权但符号查不到时：``denied`` 必须是 False（否则调用方会误报越权）。"""
+        result = process_admin_holdings(
+            FakeSource(FakeConnection()), "", {}, admin=True)
+        self.assertFalse(result["denied"])
+        self.assertFalse(result["updated"])
 
 
 if __name__ == "__main__":

@@ -94,6 +94,7 @@ install_paths()
 
 from core.stockgroup import php_truthy  # noqa: E402
 from core.stocktrans import _php_floatval  # noqa: E402
+from web.services.admin_auth import ADMIN_EMAIL as _ADMIN_EMAIL  # noqa: E402
 from ref.stocklink import (  # noqa: E402
     STOCK_GROUP_DISPLAY,
     get_my_stock_group_link,
@@ -120,7 +121,11 @@ SINGLE_CURRENCY_TEXT = "单一货币"
 DISP_ALL_CN = "全部"
 
 #: ``define('ADMIN_EMAIL', 'woody@palmmicro.com')``（``php/email.php:2``）。
-ADMIN_EMAIL = "woody@palmmicro.com"
+#:
+#: **单一来源在 ``web/services/admin_auth.py``**（那边负责"谁是管理员"），
+#: 这里只做再导出：``money_service`` 用到它纯粹是"测试列按邮箱分算法"，
+#: 两处各写一份字符串迟早会改漏一处，而那个常量决定的是**管理员专属列**。
+ADMIN_EMAIL = _ADMIN_EMAIL
 
 #: ``case 'mix@palmmicro.com'`` —— PHP 里写死的字面量，没有常量。
 MIX_EMAIL = "mix@palmmicro.com"
