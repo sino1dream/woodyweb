@@ -341,6 +341,17 @@ class AdminRouteTest(unittest.TestCase):
         self.client = self.app.test_client()
 
     # -- 列表 ---------------------------------------------------------------
+    def test_bare_admin_redirects_to_groups(self):
+        """``/admin`` 与 ``/admin/`` 都跳到分组列表，不是 404。
+
+        页头导航的「后台」/页脚的「后台管理」都指进来，人手敲 ``/admin``
+        是最自然的猜法（2026-10-26 用户实测踩到 404）。
+        """
+        for path in ("/admin", "/admin/"):
+            response = self.client.get(path)
+            self.assertEqual(302, response.status_code, path)
+            self.assertTrue(response.headers["Location"].endswith("/admin/groups"), path)
+
     def test_groups_list(self):
         response = self.client.get("/admin/groups")
         self.assertEqual(200, response.status_code)

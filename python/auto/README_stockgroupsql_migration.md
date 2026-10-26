@@ -121,6 +121,7 @@ Python 后台页（``web/routes/admin.py``）**不接登录态**：member 表只
 
 | 路由 | PHP 对应 | 说明 |
 | --- | --- | --- |
+| ``GET /admin`` ``GET /admin/`` | （新）入口 | 302 跳 ``/admin/groups``（PHP 没有 ``/admin``，但人手敲最自然，别给 404） |
 | ``GET /admin/groups`` | （新）列表 | 全部分组 + 成员数 + 编辑/删除链接 |
 | ``GET /admin/group/new`` | ``editstockgroupcn.php?new=`` | 新建表单（组名预填 ``@符号``） |
 | ``GET /admin/group/<id>`` | ``editstockgroupcn.php?edit=`` | 编辑表单（组名 + 成员符号多行） |

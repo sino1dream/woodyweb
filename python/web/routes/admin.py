@@ -83,6 +83,20 @@ def _group_rows(source: MySqlFundDataSource) -> list:
     return rows
 
 
+@admin_bp.route("")
+@admin_bp.route("/")
+def admin_index():
+    """``/admin`` 与 ``/admin/`` 直接跳到分组列表。
+
+    PHP 没有"/admin"这个入口（后台是 ``editstockgroupcn.php`` 一张页面），
+    本地把 ``/admin/groups`` 当入口用。但页头导航的「后台」和页脚的
+    「后台管理」都指这里，人手敲 ``/admin`` 才是最自然的猜法 ——
+    给它 404 不合理，跳过去就完了（2026-10-26 加，起因是用户实测
+    ``http://127.0.0.1:5000/admin`` 报 Not Found）。
+    """
+    return redirect(url_for("admin.groups"))
+
+
 @admin_bp.route("/groups")
 def groups():
     """分组列表（PHP 没有独立列表页——那边列表就是 mystockgroupcn 的
