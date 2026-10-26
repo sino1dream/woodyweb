@@ -257,6 +257,17 @@ h2 {
   font-size: 0.9em;
 }
 
+/* 提示行里的「恢复默认顺序」—— .table-note 把整段染成 #777，
+   链接跟着变灰就看不出可点，单独给回主色。 */
+.sort-note a {
+  color: #049acc;
+  text-decoration: none;
+}
+
+.sort-note a:hover {
+  text-decoration: underline;
+}
+
 .fund-list td.symbol {
   font-family: Consolas, "Courier New", monospace;
   white-space: nowrap;
