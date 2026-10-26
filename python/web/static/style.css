@@ -223,6 +223,40 @@ h2 {
   background: #fafcfd;
 }
 
+/* 表头排序链接（2026-10-26）：整格可点，箭头紧跟列名。
+   表头底色是深蓝，链接必须显式给白色 —— 否则会吃到 .fund-list td a 的
+   青蓝色，在深底上几乎看不清。 */
+.fund-list thead th.sortable {
+  padding: 0;
+}
+
+.fund-list thead th.sortable a {
+  display: block;
+  padding: 8px 10px;
+  color: #fff;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.fund-list thead th.sortable a:hover {
+  background: #037ea8;
+  text-decoration: none;
+}
+
+.fund-list thead th.sorted a {
+  background: #037ea8;
+  font-weight: bold;
+}
+
+.fund-list .sort-mark {
+  margin-left: 4px;
+  font-size: 0.85em;
+}
+
+.sort-note {
+  font-size: 0.9em;
+}
+
 .fund-list td.symbol {
   font-family: Consolas, "Courier New", monospace;
   white-space: nowrap;

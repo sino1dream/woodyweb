@@ -1001,10 +1001,18 @@ def fund_page_in_group(group: str, symbol: str):
 
 @fund_bp.route("/fund/<group>")
 def fund_group_page(group: str):
-    """分组列表页，例如 /fund/qdiilof、/fund/qdiietf。"""
+    """分组列表页，例如 /fund/qdiilof、/fund/qdiietf。
+
+    ``?sort=<列键>&order=asc|desc`` 控制升降序（2026-10-26 加的本地增强，
+    表头每格都是这两个参数的链接）。列键与 ``order`` 的合法性由
+    ``fund_list_service`` 判定：不认识的键忽略、不认识的顺序退化 ——
+    URL 是用户可编的，不能让它 500。
+    """
     service = _get_list_service()
+    sort_key = (request.args.get("sort") or "").strip()
+    order = (request.args.get("order") or "").strip().lower()
     try:
-        output = service.get_group(group)
+        output = service.get_group(group, sort=sort_key or None, order=order or None)
     except FundGroupNotFoundError:
         # 分组名不存在时退化成「当成基金符号」的旧行为，保证 /fund/SZ161130 仍然可用
         return _render_fund(group, get_symbol_group(group))

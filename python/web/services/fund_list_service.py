@@ -38,6 +38,128 @@ class FundGroupNotFoundError(LookupError):
     """分组名不存在。"""
 
 
+# ---------------------------------------------------------------------------
+# 列定义与排序（2026-10-26 用户要求：19 个栏目全部支持升降序）
+# ---------------------------------------------------------------------------
+#: 列定义：(键, 显示名, 排序类型)。
+#:
+#: * **键** —— 同时是行字典里的字段名、URL 参数 ``?sort=`` 的取值、以及
+#:   表头 ``data-sort`` 的值。三者共用一套名字，少一层映射就少一处能写错；
+#: * **类型** —— 决定排序怎么比：``number`` 按浮点比（涨跌幅 / 溢价要剥掉
+#:   ``%``），``date`` / ``time`` 按定宽文本比（``2026-10-22``、``13:05:00``
+#:   字典序即时间序，不必解析成 datetime），``text`` 按字节序比。
+#:
+#: **顺序有意义**：表头、:meth:`FundListService.get_group` 返回的 ``columns``
+#: 与排序键全部从这一份生成 —— 改列只改这里，别在模板里另抄一遍列名。
+FUND_LIST_COLUMNS = (
+    ("symbol", "基金代码", "text"),
+    ("name", "名称", "text"),
+    ("est_symbol", "跟踪代码", "text"),
+    ("position", "仓位", "number"),
+    ("net_value", "基金净值", "number"),
+    ("net_value_date", "基金净值日期", "date"),
+    ("quote_date", "最新行情日期", "date"),
+    ("quote_time", "行情更新时间", "time"),
+    ("price", "最新价", "number"),
+    ("change", "涨跌幅", "number"),
+    ("premium", "溢价率", "number"),
+    ("quote_source", "数据源", "text"),
+    ("official_est", "官方EST", "number"),
+    ("est_date", "EST日期", "date"),
+    ("official_premium", "溢价", "number"),
+    ("fair_est", "参考EST", "number"),
+    ("fair_premium", "溢价", "number"),
+    ("realtime_est", "实时EST", "number"),
+    ("realtime_premium", "溢价", "number"),
+)
+
+SORT_ASC = "asc"
+SORT_DESC = "desc"
+
+#: 键 -> 类型。
+SORT_KINDS = {key: kind for key, _, kind in FUND_LIST_COLUMNS}
+
+#: 键 -> 显示名（页面提示"当前按 X 排序"用）。
+_LABEL_OF = {key: label for key, label, _ in FUND_LIST_COLUMNS}
+
+#: 某一列**第一次**被点击时给的顺序。
+#:
+#: 数值列先给降序 —— 看涨跌幅 / 溢价 / 净值时人总是先想看最大那个；
+#: 文本与日期列先给升序（时间正序、字典序）。已排序列再点就翻转。
+_FIRST_ORDER = {"number": SORT_DESC}
+_DEFAULT_FIRST_ORDER = SORT_ASC
+
+
+def sort_value(displayed: Any, kind: str) -> Any:
+    """把**页面显示的文本**解析成可比较的值；空值或解析不了返回 ``None``。
+
+    刻意拿显示文本当排序依据，而不是另存一份原始数值：这样「看到什么就按什么
+    排」，不会出现"显示 1.55 但按 1.5468 排"的错位。代价是显示精度一致的
+    两个值会判成相等 —— 相等时由 ``sort_rows`` 的稳定性兜住（保持原顺序）。
+    """
+    text = "" if displayed is None else str(displayed).strip()
+    if not text:
+        return None
+    if kind == "number":
+        if text.endswith("%"):
+            text = text[:-1].strip()
+        try:
+            return float(text)
+        except (TypeError, ValueError):
+            return None
+    return text
+
+
+def sort_rows(rows: Any, key: str, order: str = SORT_ASC) -> list:
+    """按一列排序；**空值恒排最后**（升序降序都一样）。
+
+    空值放最后是有意的：缺净值的基金不该因为升序就霸占第一屏。
+    相等值保持原顺序（Python 的 ``sort`` 稳定），而原顺序是分组定义里
+    手工排的顺序 —— 也就是说"没数据差别"时看到的是熟悉的顺序。
+    """
+    rows = list(rows)
+    kind = SORT_KINDS.get(key)
+    if kind is None:
+        return rows
+
+    filled = []
+    empty = []
+    for row in rows:
+        value = sort_value(row.get(key, ""), kind)
+        if value is None:
+            empty.append(row)
+        else:
+            filled.append((value, row))
+    # 只按第 0 项比，避免相等时退化成比较 dict（Python 3 会直接 TypeError）
+    filled.sort(key=lambda pair: pair[0], reverse=(order == SORT_DESC))
+    return [row for _, row in filled] + empty
+
+
+def build_column_defs(sort_key: str = None, order: str = None) -> list:
+    """表头用的列描述：标签 + 这一列的链接该带什么顺序 + 升/降箭头。
+
+    ``next_order`` 在这里算好，模板只负责渲染 —— "点已排序列翻转、点新列用
+    该类型的默认顺序"这条规则就只写了一遍，能被单测直接钉住。
+    """
+    defs = []
+    for key, label, kind in FUND_LIST_COLUMNS:
+        is_sorted = key == sort_key
+        if is_sorted:
+            next_order = SORT_ASC if order == SORT_DESC else SORT_DESC
+        else:
+            next_order = _FIRST_ORDER.get(kind, _DEFAULT_FIRST_ORDER)
+        defs.append({
+            "key": key,
+            "label": label,
+            "kind": kind,
+            "is_sorted": is_sorted,
+            "next_order": next_order,
+            "order_hint": "降序" if next_order == SORT_DESC else "升序",
+            "mark": ("▼" if order == SORT_DESC else "▲") if is_sorted else "",
+        })
+    return defs
+
+
 def _text(value: Any) -> str:
     """把数值转成页面显示文本，沿用 PHP 的 rtrim0() 口径。"""
     if value is None:
@@ -215,7 +337,7 @@ class FundListService:
         self.calibration_notes = notes
         return notes
 
-    def get_group(self, name: str) -> dict[str, Any]:
+    def get_group(self, name: str, sort: str = None, order: str = None) -> dict[str, Any]:
         """取一个分组的表头与全部数据行。
 
         列名对齐生产端 ``qdiicn.php`` 的**两张表**（本页合并成一张）：
@@ -234,6 +356,16 @@ class FundListService:
         ~~原「校准值 / 校准日期」两列 2026-10-19 删除~~：那是
         ``fundlistparagraph.php`` 的旧列，生产端当前页面没有；校准值仍由
         ``_auto_calibrate()`` 在取数前算好（EST 要用它），只是不再显示。
+
+        ## 排序（2026-10-26）
+
+        ``sort`` 是 :data:`FUND_LIST_COLUMNS` 里的键，``order`` 是
+        ``asc`` / ``desc``。**不认识的键直接忽略**（返回分组原顺序），
+        不认识的 ``order`` 退化成该类型的默认顺序 —— 表头链接虽然是页面
+        生成的，但 URL 是用户可编的，别让它变成 500。
+
+        PHP 的列表页没有排序（``?sort=symbol`` / ``?sort=premium`` 是
+        ``/qdii`` 那一页的估值表），所以这里是本地增强，不是迁移。
         """
         definition = get_fund_group(name)
         if definition is None:
@@ -248,31 +380,31 @@ class FundListService:
         # 整个分组只做一次（同一页可能有多只基金共用 QQQ，重复校准会白抓指数行情）。
         self._auto_calibrate(symbols)
         rows = [self._build_row(symbol) for symbol in symbols]
+
+        sort_key = sort if sort in SORT_KINDS else None
+        sort_order = None
+        if sort_key is not None:
+            sort_order = order if order in (SORT_ASC, SORT_DESC) else None
+            if sort_order is None:
+                sort_order = _FIRST_ORDER.get(
+                    SORT_KINDS[sort_key], _DEFAULT_FIRST_ORDER)
+            rows = sort_rows(rows, sort_key, sort_order)
+
         return {
             "name": name,
             "title": definition["title"],
             "description": definition["description"],
-            "columns": [
-                "基金代码",
-                "名称",
-                "跟踪代码",
-                "仓位",
-                "基金净值",
-                "基金净值日期",
-                "最新行情日期",
-                "行情更新时间",
-                "最新价",
-                "涨跌幅",
-                "溢价率",
-                "数据源",
-                "官方EST",
-                "EST日期",
-                "溢价",
-                "参考EST",
-                "溢价",
-                "实时EST",
-                "溢价",
-            ],
+            #: 纯标签列表（表头文字）。保留它是因为外界/测试按标签比对列；
+            #: 模板用下面的 ``column_defs``（带排序状态）。
+            "columns": [label for _, label, _ in FUND_LIST_COLUMNS],
+            "column_defs": build_column_defs(sort_key, sort_order),
+            #: 当前排序状态；都没设时是空串，模板据此决定是否显示"已排序"提示。
+            "sort_key": sort_key or "",
+            "sort_order": sort_order or "",
+            #: 当前排序列的显示名（页面提示用；没排序时为空串）。
+            "sort_label": _LABEL_OF.get(sort_key, "") if sort_key else "",
+            "sort_order_text": "" if not sort_order else (
+                "降序" if sort_order == SORT_DESC else "升序"),
             "rows": rows,
             "count": len(rows),
         }

@@ -8,11 +8,28 @@
   <h1>{{ group.title }}</h1>
   <p class="group-description">{{ group.description }}（共 {{ group.count }} 只）</p>
 
+  <p class="table-note sort-note">
+    点表头切换升/降序 —— 数值列（净值、涨跌幅、溢价…）第一次点先看最大的，
+    代码 / 名称 / 日期第一次点按正序；没有值的行恒排最后。
+    {% if group.sort_key %}
+      当前：按「{{ group.sort_label }}」{{ group.sort_order_text }}排列
+      <a href="{{ url_for('fund.fund_group_page', group=group.name) }}">恢复默认顺序</a>
+    {% endif %}
+  </p>
+
   {% if group.rows %}
     <table class="data-table fund-list">
       <thead>
         <tr>
-          {% for column in group.columns %}<th>{{ column }}</th>{% endfor %}
+          {# 表头每格是一个排序链接（2026-10-26）：列键/箭头/下一次的顺序
+             全部由 FundListService.build_column_defs() 算好，模板不判类型。
+             点已排序列翻转方向，点新列用该类型的默认方向（数值列先降序）。 #}
+          {% for column in group.column_defs %}
+            <th class="sortable{% if column.is_sorted %} sorted{% endif %}">
+              <a href="{{ url_for('fund.fund_group_page', group=group.name, sort=column.key, order=column.next_order) }}"
+                 title="按{{ column.label }}{{ column.order_hint }}排序">{{ column.label }}{% if column.mark %}<span class="sort-mark">{{ column.mark }}</span>{% endif %}</a>
+            </th>
+          {% endfor %}
         </tr>
       </thead>
       <tbody>

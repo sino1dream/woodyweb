@@ -4,8 +4,12 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}Palmmicro Python Web{% endblock %}</title>
-  {# 页面覆盖此 block 即可给主容器加类：fund_list.html 填 "wide" 放宽 980px #}
-  {% block main_class %}{% endblock %}
+  {# 注意：``main_class`` 这个 block **不能**声明在 head 里。
+     Jinja 的 block 在声明处就会渲染，写在这里会让 "wide" 变成 <head> 里的
+     一段纯文本 —— 浏览器遇到 <head> 里的非空文本会提前结束 head，把它当
+     body 的第一个文本节点显示出来（实测页面左上角多出一行 "wide"）。
+     所以它只在下面 <main> 的 class 属性里声明一次，页脚再用 self.main_class()
+     重取一次即可。 #}
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
@@ -30,9 +34,10 @@
     </nav>
   </header>
   {# 宽表格页（分组列表 19 列等）通过 main_class 把容器放宽，
-      否则表格溢出 980px 容器后被浏览器整体推向右侧 #}
+      否则表格溢出 980px 容器后被浏览器整体推向右侧。
+      block 就地声明在 class 里 —— 见 head 里那段注释为什么不能挪上去。 #}
   {% set main_class = self.main_class() | trim %}
-  <main class="site-main {% if main_class %}{{ main_class }}{% endif %}">
+  <main class="site-main {% block main_class %}{% endblock %}">
     {# flash 反馈（后台页的新建/编辑/删除结果）。PHP 那边用 trigger_error
        记日志、页面无反馈；这里给用户一个可见的结果提示。 #}
     {% with messages = get_flashed_messages() %}

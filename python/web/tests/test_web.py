@@ -329,19 +329,22 @@ class FundGroupRouteTest(unittest.TestCase):
         #   估值表      代码 | 官方EST | EST日期 | 溢价 | 参考EST | 溢价 | 实时EST | 溢价
         # 两处"日期"在本页合并成一张表，所以必须拆成「EST日期」与「最新行情日期」，
         # 否则会把估值的日期误读成行情日期。
+        #
+        # 2026-10-26 起表头每格都是排序链接，列名不再是裸 ``<th>列名</th>``，
+        # 而是 ``<th class="sortable"><a ...>列名</a></th>`` —— 断言按链接文本比。
         for column in (
             "基金代码", "名称", "跟踪代码", "仓位",
             "基金净值", "基金净值日期",
             "最新行情日期", "行情更新时间", "最新价", "涨跌幅", "溢价率", "数据源",
             "官方EST", "EST日期", "溢价", "参考EST", "溢价", "实时EST", "溢价",
         ):
-            self.assertIn("<th>%s</th>" % column, html)
-        # 2026-10-19 删除的两列不应再出现
-        self.assertNotIn("<th>校准值</th>", html)
-        self.assertNotIn("<th>校准日期</th>", html)
+            self.assertIn(">%s</a>" % column, html)
+        # 2026-10-19 删除的两列不应再出现（表头已是链接，按文本比）
+        self.assertNotIn("校准值", html)
+        self.assertNotIn("校准日期", html)
         # 旧的列名不应再出现
-        self.assertNotIn("<th>股票代码</th>", html)
-        self.assertNotIn("<th>日期</th>", html)
+        self.assertNotIn("股票代码</a>", html)
+        self.assertNotIn('>日期</a>', html)
 
     def test_etf_group_list_page_renders_table(self):
         response = self.client.get("/fund/qdiietf")
@@ -518,16 +521,16 @@ class RealtimeQuoteRouteTest(unittest.TestCase):
         html = response.get_data(as_text=True)
 
         # 拆分后的两列各自独立存在
-        self.assertIn('<th>EST日期</th>', html)
-        self.assertIn('<th>最新行情日期</th>', html)
+        self.assertIn('>EST日期</a>', html)
+        self.assertIn('>最新行情日期</a>', html)
         # 不再有歧义的裸"日期"列
-        self.assertNotIn('<th>日期</th>', html)
+        self.assertNotIn('>日期</a>', html)
         # 生产端参考数据表的「涨幅」→ 本页「涨跌幅」
-        self.assertIn('<th>涨跌幅</th>', html)
+        self.assertIn('>涨跌幅</a>', html)
         # 估值表三档各两列，列名照抄 fundestparagraph.php 的 TableColumn*
-        self.assertIn('<th>官方EST</th>', html)
-        self.assertIn('<th>参考EST</th>', html)
-        self.assertIn('<th>实时EST</th>', html)
+        self.assertIn('>官方EST</a>', html)
+        self.assertIn('>参考EST</a>', html)
+        self.assertIn('>实时EST</a>', html)
 
     def test_fund_list_has_net_value_columns(self):
         """「基金净值」与「基金净值日期」两列（新增）。
@@ -543,8 +546,9 @@ class RealtimeQuoteRouteTest(unittest.TestCase):
         response = self.client.get("/fund/qdiilof")
         html = response.get_data(as_text=True)
 
-        self.assertIn('<th>基金净值</th>', html)
-        self.assertIn('<th>基金净值日期</th>', html)
+        # 表头已是排序链接（2026-10-26），按链接文本断言
+        self.assertIn('>基金净值</a>', html)
+        self.assertIn('>基金净值日期</a>', html)
         self.assertIn('class="net-value"', html)
         self.assertIn('class="net-value-date"', html)
 
