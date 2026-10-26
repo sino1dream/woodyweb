@@ -199,11 +199,14 @@ class FundHoldingsBranchTest(unittest.TestCase):
         self.assertIn("穷举持仓比例", few)
         self.assertNotIn("穷举持仓比例", many)
 
-    def test_exhaustive_part_is_plain_text(self):
-        """穷举页本站点没有路由 → 退化成纯文字，不留死链。"""
+    def test_exhaustive_part_is_a_link(self):
+        """第三段是链接，指向 ``/holdings/exhaustive/<symbol>``。
+
+        2026-10-26 之前穷举页没有路由，那一段是**纯文字**；现在接上了，
+        所以这条测试从"不留死链"反转成"必须是链接"。
+        """
         html = self._html(FakeHoldingsRef(count=3))
-        self.assertIn("穷举持仓比例", html)
-        self.assertNotIn('<a href="/exhaustive', html)
+        self.assertIn('<a href="/holdings/exhaustive/SH513050">穷举持仓比例</a>', html)
 
     # -- 渲染 ----------------------------------------------------------
     def test_note_is_not_escaped(self):

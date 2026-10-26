@@ -43,7 +43,8 @@
     {% if holdings_memo %}
       {# 持仓型（EchoHoldingsEstParagraph，fundestparagraph.php:163-168）：
          整句是「仓位估算值使用X。基金持仓更新于Y。穷举持仓比例」，
-         三个链接由服务层拼好（/holdings/<sym> 那支可能是纯文字），
+         三个链接由服务层拼好（/holdings/<sym>、/holdings/exhaustive/<sym>
+         与仓位估算页，三者均已接路由），
          必须按原文渲染 —— 与 /stock、/holdings 两页同一句，同一套 |safe。 #}
       <p class="table-note">{{ holdings_memo | safe }}</p>
     {% elif fundest.memo_parts %}

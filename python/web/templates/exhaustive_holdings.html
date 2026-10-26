@@ -1,0 +1,101 @@
+{% extends "base.html" %}
+{% from "_data_table.html" import data_table %}
+{# 穷举持仓页 —— woody/res/exhaustiveholdingscn.php。
+
+   段落顺序照 PHP _echoExhaustiveHoldingsParagraph()：
+     ① 阈值输入表单（EchoEditInputForm）
+     ② 当前使用的持仓数据（id=current，整行黄底）
+     ③ 季报持仓（id=quarter）
+     ④ 穷举持仓比例（id=exhaustiveholdings）  ← 持仓数 <= 4 才有
+     ⑤ 验证最激进数据（id=verify）             ← 同上
+
+   没有账号层（PHP 的 $acct->EchoStockGroup() 那一层），所以页面直接从
+   URL 取符号；阈值走 ?input= 的 GET 表单 —— 它只影响读，没有副作用。 #}
+{% block title %}{{ symbol }}穷举持仓比例{% endblock %}
+{% block content %}
+  <h1>{{ symbol }} 穷举持仓比例</h1>
+
+  <p class="table-note">
+    仅用于不超过 4 个持仓用来估算的 QDII/LOF 基金：用连续几天"净值涨跌 + 各成分股涨跌 +
+    汇率变化"组方程，反推持仓最可能的实际比例与总体仓位。
+    公式为 <code>a·x + b·y + c·z − (f/n)·w = 1/n − c</code>，
+    方程数多于未知数时用最小二乘，刚好够数时用克莱姆法则。
+  </p>
+
+  {# ---- ① 阈值表单（EchoEditInputForm，php/ui/editinputform.php）----
+       PHP 是一个 GET 表单，提交后 ?input= 带回来；空串表示"不算"（页面只剩表单）。
+       `inputmode=decimal` 只是让手机弹数字键盘，PHP 那边是纯文本框。 #}
+  <form class="edit-input-form" method="get" action="{{ url_for('holdings.exhaustive_holdings_page', symbol=symbol) }}">
+    <label for="input">
+      进行穷举持仓比例计算的净值涨跌%阈值
+    </label>
+    <input type="text" id="input" name="input" size="6" value="{{ threshold_input }}"
+           inputmode="decimal" placeholder="{{ default_threshold }}">
+    <button type="submit">计算</button>
+  </form>
+
+  {% if skipped_by_input %}
+    <p class="table-note">
+      阈值留空 → 不做计算（与 PHP 一致：<code>if ($strInput != '')</code> 为假时整段不渲染）。
+      填一个百分数（默认 {{ default_threshold }}）再点「计算」。
+    </p>
+  {% elif not page %}
+    <p class="table-note">
+      取不到该基金的持仓数据（可能不是持仓型基金、库里没有持仓明细行，或暂时没有抓取到行情）。
+      <a href="{{ url_for('stock.stock_detail_page', symbol=symbol) }}">查看股票详情页</a>
+    </p>
+  {% else %}
+    <p class="table-note">
+      当前阈值 <strong>{{ page.threshold }}</strong>%：净值涨跌超过它的交易日才进方程。
+    </p>
+
+    {# ---- ② 当前使用的持仓数据 ----
+         整行黄底（PHP 的 EchoMatchTableColumn($ar) 不传第二个参数 = true）。 #}
+    {% if page.current %}
+      <h2>{{ page.current.title }}</h2>
+      {{ data_table(page.current, "holdings-current-table") }}
+    {% endif %}
+
+    {# ---- ③ 季报持仓 ----
+         季报里出现过、但当前持仓没有的标的会额外占几列（服务层按同一顺序填格）。 #}
+    {% if page.quarter %}
+      <h2>{{ page.quarter.title }}</h2>
+      {{ data_table(page.quarter, "holdings-quarter-table") }}
+    {% else %}
+      <p class="table-note">库里没有该基金的季报持仓记录。</p>
+    {% endif %}
+
+    {% if not page.solvable %}
+      <p class="table-note">
+        持仓数 {{ page.count }} 超过 4 只，未知数比方程还多 ——
+        后两张表不计算（PHP 的 <code>if ($iCount &lt;= 4)</code>）。
+      </p>
+    {% else %}
+      {# ---- ④ 穷举持仓比例 ----
+           表头有「误差」列但数据行没有那一格（PHP 原样如此），所以行比表头短一格。 #}
+      {% if page.exhaustive %}
+        <h2>{{ page.exhaustive.title }}</h2>
+        {{ data_table(page.exhaustive, "holdings-exhaustive-table") }}
+      {% else %}
+        <p class="table-note">可用交易日不足（净值反转日少于持仓数），解不出比例。</p>
+      {% endif %}
+
+      {# ---- ⑤ 验证最激进数据 ---- #}
+      {% if page.verify %}
+        <h2>{{ page.verify.title }}</h2>
+        {{ data_table(page.verify, "holdings-verify-table") }}
+      {% endif %}
+    {% endif %}
+
+    <p class="table-note">
+      黄底行 = 算出来的比例与库里现有持仓**逐格一致**；红字 = 负数比例或仓位落在
+      0.25–1.25 之外（方程解崩了，多半是那几天的行情有缺口）。
+    </p>
+  {% endif %}
+
+  <p>
+    <a href="{{ url_for('holdings.holdings_page', symbol=symbol) }}">基金持仓</a>
+    <a href="{{ url_for('stock.stock_detail_page', symbol=symbol) }}">股票详情</a>
+    <a href="{{ url_for('main.index') }}">返回首页</a>
+  </p>
+{% endblock %}

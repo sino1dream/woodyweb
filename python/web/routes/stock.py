@@ -203,10 +203,8 @@ def _holdings_note_links(symbol: str) -> dict:
     与 :func:`web.routes.holdings._note_links` 同一份内容 —— ``/stock`` 的
     持仓分支与 ``/holdings`` 页共用这句说明，两处必须给出一样的 URL。
 
-    **"穷举持仓比例"本站点没有路由，恒传 ``None``** —— 说明文字里退化成
-    纯文字（``stock_detail_service._note_link``），比给个死链好。
-    同理``links`` 非 ``None`` 时整个字典缺键也会退化成纯文字，所以这里
-    三个键都给全。
+    三个键**全都接上了**（2026-10-26 穷举页路由落地后补的第三个）；
+    ``links`` 非 ``None`` 时整个字典缺键会退化成纯文字，所以三个键都给全。
 
     为什么替掉 PHP 的链接：``ref.stocklink`` 给的是 ``/woody/res/xxx.php``
     形 URL，那是迁移替身，Flask 站点上点不动（见
@@ -215,7 +213,7 @@ def _holdings_note_links(symbol: str) -> dict:
     return {
         "position": url_for("history.history_page", kind="fundposition", symbol=symbol),
         "holdings": url_for("holdings.holdings_page", symbol=symbol),
-        "exhaustive": None,
+        "exhaustive": url_for("holdings.exhaustive_holdings_page", symbol=symbol),
     }
 
 

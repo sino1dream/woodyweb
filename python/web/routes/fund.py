@@ -812,8 +812,9 @@ def _build_holdings_est(symbol: str) -> dict[str, Any] | None:
     links = {
         "position": url_for("history.history_page", kind="fundposition", symbol=symbol),
         "holdings": url_for("holdings.holdings_page", symbol=symbol),
-        #: 「穷举持仓比例」页本站点还没有路由，恒 None（退化成纯文字）
-        "exhaustive": None,
+        #: 「穷举持仓比例」页（2026-10-26 新接）—— 三个链接与 /stock、
+        #: /holdings 两处逐键相同，否则同一符号在不同页面点出的结果不一样。
+        "exhaustive": url_for("holdings.exhaustive_holdings_page", symbol=symbol),
     }
     try:
         sections = get_holdings_est_sections(

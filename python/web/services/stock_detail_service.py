@@ -215,6 +215,8 @@ def _is_symbol_a(ref: Any) -> bool:
 
 #: ``fundestparagraph.php:168``：``if ($ref->CountHoldings() <= 4)`` ——
 #: 持仓超过这么多就不给"穷举持仓比例"链接（未知数太多，反推不出比例）。
+#: 上限同时被穷举页自己用（``_echoExhaustiveHoldingsParagraph`` 的
+#: ``if ($iCount <= 4)`` 决定后两张表算不算），两处必须一致。
 EXHAUSTIVE_HOLDINGS_LIMIT = 4
 
 
@@ -231,9 +233,9 @@ def _invoke_ref(ref: Any, snake: str, camel: str) -> Any:
 def _note_link(href: Any, text: str) -> str:
     """有 href 就包 ``<a>``，没有就纯文字。
 
-    PHP 那三个链接（``stocklink`` 一族）恒给得出 URL；Flask 站点上
-    "穷举持仓比例"页还没有路由，注入 ``links`` 时那一项可能就是 ``None``。
-    少一个链接只是少一处可点，**不能少一句文案** —— PHP 的句子结构是固定的。
+    PHP 那三个链接（``stocklink`` 一族）恒给得出 URL；Flask 站点上由路由注入
+    ``url_for`` 结果（三个键 2026-10-26 起全部接上）。传 ``None`` 时退化成
+    纯文字 —— 少一个链接只是少一处可点，**不能少一句文案**，PHP 的句子结构是固定的。
     """
     return '<a href="%s">%s</a>' % (href, text) if href else text
 
@@ -484,8 +486,9 @@ class StockDetailService:
           （``/woody/res/xxx.php?symbol=…``）。那是迁移替身，Flask 站点上点不动，
           保留它是为了既有测试与调用方不变；
         * ``links={...}`` —— 路由层注入 Flask 的 ``url_for`` 结果，键为
-          ``position`` / ``holdings`` / ``exhaustive``。**缺哪个键，哪一段就退化成
-          纯文字**（比如"穷举持仓比例"页还没有路由时）。
+          ``position`` / ``holdings`` / ``exhaustive``（三个键 2026-10-26 起
+          都有路由）。**缺哪个键，哪一段就退化成纯文字** —— 这是给
+          "某个页面暂时没有路由"留的降级口子。
 
         仓位走 :func:`sql.historytable.php_number_format`（PHP 的
         ``number_format`` 口径，保留尾零）—— 与 ``fundest_service`` 里同一句
