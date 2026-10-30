@@ -129,9 +129,25 @@ def china_index_get_coal_array():
     return ["SZ161032", "SZ168204"]
 
 
+def china_index_get_star_array():
+    """科创 50 段（四只上交所 ETF）。
+
+    **本地 PHP 快照里没有这一段**，生产端 ``woody/res/chinaindexcn.php``
+    （2026-10-30 抓取）有：线上 27 行 = 本地 23 行 + 这 4 只，位置在
+    A 股宽基段（``china_index_get_ashr_array()``）之后、深证 100 段之前。
+
+    按"生产端可观测输出优先于本地旧快照"补进来（与
+    :func:`qdii_get_symbol_array` 的那 8 只同一处理原则）。这四只在
+    ``stock`` 表里要有行才显示得出来 —— 演示库缺行时用
+    ``dbtools/seed_demo_data.py`` 的补种清单补。
+    """
+    return ["SH588000", "SH588050", "SH588080", "SH588090"]
+
+
 def china_index_get_symbol_array():
     return (
         china_index_get_ashr_array()
+        + china_index_get_star_array()
         + china_index_get_sz100_array()
         + china_index_get_coal_array()
         + [
@@ -339,11 +355,25 @@ def qdii_hk_get_index_symbol_array():
 
 
 def qdii_hk_get_symbol_array():
+    """港股 QDII 分类（``php/stock/stocksymbol.php`` 的 ``QdiiHkGetSymbolArray()``）。
+
+    **末尾的港股混合段（``get_hk_mix_symbol_array()``）是后加的**：本地 PHP
+    快照是 29 只，生产端 ``woody/res/qdiihkcn.php``（2026-10-30 抓取）是
+    38 只，多出来的正好是那 9 只港股混合。它们原先只挂在
+    :func:`qdii_mix_get_symbol_array` 上，生产端已经改成归到港股这一页
+    —— 所以 qdiimix 那边同时减掉了这 9 只（两处必须一起改，不然同一只
+    标的会同时算两个分类，或者两个分类都没有）。
+
+    影响的是"这只标的是哪一族"：``in_array_qdii_hk`` 会被
+    ``history_service._qdii_region()`` 与编辑页的中间价选择用到，改完之后
+    这 9 只从"无地区"变成 ``hk``（汇率列 ``HKCNY``），与生产端一致。
+    """
     return (
         ["SH501025", "SZ161124"]
         + qdii_hk_get_tech_symbol_array()
         + qdii_hk_get_h_shares_symbol_array()
         + qdii_hk_get_hang_seng_symbol_array()
+        + get_hk_mix_symbol_array()
     )
 
 
@@ -430,6 +460,67 @@ def in_array_lof_mix(symbol):
 
 
 def qdii_mix_get_symbol_array():
+    """混合型 QDII 分类（``QdiiMixGetSymbolArray()``）—— **15 只，不是 32 只**。
+
+    本地 PHP 快照是 32 只，生产端 ``woody/res/qdiimixcn.php``（2026-10-30
+    抓取）只有 15 只：原先并在这里的 17 只已经各自归队 ——
+
+    * 8 只（``SZ159509`` ``SZ159529`` ``SH501312`` ``SZ160216``
+      ``SZ164701`` ``SZ163208`` ``SH513850`` ``SZ159577``）
+      → 生产端把它们**并入** :func:`qdii_get_symbol_array` 的追加段；
+    * 9 只港股混合 → :func:`qdii_hk_get_symbol_array` 末尾。
+
+    所以这里不能再用 :func:`get_lof_mix_symbol_array` 拼 —— 那 14 只里
+    有 4 只已经不在本页（``SH501312`` / ``SZ163208`` / ``SZ160216`` /
+    ``SZ164701``），而且剩下的顺序也不同（``SZ161815`` 到末尾）。
+    本页的行序就是数组顺序，所以按生产端逐行对齐后写死。
+
+    **``in_array_qdii_mix`` 的语义跟着变小**，这会影响几处判断（都与生产端
+    PHP 同一口径，见各自的 docstring）：``use_same_day_net_value`` 的
+    is_mix、``history`` 的 ``is_mix`` 列、``portfolio``/``transaction`` 的
+    QDII 口径。逐例核对过：那 17 只里 8 只在 ``qdii`` 数组里（判 QDII 优先，
+    行为不变）、9 只在 ``qdii_hk`` 里（判 hk，行为反而与生产端对齐）。
+
+    **持仓覆盖率不在这里**：``_qdiimix.php`` 那 32 个详情页没变，需要
+    "持仓型 QDII 全集"时用 :func:`qdii_mix_holdings_symbol_array`。
+    """
+    return (
+        ["SH513360"]
+        + [
+            "SH501225",
+            "SZ160644",
+            "SZ164824",
+            "SH501018",
+            "SZ160723",
+            "SZ161129",
+            "SZ160719",
+            "SZ161116",
+            "SZ165513",
+            "SZ161815",
+        ]
+        + get_china_internet_symbol_array()
+    )
+
+
+def qdii_mix_holdings_symbol_array():
+    """持仓型 QDII 的**全集**（32 只）—— 与上面的分类页数组不是一回事。
+
+    出处是 ``woody/res/php/_qdiimix.php``：它被 32 个**符号详情页**
+    （``sh513090cn.php`` / ``sz159509cn.php`` …）逐个 ``require``，页面里
+    要摆持仓明细（``EchoHoldingsEstParagraph`` / 季报 / 份额），所以后台
+    必须为这 32 只维护持仓数据。
+
+    注意两点：
+
+    1. 这 32 个页面是**手写 include**，不是从 ``QdiiMixGetSymbolArray()``
+       反推 —— 所以分类页数组收窄到 15 只之后，这里仍然是 32 只（2026-10-30
+       逐文件核对：``grep -l _qdiimix.php woody/res/*.php`` 正好 32 个，
+       与本地 PHP 快照的旧数组成员完全一致）；
+    2. 这 8 只跨数组的（``qdii`` 里也有）**没有** est 符号，估值走持仓口径，
+       所以它们进这个清单不矛盾。
+
+    用法见 ``auto/updater/holdingsupdater.py::qdiimix_holdings_symbols()``。
+    """
     return (
         ["SH513360", "SZ159509", "SZ159529"]
         + get_lof_mix_symbol_array()

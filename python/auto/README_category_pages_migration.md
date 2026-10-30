@@ -117,14 +117,17 @@ PHP 那边对应 `$acct->EchoLinks($strPage)`。对应地
 ### 6.1 与本地 PHP（`_php_category_compare.py`）
 
 ```
-共 17 例：一致 15，按设计差异 2，失败 0
+共 17 例：一致 12，按设计差异 5，失败 0
 ```
 
-两例"按设计差异"：
+五例"按设计差异"（Python 跟生产端、本仓库是旧快照，详见 §七）：
 
 | 分类 | 差异 | 原因 |
 |---|---|---|
-| `qdii` | PHP 33 / Python 41 | 生产端已扩充，本仓库是旧快照。见 `core/stocksymbol.py::qdii_get_symbol_array()` |
+| `qdii` | PHP 33 / Python 41 | 生产端已扩充 8 只，见 `core/stocksymbol.py::qdii_get_symbol_array()` |
+| `chinaindex` | PHP 23 / Python 27 | 生产端多了 4 只科创 50，见 `china_index_get_star_array()` |
+| `qdiihk` | PHP 29 / Python 38 | 生产端把那 9 只港股混合并进本页，见 `qdii_hk_get_symbol_array()` |
+| `qdiimix` | PHP 32 / Python 15 | 生产端把那 17 只分给了 `qdii` 与 `qdiihk`，见 `qdii_mix_get_symbol_array()` |
 | `commodity` | 成员一致、排列不同 | 页面行序按生产端排，见下 |
 
 `commodity` 的黄金段：本地 PHP 快照的顺序是
@@ -137,52 +140,112 @@ PHP 那边对应 `$acct->EchoLinks($strPage)`。对应地
 
 ### 6.2 与生产端（`_prod_category_check.py`，2026-10-30 抓取）
 
+第一轮跑出来 3 处漂移，第二轮已经修掉，现在：
+
 ```
-共 17 个分类：一致 14，漂移 3，抓取/解析失败 0
+共 17 个分类：一致 17，漂移 0（其中线上更多 0），抓取/解析失败 0
 ```
 
-| 分类 | 线上 | 本地 | 线上多出来 / 本地多出来 |
-|---|---|---|---|
-| `chinaindex` | 27 | 23 | 线上多 4 只：`SH588000 SH588050 SH588080 SH588090`（科创 50 ETF，插在 Ashr 组之后、深证 100 组之前） |
-| `qdiihk` | 38 | 29 | 线上多 9 只：`SH513090 SH513230 SH513750 SH513990 SZ159567 SZ159570 SZ159615 SZ159751 SZ159792`（接在恒生指数组之后） |
-| `qdiimix` | 15 | 32 | 本地多 17 只 = 上面 9 只 + qdii 那 8 只（生产端把这 17 只搬去了 `qdii` / `qdiihk`，本地快照还是旧口径） |
+那 3 处的原始数据与修法见 §七。
 
-**这一轮没有修**，原因不是"懒得修"，而是这三处都不是本页的事：数组在
-`core/stocksymbol.py`，是**全站公共资产**，改成员会牵动下面这些地方：
+## 七、第二轮：把三处数组漂移补上
 
-| 调用点 | 影响 |
-|---|---|
-| `web/routes/fund.py:132 _is_qdii_symbol()` | `/fund/<symbol>` 走 QDII 分支还是持仓（Holdings）分支 |
-| `web/services/history_service.py`（`is_mix=`） | 净值预览/历史表的取数口径 |
-| `web/services/portfolio_service.py`、`transaction_service.py` | QDII 判定影响份额与金额的换算 |
-| `auto/updater/holdingsupdater.py` | **后台抓哪些符号的持仓** |
-| `web/services/stock_option_service.py:1017` | 编辑页某个选项的可用性 |
+### 7.1 改了什么
 
-所以它是一条独立的"数据修正 + 逐页回归"任务，不该夹带在页面迁移里
-（改动范围与上一轮 `editstockamount` 那种"加一个写入口"完全不是一个量级）。
-线上顺序已经落在 `auto/_scratch/_prod_category_cache/<name>.order.json`，
-下一轮照着它补数组即可，不用重新抓。
+| 分类 | 线上 | 改前 | 改后 | 改法 |
+|---|---|---|---|---|
+| `chinaindex` | 27 | 23 | 27 | 新增 `china_index_get_star_array()`（4 只科创 50），插在 ashr 段之后、深证 100 段之前 |
+| `qdiihk` | 38 | 29 | 38 | `qdii_hk_get_symbol_array()` 末尾追加 `get_hk_mix_symbol_array()` |
+| `qdiimix` | 15 | 32 | 15 | 改成显式 15 只；那 17 只归 `qdii`（8）/ `qdiihk`（9） |
 
-## 七、演示库现状：有的分类估值段是空的
+三处**必须一起改**：`qdiihk` 加 9 只与 `qdiimix` 减 9 只是同一件事的两半
+（生产端把这批从"混合"改判成"港股"），只改一边就会变成"两个分类都有它"
+或"两个分类都没有它"。
+
+### 7.2 为什么 `qdii_mix_get_symbol_array()` 不能再拼子数组
+
+原来它是
+`["SH513360","SZ159509","SZ159529"] + get_lof_mix_symbol_array() + 中国互联网 + 港股混合 + MSCI美国50`。
+现在那 17 只走了，`get_lof_mix_symbol_array()` 里也有 4 只（`SH501312`
+`SZ163208` `SZ160216` `SZ164701`）不在本页了，而且剩下部分的**顺序**也变了
+（`SZ161815` 到末尾）。所以改成显式列表 + 逐行对齐。
+
+三个"段"函数 `get_lof_mix_symbol_array()` / `get_hk_mix_symbol_array()` /
+`get_msci_us50_symbol_array()` **没动** —— 它们各有独立语义：
+`in_array_lof_mix` 决定历史页走持仓口径、`in_array_hk_mix` 参与
+`use_same_day_net_value()`、msci 那个是 `mscius50` 分类页的数组。
+
+### 7.3 持仓覆盖率不能跟着收窄（最容易踩的一脚）
+
+`holdingsupdater.qdiimix_holdings_symbols()` 原来直接返回
+`qdii_mix_get_symbol_array()`。数组一收窄，**后台就会静默少抓 17 只的持仓**：
+不报错、不警告，只是那些详情页的持仓明细停止更新。
+
+所以新增 `qdii_mix_holdings_symbol_array()`（32 只）专供持仓更新，出处是
+`woody/res/php/_qdiimix.php` 被 **32 个符号详情页**逐个 `require`
+（`grep -l _qdiimix.php woody/res/*.php` 正好 32 个，与旧数组成员完全一致）。
+判据是"页面需要什么数据"，不是"分类页数组有几个"。
+
+### 7.4 影响面逐项核对
+
+改公共数组会牵动下面这些判断，逐条对过 —— 结论都是**与生产端 PHP 同口径**，
+不是"顺手改"：
+
+| 调用点 | 那 17 只的变化 | 结论 |
+|---|---|---|
+| `history_service._qdii_region()` | 9 只港股混合：`None` → `hk` | 汇率列从空变成 `HKCNY`，与生产端一致（这 9 只本来就是港股 QDII） |
+| `history_service` 的 `is_mix=` | 17 只全部 `True` → `False` | `use_same_day_net_value()` 的结果**不变**：8 只仍 `is_qdii=True`（先判 QDII → false），9 只仍 `is_hk_mix=True`（`is_mix` 假时直接返回 true） |
+| `portfolio_service._in_qdii()` | 9 只 `True` → `False` | 不再进 `cny.add_qdii()` 折算 —— 这 9 只是**人民币计价**的场内 ETF，之前按仓位折汇是错的 |
+| `transaction_service` 的 `prev` | 9 只 `True` → `False` | "确认校准"提示改用**当天**净值（A 股 ETF 当天出净值），之前错用前一天 |
+| `stock_option_service._qdii_region()` | 9 只 → `hk` | 编辑页校准值的中间价从"无"变成 `HKCNY` |
+| `stock_option_service` 的 `in_array_china_index` | 4 只科创 50 → `True` | 校准值判 `1.0`（境内指数基金不乘汇率），这 4 只本来就是境内 ETF |
+| `holdingsupdater` | 不变（32 只） | 见 §7.3 |
+
+`fund_symbols()` 的并集**一点没变**（102 只）：那 17 只只是换了数组，
+没有进出。所以 `seed_p0_symbols` 不用重跑；五个数组现在两两不相交，
+`test_stocksymbol.SymbolGroupAlignmentTest` 把这条与"数量/位置"一起钉住了。
+
+### 7.5 还没解决的问题（都记在这，别下次又踩）
+
+1. **`SH588xxx` 的 `IsFundA()`**：生产端 `chinaindexcn.php` 里这 4 只的代码列链接是
+   `finance.sina.com.cn/fund/quotes/588000/bc.shtml`（基金页），Python 走的是
+   `realstock/company/sh588000/nc.shtml`（股票页）。说明生产端的
+   `_isDigitShangHaiEtf` 区间比本地快照（`510000..569999`）宽 —— 但具体上限
+   无法从页面反推（570000–588999 之间还有 580xxx 权证），**没动**。
+   影响仅限链接形态与"是否进 EST 表"，不影响行数与排序。
+2. **`chinaindex` 27 行全部显示「库里无此符号」**：演示库连原有的 23 只
+   A 股 ETF 都没有 `stock` 行（不只是新加的 4 只科创 50）。属 P0 数据层缺口，
+   补法是 `seed_p0_symbols` 那类脚本 + 净值回填，与数组无关。
+3. 线上行序缓存在 `auto/_scratch/_prod_category_cache/<name>.order.json`
+   （gitignore）。下次复核直接跑 `_prod_category_check.py`，别手抄数组。
+
+## 八、演示库现状：有的分类估值段是空的
 
 真库 smoke 结果（`build_category_page` 的 `counts`）：
 
-| 分类 | 符号 | 算出官方净值 | 页面上的估值段 |
-|---|---|---|---|
-| `biotech` | 3 | 3 | 有 |
-| `oilfund` | 9 | 5 | 有（缺 4 只的行不摆，PHP 同义） |
-| `spyfund` | 5 | 5 | 有 |
-| `hstech` | 13 | **0** | **整段不摆** |
-| `hangseng` | 8 | **0** | **整段不摆** |
-| `mscius50` | 2 | **0** | **整段不摆** |
-| `chinaindex` | 23 | **0** | **整段不摆** |
+| 分类 | 符号 | 算出官方净值 | 页面上的估值段 | 缺 `stock` 行 |
+|---|---|---|---|---|
+| `biotech` | 3 | 3 | 有 | 0 |
+| `oilfund` | 9 | 5 | 有（缺 4 只的行不摆，PHP 同义） | 0 |
+| `spyfund` | 5 | 5 | 有 | 0 |
+| `hstech` | 13 | **0** | **整段不摆** | 0 |
+| `hangseng` | 8 | **0** | **整段不摆** | 0 |
+| `mscius50` | 2 | **0** | **整段不摆** | 0 |
+| `chinaindex` | 27 | **0** | **整段不摆** | **27（全部）** |
 
 不是页面逻辑的问题：`netvaluehistory` 里这些符号只有**一条**很早的行
 （例如 `SH513180` 只有 `0.521 @ 2026-10-13`），而 `SH513100` 有 23 条到 10-28，
 官方净值就算得出来。生产端这 13 只全有 EST，说明是**演示库的数据缺口**。
 补法走既有的净值回填流程（`backfill_nav_history.py`），与本页无关。
 
-## 八、单测
+`chinaindex` 多一层缺口：那 27 只 A 股 ETF 在 `stock` 表里**一行都没有**
+（连第一轮就在数组里的 23 只也没有），所以代码列旁边一律显示
+「库里无此符号」。这不是本轮新加的 4 只带出来的问题 —— 补 4 只不会让页面
+变完整，要么整批补（`seed_p0_symbols` 那类脚本 + 净值/行情回填），要么先摆着。
+`qdiihk` 新增的 9 只反而**不缺行**：它们原先在 `qdii_mix` 里，本来就在
+`fund_symbols()` 的并集里。
+
+## 九、单测
 
 `web/tests/test_category_pages.py`（19 个），分三段：
 
@@ -196,18 +259,24 @@ PHP 那边对应 `$acct->EchoLinks($strPage)`。对应地
    未知分类 404、`/qdii` 与 `/category/qdii` 同页、排序链接指回**当前** endpoint、
    `?sort=` 三个值都接受、页尾导航不列自己、库挂掉时页面仍能打开。
 
-**不**断言数组的具体数量：数组会随基金发行增长，写死只会变成维护负担；
+**web 侧不**断言数组的具体数量：数组会随基金发行增长，写死只会变成维护负担；
 "与 PHP/生产端一致"交给两个 `_scratch` 脚本。但**不变量**要钉住
 （形状、无重复、硬编码追加项、行序）。
+
+**auto 侧反过来要钉死数量**：`test_stocksymbol.SymbolGroupAlignmentTest`（5 个）
+专门锁第二轮的三个数组 —— 数量（27 / 38 / 15）、位置（科创 50 段在 ashr 之后、
+hk_mix 在港股末尾）、`qdii_mix` 不含那 17 只、持仓全集 32 只、五个数组两两不相交。
+理由：这三处是"照着生产端页面逐行对齐"的结果，不是随手拼的集合；
+只要数量或位置一变，页面行序就跟生产端对不上了，而单测是唯一能自动发现这件事的地方。
 
 跑法：
 
 ```bash
 cd python/web && D:/python/python.exe -B -m unittest discover -s tests -t .   # 1067
-cd python/auto && D:/python/python.exe -B -m unittest discover -s . -p "test_*.py"  # 1606
+cd python/auto && D:/python/python.exe -B -m unittest discover -s . -p "test_*.py"  # 1611
 ```
 
-## 九、刻意偏离（照抄会错的地方都在这里）
+## 十、刻意偏离（照抄会错的地方都在这里）
 
 1. **建不出引用对象的符号跳过**，PHP 会 fatal。与基金详情页的既有取舍一致：
    宁可少一行，也不要整页 500；
@@ -218,7 +287,7 @@ cd python/auto && D:/python/python.exe -B -m unittest discover -s . -p "test_*.p
 5. `/qdii` 从 `fund` blueprint 搬到 `category` blueprint —— endpoint 改名
    `fund.qdii_page` → `category.qdii_page`，三处导航与一个单测跟着改。
 
-## 十、踩到的坑
+## 十一、踩到的坑
 
 1. **`classify_symbols` 搬家后单测会"假绿"**：它执行时的全局名在
    `category_page_service`，`test_qdii_page.py` 里
@@ -237,3 +306,20 @@ cd python/auto && D:/python/python.exe -B -m unittest discover -s . -p "test_*.p
 5. **`web/tests/test_category_pages.py` 复用 `test_qdii_page.py` 的假对象**：
    同一个页面家族没必要各写一份 `FakeRef`；但要注意被 import 的测试模块**不会**
    因此在 `discover` 里跑两遍（实测 1048 → 1067，正好 +19）。
+6. **收窄分类页数组会静默削掉后台的持仓覆盖**：
+   `holdingsupdater.qdiimix_holdings_symbols()` 直接复用
+   `qdii_mix_get_symbol_array()`，数组从 32 收到 15 的那一刻，后台就少抓 17 只
+   的持仓 —— 不报错、不告警。判据要问"这些页面需要什么数据"
+   （`_qdiimix.php` 的 32 个详情页），而不是"分类页数组有几个"（见 §7.3）。
+7. **`grep -l` 数详情页比数数组可靠**：想知道持仓型 QDII 到底几只，
+   数 `woody/res/*.php` 里 `require` 了 `_qdiimix.php` 的文件 —— 那是手写清单，
+   32 个；拿 `QdiiMixGetSymbolArray()` 反推会跟着分类页一起漂。
+8. **同一只标的的"分类归属"是成对的**：`qdiihk` +9 与 `qdiimix` -9 是同一件事。
+   只改一边，那 9 只要么同时出现在两个分类页上，要么哪个页都没有 ——
+   而且 `_qdii_region()` 是"先 qdii 再 hk"，顺序会让"同时属于两个"表现为
+   静默取第一个分支，页面看不出来。
+9. **"生产端链接形态"能反查出符号判定的区间**：`chinaindexcn.php` 里
+   `SH588000` 的链接是 `fund/quotes/588000/bc.shtml`（基金）而不是
+   `realstock/company/sh588000/nc.shtml`（股票），说明生产端的
+   `_isDigitShangHaiEtf` 比本地快照宽。这类"链接形态差"不能靠肉眼扫，
+   抓一次页面 grep 符号位置就有了（见 §7.5 第 1 条）。

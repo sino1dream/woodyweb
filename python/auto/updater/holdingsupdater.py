@@ -455,12 +455,18 @@ def update_stock_holdings_for_symbol(source: Any, symbol: str,
 
 
 def qdiimix_holdings_symbols(source: Any = None) -> List[str]:
-    """需要跑持仓更新的符号清单：``qdii_mix`` 一族。
+    """需要跑持仓更新的符号清单：**持仓型 QDII 全集（32 只）**。
 
-    对应 PHP 的覆盖面：``_qdiimix.php`` 只服务走 ``require('php/_qdiimix.php')``
-    的那些页面（QDII-LOF 混合 / QDII-ETF / 中概 / 港股混合 / MSCI 美国50），
-    即 ``core.stocksymbol.qdii_mix_get_symbol_array()``。
+    这里**不能**用 ``qdii_mix_get_symbol_array()``：那个是**分类页**
+    ``woody/res/qdiimixcn.php`` 的数组，2026-10-30 起已经收窄到 15 只
+    （另外 17 只归到了 qdii / qdiihk 两页）。而持仓数据服务的是**符号详情页**
+    —— ``woody/res/php/_qdiimix.php`` 被 32 个详情页逐个 ``require``，
+    那 32 个页面才是持仓明细的真实覆盖面，一次也没少。
+
+    两个数混用过一次：分类页数组一收窄，持仓更新就会静默少抓 17 只
+    （9 只港股混合 + 8 只跨 qdii 的），页面不会报错，只是持仓明细停止更新。
+    所以符号集改成显式的 :func:`qdii_mix_holdings_symbol_array`。
     """
-    from core.stocksymbol import qdii_mix_get_symbol_array
+    from core.stocksymbol import qdii_mix_holdings_symbol_array
 
-    return list(qdii_mix_get_symbol_array())
+    return list(qdii_mix_holdings_symbol_array())

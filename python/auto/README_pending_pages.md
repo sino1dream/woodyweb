@@ -115,7 +115,7 @@ require('../../php/ui/_editcn.php');
 
 | 类别 | 缺口 | 证据 |
 |---|---|---|
-| **行业分类页** | **2026-10-30 已全部迁掉**：`chinaindexcn` / `chinainternetcn` / `biotechcn` / `commoditycn` / `chinafuturecn` / `hangsengcn` / `hstechcn` / `hsharescn` / `mscius50cn` / `oilfundcn` / `qqqfundcn` / `spyfundcn` / `qdiihkcn` / `qdiijpcn` / `qdiieucn` / `qdiimixcn` 共 16 个 → `/category/<name>`（`qdiicn.php` 另有短路径 `/qdii`） | 见 `README_category_pages_migration.md`。**原判断是错的**：这里曾写成"`FUND_GROUPS` 加个键即可复用 `/fund/<group>`"，实测这些页根本不是"基金指数对照表"，而是 `_mystockgroup.php` 驱动的分类页（参考数据表 + 估值表）；`/fund/qdiihk` 之类的 404 是**另一个**东西（那 22 个名字本就不是分组名）。`btbondcn.php` 也不属于这一族（是公司介绍页，`_res.php`） |
+| **行业分类页** | **2026-10-30 已全部迁掉**：`chinaindexcn` / `chinainternetcn` / `biotechcn` / `commoditycn` / `chinafuturecn` / `hangsengcn` / `hstechcn` / `hsharescn` / `mscius50cn` / `oilfundcn` / `qqqfundcn` / `spyfundcn` / `qdiihkcn` / `qdiijpcn` / `qdiieucn` / `qdiimixcn` 共 16 个 → `/category/<name>`（`qdiicn.php` 另有短路径 `/qdii`） | 见 `README_category_pages_migration.md`。**原判断是错的**：这里曾写成"`FUND_GROUPS` 加个键即可复用 `/fund/<group>`"，实测这些页根本不是"基金指数对照表"，而是 `_mystockgroup.php` 驱动的分类页（参考数据表 + 估值表）；`/fund/qdiihk` 之类的 404 是**另一个**东西（那 22 个名字本就不是分组名）。`btbondcn.php` 也不属于这一族（是公司介绍页，`_res.php`）。数组随后按生产端对齐（27 / 38 / 15），见该文 §七；**剩下的缺口是数据不是页面**：`chinaindex` 的 27 只 A 股 ETF 在演示库里连 `stock` 行都没有 |
 | **对比页** | `ahcomparecn.php` / `abcomparecn.php` / `adrhcomparecn.php` / `ahhistorycn.php` | 无对应路由；配对数据只出现在 `/stock/<symbol>` 的段落里。**注意**分类页家族里 `GetCategoryArray()` 还有 `ahcompare` / `abcompare` / `adrhcompare` 三个键，它们的数组来自配对表、还要渲染 AB/AH/ADR 三个段落，比这 16 个基金分类页重，未进本轮 |
 | **工具页** | `autotractorcn.php`（拖拉机自动化）/ `overnightcn.php`（义工群对比）/ `overnightcnhcn.php`（对冲计算器）/ `rotationtradingcn.php`（轮动交易） | 无对应路由 |
 | **账号体系** | `fundaccountcn.php`（`/account` 目前是演示数据，未切真库）；`member` 表 + 登录 + 分组可见性整体暂缓 | `WEB_MIGRATION_PLAN.md` T4b |
@@ -139,8 +139,8 @@ require('../../php/ui/_editcn.php');
    已做，但**做法与原判断不同**：这 16 个页面不是对照表，而是
    `_mystockgroup.php` 的分类页，所以新建了 `category_page_service` 注册表 +
    `GET /category/<name>` 一个视图，见 `README_category_pages_migration.md`；
-   顺带查出 3 个分类的数组落后生产端（`chinaindex` / `qdiihk` / `qdiimix`），
-   那是 `core/stocksymbol.py` 的公共数组，单独排期；
+   同日查出并修掉 3 个分类的数组落后生产端（`chinaindex` 27 / `qdiihk` 38 /
+   `qdiimix` 15，见该文 §七）。现在 `_prod_category_check.py` 是 17/17 一致；
 6. **`deletesymbol.php` 仍排在最后**（要连带清 8 张表，风险最高）；
    `submitdividend` / `submitnetvalue` / `submithistory` 三个抓外部 JSON/XLS 的页
    未动 —— 它们要联网、要有 fixture 才能对照，独立排期。

@@ -17,6 +17,8 @@ from core.stocksymbol import (
     build_hongkong_stock_symbol,
     build_yahoo_net_value_symbol,
     china_future_get_symbol_array,
+    china_index_get_ashr_array,
+    china_index_get_star_array,
     china_index_get_symbol_array,
     get_all_symbol_array,
     get_hk_mix_symbol_array,
@@ -32,11 +34,16 @@ from core.stocksymbol import (
     in_array_lof_mix,
     in_array_qdii,
     in_array_qdii_hk,
+    in_array_qdii_mix,
     is_china_stock_digit,
     qdii_get_spy_match_array,
     qdii_get_symbol_array,
+    qdii_eu_get_symbol_array,
     qdii_hk_get_index_symbol_array,
     qdii_hk_get_symbol_array,
+    qdii_jp_get_symbol_array,
+    qdii_mix_get_symbol_array,
+    qdii_mix_holdings_symbol_array,
     stock_get_symbol,
     str_has_prefix,
 )
@@ -113,6 +120,99 @@ class SymbolArrayTest(unittest.TestCase):
         self.assertTrue(in_array_china_index("SH510300"))
         self.assertTrue(in_array_china_future("SH518880"))
         self.assertFalse(in_array_china_index("SZ162411"))
+
+
+class SymbolGroupAlignmentTest(unittest.TestCase):
+    """三个数组按**生产端**对齐（2026-10-30 抓 17 个 res 页面逐行核对）。
+
+    这三处都是"本地 PHP 快照旧了、Python 跟生产端"：``chinaindex`` +4 只
+    科创 50、``qdiihk`` +9 只港股混合、``qdiimix`` -17 只（8 只归 qdii、
+    9 只归 qdiihk）。改回去就等于让页面少几只/多几只，所以把**数量、
+    位置、互不重叠**都锁住 —— 只锁集合的话，行序错了测试照样绿。
+    """
+
+    #: 生产端并入 ``qdii`` 的那 8 只（原先挂在 qdiimix 上）。
+    MOVED_TO_QDII = (
+        "SZ159509",
+        "SZ159529",
+        "SH513850",
+        "SZ159577",
+        "SH501312",
+        "SZ160216",
+        "SZ164701",
+        "SZ163208",
+    )
+
+    def test_china_index_star_segment_sits_after_ashr(self):
+        symbols = china_index_get_symbol_array()
+        self.assertEqual(len(symbols), 27)
+        self.assertEqual(
+            china_index_get_star_array(),
+            ["SH588000", "SH588050", "SH588080", "SH588090"],
+        )
+        # 位置才是语义：A 股宽基段之后、深证100 段之前
+        start = len(china_index_get_ashr_array())
+        self.assertEqual(symbols[start:start + 4], china_index_get_star_array())
+        self.assertEqual(symbols[start + 4], "SZ161227")
+
+    def test_qdii_hk_ends_with_hk_mix_segment(self):
+        symbols = qdii_hk_get_symbol_array()
+        self.assertEqual(len(symbols), 38)
+        self.assertEqual(symbols[-9:], get_hk_mix_symbol_array())
+        for symbol in get_hk_mix_symbol_array():
+            self.assertTrue(in_array_qdii_hk(symbol))
+
+    def test_qdii_mix_is_fifteen_and_excludes_moved_symbols(self):
+        symbols = qdii_mix_get_symbol_array()
+        self.assertEqual(len(symbols), 15)
+        moved = (list(self.MOVED_TO_QDII)
+                 + get_hk_mix_symbol_array()
+                 + get_msci_us50_symbol_array())
+        for symbol in moved:
+            self.assertNotIn(symbol, symbols)
+            self.assertFalse(in_array_qdii_mix(symbol))
+        # 行序锚点：页面行序就是数组顺序
+        self.assertEqual(symbols[0], "SH513360")
+        self.assertEqual(
+            symbols[-4:], ["SH513050", "SH513220", "SZ159605", "SZ159607"]
+        )
+        # 收窄后那 9 只港股混合必须已经归到 hk（否则两页都没有它）
+        for symbol in get_hk_mix_symbol_array():
+            self.assertTrue(in_array_qdii_hk(symbol))
+
+    def test_holdings_coverage_is_bigger_than_the_page(self):
+        """持仓型全集 32 只 ≠ 分类页 15 只 —— 混用会让后台静默少抓 17 只。"""
+        holdings = qdii_mix_holdings_symbol_array()
+        self.assertEqual(len(holdings), 32)
+        self.assertEqual(len(holdings), len(set(holdings)))
+        for symbol in qdii_mix_get_symbol_array():
+            self.assertIn(symbol, holdings)
+        for symbol in get_hk_mix_symbol_array() + get_msci_us50_symbol_array():
+            self.assertIn(symbol, holdings)
+        for symbol in self.MOVED_TO_QDII:
+            self.assertIn(symbol, holdings)
+        # 详情页集合是手写 include，不该跟着分类页收窄
+        self.assertNotEqual(qdii_mix_holdings_symbol_array(),
+                            qdii_mix_get_symbol_array())
+
+    def test_qdii_groups_do_not_overlap(self):
+        """五个 QDII 数组两两不相交 —— 同一只标的不该算两个分类。"""
+        groups = {
+            "qdii": qdii_get_symbol_array(),
+            "qdiihk": qdii_hk_get_symbol_array(),
+            "qdiijp": qdii_jp_get_symbol_array(),
+            "qdiieu": qdii_eu_get_symbol_array(),
+            "qdiimix": qdii_mix_get_symbol_array(),
+        }
+        names = sorted(groups)
+        for index, left in enumerate(names):
+            for right in names[index + 1:]:
+                self.assertFalse(
+                    set(groups[left]) & set(groups[right]),
+                    "%s 与 %s 重叠：%s" % (
+                        left, right, sorted(set(groups[left]) & set(groups[right]))
+                    ),
+                )
 
 
 class DigitHelperTest(unittest.TestCase):

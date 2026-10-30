@@ -10,24 +10,26 @@ P0 数据层补齐（见 ``README_p0_data_layer.md``）要把 100 多只基金�
 ## 口径
 
 * 基金清单 = 五个数组合集（去重、保序）：
-  ``qdii`` 41 + ``qdiihk`` 29 + ``qdiijp`` 5 + ``qdiieu`` 3 + ``qdiimix`` 32，
-  其中 8 只同属 ``qdii`` 与 ``qdiimix``，去重后 **102 只**；
+  ``qdii`` 41 + ``qdiihk`` 38 + ``qdiijp`` 5 + ``qdiieu`` 3 + ``qdiimix`` 15，
+  五个数组**互不重叠**，合计 **102 只**；
 * est 符号 = ``calc.fundcalc`` 的 ``qdii_est_symbol()`` 族
   （与 PHP ``qdiiref.php:19-37`` 的 ``QdiiGetEstArray()`` 逐条对照过），
   再按**杠杆替代**修正（``stockdata.py:279-284`` 同顺序）：
   ``qdii_qqq_symbols()`` 用 ``QQQ``、``qdii_spy_symbols()`` 用 ``SPY``
   取数 —— 指数 ``^NDX`` / ``^GSPC`` 不落 ``netvaluehistory`` /
   ``stockhistory``，拿不到净值与行情；
-* QdiiMix 成员（含 8 只跨数组的）**没有 est 符号**，估值走持仓口径
-  （CK4 ``HoldingsReference``，未迁），但它们仍要在 ``stock`` 表里
-  （生产端页面有它们的行）。
+* QdiiMix 成员**没有 est 符号**，估值走持仓口径（CK4 ``HoldingsReference``），
+  但它们仍要在 ``stock`` 表里（生产端页面有它们的行）。
 
 ## 页面归属 ≠ 数组归属
 
-生产端四个页面的实际行数与仓库 PHP 数组有漂移（以生产端为准，见
-``README_p0_data_layer.md`` §1.4）：港股页线上 38 行（数组 29 + 9 只
-hkmix），qdiimix 页线上 15 行。**本模块只管符号并集**，页面归属是
-渲染层的事，不在这里体现。
+这条曾经是"漂移说明"，现在两边已经对齐：2026-10-30 把 ``qdii_hk`` 补到 38、
+``qdiimix`` 收到 15、``chinaindex`` 补到 27（见 ``README_category_pages_migration.md``
+§七）。并集仍是 102 只 —— 那 17 只只是换了个数组，没有进出。
+
+还留着一处**故意的不相等**：持仓更新的覆盖面是 32 只
+（``qdii_mix_holdings_symbol_array()``，``_qdiimix.php`` 的 32 个详情页），
+比分类页数组的 15 只大。**本模块只算并集**，页面归属与持仓覆盖都在别处体现。
 """
 
 from __future__ import annotations

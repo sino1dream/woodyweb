@@ -44,6 +44,7 @@ for path in (str(PYTHON_DIR), str(AUTO_DIR)):
         sys.path.insert(0, path)
 
 from core.stockdata import load_mysql_env  # noqa: E402
+from core.stocksymbol import get_hk_mix_symbol_array  # noqa: E402
 
 
 #: qdii 里刻意多出来的 8 只（生产端有、本地 PHP 仓库没有）。
@@ -63,6 +64,16 @@ QDII_EXTRA = [
 #: 而页面行序是人工比对对象，所以 Python 跟生产端走（见
 #: ``category_page_service.GOLD_DISPLAY_ORDER``）。集合必须一致，只放行顺序。
 ORDER_BY_PRODUCTION = {"commodity"}
+
+#: chinaindex 里刻意多出来的 4 只科创 50（生产端有、本地 PHP 仓库没有）。
+#: 来源见 ``core/stocksymbol.py::china_index_get_star_array()``。
+CHINA_INDEX_EXTRA = ["SH588000", "SH588050", "SH588080", "SH588090"]
+
+#: qdiihk 里刻意多出来的 9 只港股混合（生产端已从 qdiimix 并入港股页）。
+QDII_HK_EXTRA = list(get_hk_mix_symbol_array())
+
+#: qdiimix 里刻意**少**掉的 17 只：8 只归 qdii、9 只归 qdiihk。
+QDII_MIX_DROP = QDII_EXTRA + QDII_HK_EXTRA
 
 
 def run_php(script: str) -> dict:
@@ -117,6 +128,17 @@ def main() -> int:
             if name == "qdii" and only_py and not only_php and only_py == QDII_EXTRA:
                 # 按设计差异：Python 跟着生产端走，本地 PHP 是旧快照
                 notes.append("数组差 8 只（按设计：生产端已扩充）")
+                deviations.append(name)
+            elif (name == "chinaindex" and only_py == CHINA_INDEX_EXTRA
+                  and not only_php):
+                notes.append("数组差 4 只科创50（按设计：生产端已扩充）")
+                deviations.append(name)
+            elif name == "qdiihk" and only_py == QDII_HK_EXTRA and not only_php:
+                notes.append("数组差 9 只港股混合（按设计：生产端已并入本页）")
+                deviations.append(name)
+            elif (name == "qdiimix" and not only_py
+                  and sorted(only_php) == sorted(QDII_MIX_DROP)):
+                notes.append("数组少 17 只（按设计：已归入 qdii / qdiihk）")
                 deviations.append(name)
             elif name in ORDER_BY_PRODUCTION and not only_py and not only_php:
                 # 集合一致、只是排列按生产端
