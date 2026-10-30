@@ -32,6 +32,10 @@ class FakeCursor:
     def __init__(self, connection):
         self.connection = connection
         self.rows = []
+        #: ``DailyCloseSql._execute()`` 直接返回 ``cursor.rowcount``（PHP
+        #: ``_query()`` 也是返回受影响行数）。假游标一律报 1：这些用例关心的是
+        #: "写没写、写成什么"，不是"影响了几行"。
+        self.rowcount = 1
 
     def execute(self, sql, params=()):
         self.connection.queries.append((sql, params))
@@ -84,14 +88,16 @@ class FakeConnection:
             })
             return []
         if "UPDATE CALIBRATIONHISTORY" in upper:
-            #: 对应 ``CalibrationSql::UpdateDaily()``：按 id 改 close + time，
-            #: 并把 num 重置为 1（不是累加，见 ``_update_record`` 的说明）。
-            value, time_text, record_id = params[0], params[1], params[2]
+            #: 对应 ``CalibrationSql::UpdateDaily()`` → ``UpdateDailyAverage($id, $close, 1)``：
+            #: SET ``close`` + ``time`` + ``num``（num 重置为 1，不是累加）。
+            #: 走的是 ``DailyCloseSql._update_by_id()``，所以参数是
+            #: ``(close, time, num, id)`` —— 四个。
+            value, time_text, num, record_id = params[0], params[1], params[2], params[3]
             for row in self.calibration:
                 if str(row["id"]) == str(record_id):
                     row["close"] = value
                     row["time"] = time_text
-                    row["num"] = 1
+                    row["num"] = num
                     return []
             return []
         if "FROM CALIBRATIONHISTORY" in upper:

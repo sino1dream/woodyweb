@@ -1034,121 +1034,26 @@ class AutoCalibrator:
 
     # -- 写库 -------------------------------------------------------------
     def _write(self, stock_id: Any, date: Any, value: Any) -> bool:
-        """写校准值，照抄 ``CalibrationSql::WriteDaily()`` 的**完整**语义。
+        """写校准值 —— 统一走 :meth:`sql.historytable.CalibrationSql.write_daily`。
 
-        PHP（``php/sql/sqldailyclose.php:161-179``，``UpdateDaily`` 由
-        ``php/sql/sqldailytime.php:48`` 覆写）：
+        ## 为什么收敛掉那份手写副本
 
-        ```php
-        if ($record = $this->GetRecord($strKeyId, $strDate))
-        {
-            if (abs(floatval($record['close']) - floatval($strClose)) > MIN_FLOAT_VAL)
-                return $this->UpdateDaily($record['id'], $strClose);
-        }
-        else
-        {
-            $ymd = new StringYMD($strDate);
-            if ($ymd->IsWeekend())      return false;   // 防新浪的周末假数据
-            return $this->InsertDaily($strKeyId, $strDate, $strClose);
-        }
-        return false;
-        ```
+        这里本来是 ``CalibrationSql::WriteDaily()`` 的**手写副本**：自己拼
+        INSERT / UPDATE、自己判 ``MIN_FLOAT_VAL``、自己判周末闸门。它是在
+        ``DailyCloseSql`` 补齐写方法**之前**写的（那时基类只有读方法）。
 
-        **值变了会 UPDATE 覆盖**，不是"已有就不动"。早期实现只照抄了
-        ``InsertDaily`` 的那句判重，结果校准值一旦写错就再也刷不回来 ——
-        改锚点口径后必须靠这一支把旧值（如 16498.992）刷成新值。
+        两套实现并存的代价不是"多几十行"，而是**改判据时只改一处**：校准值
+        写错之后全靠"值变了就 UPDATE"这一支刷回来（改锚点口径时正是靠它把
+        16498.992 刷成新值）。判据一旦飘了，旧值就永远刷不掉，而症状是
+        "页面上的估算值差几个点"—— 极难定位。
+
+        现在全文只有一份实现，含两条子类覆写：``time``（``DailyTimeSql``，
+        ``DebugGetTime()`` = Asia/Shanghai）与 ``num``（``CalibrationSql``，
+        ``UpdateDaily`` **重置为 1**、``WriteDailyAverage`` 才累加平均）。
+        副本里那个 ``datetime.now()`` 也一并消失了 —— 它取的是本机时区，
+        换台机器就会写出差 8 小时的 ``time``。
         """
-        table = CalibrationSql(self.connection)
-        record = table.get_record(stock_id, date)
-        if record is not None:
-            #: 值没变就不动（PHP 判 ``abs(old - new) > MIN_FLOAT_VAL``）；
-            #: 变了才 UPDATE —— 校准值写错时靠这一支刷回来。
-            try:
-                diff = abs(float(record["close"]) - float(value))
-            except (TypeError, ValueError, KeyError):
-                diff = None
-            if diff is not None and diff <= MIN_FLOAT_VAL:
-                return False
-            return self._update_record(record.get("id"), value)
-
-        #: 新行：**周末不写**（PHP ``if ($ymd->IsWeekend()) return false;``，
-        #: 注释写明是防新浪送来的周末假数据）。
-        if not _is_week_day(date):
-            return False
-        cursor = self.connection.cursor()
-        try:
-            cursor.execute(
-                "INSERT INTO calibrationhistory (stock_id, `date`, close, `time`, num) "
-                "VALUES (%s, %s, %s, %s, 1)",
-                (stock_id, date, value, self._now_time()),
-            )
-            commit = getattr(self.connection, "commit", None)
-            if commit is not None:
-                commit()
-            return True
-        except Exception:
-            return False
-        finally:
-            cursor.close()
-
-    def _update_record(self, record_id: Any, value: Any) -> bool:
-        """覆盖已有校准行，对应 ``CalibrationSql::UpdateDaily()``。
-
-        PHP（``php/sql/sqldailytime.php:48-56``）更新 ``close`` + ``time``，
-        并把 ``num`` **重置为 1**（不是累加 —— ``UpdateDailyAverage`` 的默认
-        ``$iNum = 1``）。照抄，别自作聪明累加。
-        """
-        if record_id is None:
-            return False
-        cursor = self.connection.cursor()
-        try:
-            cursor.execute(
-                "UPDATE calibrationhistory SET close = %s, `time` = %s, num = 1 WHERE id = %s",
-                (value, self._now_time(), record_id),
-            )
-            commit = getattr(self.connection, "commit", None)
-            if commit is not None:
-                commit()
-            return True
-        except Exception:
-            return False
-        finally:
-            cursor.close()
-
-    @staticmethod
-    def _now_time() -> str:
-        """``calibrationhistory.time`` 是 NOT NULL 且无默认值，必须给。"""
-        import datetime as _datetime
-
-        return _datetime.datetime.now().strftime("%H:%M:%S")
-
-
-#: ``php/debug.php:11`` 的 ``MIN_FLOAT_VAL`` —— PHP 判"两个浮点值算不算相等"
-#: 的阈值。``WriteDaily()`` 用它决定"值有没有变、要不要 UPDATE"。
-MIN_FLOAT_VAL = 0.0000005
-
-
-def _is_week_day(value: Any) -> bool:
-    """这天是不是工作日；对应 PHP ``YearMonthDay::IsWeekend()`` 取反。
-
-    **认不出日期格式时当作工作日**（不阻断写入）：宁可多写一行，也不要因为
-    日期的三种形态（``date`` / ``datetime`` / ``"2026-10-20"``）没覆盖全而
-    静默不写库 —— 那种"什么都没发生"的失败最难排查。
-    """
-    import datetime as _datetime
-
-    moment = value
-    if isinstance(moment, str):
-        try:
-            moment = _datetime.date.fromisoformat(str(moment)[:10])
-        except ValueError:
-            return True
-    if isinstance(moment, _datetime.datetime):
-        moment = moment.date()
-    if not isinstance(moment, _datetime.date):
-        return True
-    #: Python 的 weekday()：周一 0 ... 周日 6
-    return moment.weekday() < 5
+        return CalibrationSql(self.connection).write_daily(stock_id, date, value)
 
 
 #: 派生净值与当日价格之间允许的偏离（ETF 净值与价格只差千分位；放宽到 ±25%

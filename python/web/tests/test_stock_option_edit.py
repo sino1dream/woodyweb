@@ -8,11 +8,12 @@
 
 本文件验四件事：
 
-1. **分派**：16 项都在，10 项可写、6 项给出"未迁"的明确理由；
+1. **分派**：16 项都在，11 项可写、5 项给出"未迁"的明确理由；
 2. **默认值口径**：每项的日期与初始值照 ``_getStockOptionDate()`` /
    ``_getStockOptionVal()``；
 3. **写入语义**：日频表的"空值（含 ``'0'``）→ 删、否则 WriteDaily"、
-   EMA 的"先清空再回填"、AH/HA 的**删除方向**、配对表的方向语义；
+   EMA 的"先清空再回填"、AH/HA 的**删除方向**、配对表的方向语义、
+   校准的"估算值 → 校准值"换算；
 4. **权限与错误**：非管理员 POST 403、不认识的选项 404、符号不在库时不摆表单。
 
 用内存 sqlite 假库（``tests/sqlitedb.py``）—— 理由写在那个模块的
@@ -44,17 +45,21 @@ from web.tests.sqlitedb import FakeQuote, FakeSource, SqliteConnection  # noqa: 
 
 
 #: 假库里的符号：一只 LOF 基金（1）+ 一只美股指数（2）+ 一只 A 股（3）
-#: + 一个 H 股（4）+ 一个 ADR（5）。
+#: + 一个 H 股（4）+ 一个 ADR（5）+ 一只境内指数 ETF（8）+ 一只商品期货基金（9）
+#: + 中间价（7）。后面三个是 ``editcalibration`` 的分支要用的。
 SZ161130 = 1
 GSPC = 2
 SH600030 = 3
 HK06030 = 4
 US_CRD = 5
 NDX = 6
+USCNY = 7
+SH510300 = 8
+SH518800 = 9
 
 
 def build_connection() -> SqliteConnection:
-    """建一套够 10 个选项跑的假库。"""
+    """建一套够 11 个选项跑的假库。"""
     connection = SqliteConnection()
     connection.create_stock([
         (SZ161130, "SZ161130", "易方达纳斯达克100LOF"),
@@ -63,6 +68,9 @@ def build_connection() -> SqliteConnection:
         (HK06030, "HK06030", "中信证券"),
         (US_CRD, "US_CRD", "Cree"),
         (NDX, "^NDX", "纳斯达克100指数"),
+        (USCNY, "USCNY", "美元中间价"),
+        (SH510300, "SH510300", "沪深300ETF"),
+        (SH518800, "SH518800", "黄金ETF"),
     ])
     connection.create_history()
     connection.create_daily("netvaluehistory")
@@ -96,6 +104,28 @@ def build_connection() -> SqliteConnection:
     )
     connection.execute(
         "INSERT INTO `fundpair` (`id`, `stock_id`) VALUES (?, ?)", (SZ161130, NDX)
+    )
+
+    # -- editcalibration 要用的数据 -----------------------------------------
+    #: 配对标的（^NDX）的净值：``_getBestEstNetValue()`` 的第一级，
+    #: 也是表单里显示给管理员的"对方值"。
+    connection.insert_daily("netvaluehistory", NDX, "2026-10-26", 29402.51)
+    connection.insert_daily("netvaluehistory", NDX, "2026-10-27", 29500.0)
+    #: ^GSPC 只有行情没有净值 —— 用来验"退到该日收盘"那一级。
+    connection.insert_daily(
+        "stockhistory", GSPC, "2026-10-27", 7720.39,
+        extra_columns="`volume`, `adjclose`", extra_values=(0, 7720.39),
+    )
+    #: 美元中间价（换算要用）+ 境内指数 ETF 自己的净值。
+    connection.insert_daily("netvaluehistory", USCNY, "2026-10-26", 6.7165)
+    connection.insert_daily("netvaluehistory", USCNY, "2026-10-27", 6.7147)
+    #: 10-29 只有中间价、SZ161130 自己没有净值 —— 用来把"缺分母"与"缺中间价"
+    #: 两件事分开验（两者的报错不同）。
+    connection.insert_daily("netvaluehistory", USCNY, "2026-10-29", 6.7100)
+    connection.insert_daily("netvaluehistory", SH510300, "2026-10-27", 3.5)
+    #: 空值分支要跟着删的那一行（PHP ``LastCalibrationSql::DeleteById``）。
+    connection.execute(
+        "INSERT INTO `lastcalibration` (`id`, `close`) VALUES (?, ?)", (SZ161130, 41.111)
     )
     return connection
 
@@ -132,14 +162,15 @@ class StockOptionAppTest(unittest.TestCase):
         body = response.data.decode("utf-8")
         for spec in STOCK_OPTIONS:
             self.assertIn(spec.submit, body)
-        self.assertIn("已迁（10 项）", body)
-        self.assertIn("未迁（6 项）", body)
+        self.assertIn("已迁（11 项）", body)
+        self.assertIn("未迁（5 项）", body)
 
     def test_index_links_point_at_each_option(self):
         body = self.client.get("/stock/SZ161130/edit").data.decode("utf-8")
         self.assertIn("/stock/SZ161130/edit/editnetvalue", body)
+        self.assertIn("/stock/SZ161130/edit/editcalibration", body)
         #: 未迁的项不给链接（避免点进去发现不能写）
-        self.assertNotIn('href="/stock/SZ161130/edit/editcalibration"', body)
+        self.assertNotIn('href="/stock/SZ161130/edit/editstocksplit"', body)
 
     # -- 未知选项 -----------------------------------------------------------
     def test_unknown_option_is_404(self):
@@ -154,14 +185,14 @@ class StockOptionAppTest(unittest.TestCase):
 
     # -- 未迁的项 -----------------------------------------------------------
     def test_unmigrated_option_get_shows_reason_only(self):
-        body = self.client.get("/stock/SZ161130/edit/editcalibration").data.decode("utf-8")
+        body = self.client.get("/stock/SZ161130/edit/editstockdividend").data.decode("utf-8")
         self.assertIn("还没迁", body)
         self.assertNotIn('<textarea', body)
 
     def test_unmigrated_option_post_refuses_and_writes_nothing(self):
         before = len(self.connection.queries)
         response = self.client.post(
-            "/stock/SZ161130/edit/editcalibration",
+            "/stock/SZ161130/edit/editstockdividend",
             data={"date": "2026-10-26", "value": "1.0"},
         )
         self.assertEqual(response.status_code, 200)
@@ -541,6 +572,132 @@ class StockOptionWriteTest(unittest.TestCase):
         self.assertIsNotNone(
             self.connection.single("SELECT id FROM `fundpair` WHERE id = ?", (SZ161130,))
         )
+
+
+class StockOptionCalibrationTest(unittest.TestCase):
+    """``editcalibration``：估算值 → 校准值的换算，以及"空值删两处"。
+
+    对应 ``_getStockOptionCalibration()``（读）与 ``_updateStockOptionCalibration()``
+    （写，``_submitstockoptions.php:340``）。
+    """
+
+    def setUp(self):
+        self.connection = build_connection()
+        self.service = build_service(
+            self.connection, quote=FakeQuote(prev_price="4.769", date="2026-10-29")
+        )
+
+    def submit(self, date=None, value=None, symbol="SZ161130"):
+        return self.service.submit(symbol, "editcalibration", date, value)
+
+    def calibration(self, stock_id=SZ161130, date="2026-10-27"):
+        return self.connection.single(
+            "SELECT close, num FROM `calibrationhistory` WHERE stock_id = ? AND `date` = ?",
+            (stock_id, date),
+        )
+
+    # -- 读初值：对方标的的值 -----------------------------------------------
+    def test_read_shows_pair_net_value(self):
+        """有 ``fundpair`` 时取**配对标的**的净值（这里是 ^NDX）。"""
+        form = self.service.get_form("SZ161130", "editcalibration")
+        self.assertEqual(form["date"], "2026-10-27")
+        self.assertEqual(form["value"], "29500")
+
+    def test_read_falls_back_to_history_close(self):
+        """配对标的没有净值 → 退到该日收盘（``_getBestEstNetValue`` 第二级）。"""
+        self.assertEqual(self.service._best_est_net_value("^GSPC", "2026-10-27"), "7720.39")
+
+    def test_read_returns_empty_when_nothing_found(self):
+        """三级都取不到 → 空串（PHP 那边 ``false`` 打印出来也是空）。"""
+        self.assertEqual(self.service._best_est_net_value("^GSPC", "2026-10-01"), "")
+
+    def test_read_without_any_est_shows_placeholder(self):
+        """既没配对也不在 QDII 清单 → ``'对方净值'``（``STOCK_DISP_NETVALUE``）。"""
+        self.assertEqual(self.service._read_calibration("SH600030", SH600030, "2026-10-27"),
+                         "对方净值")
+
+    # -- 写：换算 -----------------------------------------------------------
+    def test_write_converts_estimate_to_calibration(self):
+        """QDII：``估算值 × 中间价 ÷ 基金净值``（``QdiiGetCalibration``）。"""
+        result = self.submit("2026-10-27", "29500")
+        self.assertTrue(result["ok"], result["message"])
+        expected = 29500.0 * 6.7147 / 4.4324
+        self.assertAlmostEqual(self.calibration()["close"], expected, places=6)
+        #: ``UpdateDaily`` / ``InsertDaily`` 都把 ``num`` 置 1（不是累加）。
+        self.assertEqual(self.calibration()["num"], 1)
+
+    def test_write_china_index_uses_cny_one(self):
+        """``in_arrayChinaIndex`` → ``$strCNY = '1.0'``，不乘汇率。"""
+        result = self.submit("2026-10-27", "3.8", symbol="SH510300")
+        self.assertTrue(result["ok"], result["message"])
+        self.assertAlmostEqual(
+            self.calibration(SH510300)["close"], 3.8 / 3.5, places=6
+        )
+
+    def test_write_updates_existing_row(self):
+        """已有同一天的行 → 覆盖（值变了才 UPDATE，``MIN_FLOAT_VAL``）。"""
+        before = self.calibration(date="2026-10-26")
+        self.assertEqual(before["close"], 41.111)
+        result = self.submit("2026-10-26", "29402.51")
+        self.assertTrue(result["ok"], result["message"])
+        self.assertNotEqual(self.calibration(date="2026-10-26")["close"], 41.111)
+
+    def test_write_same_value_reports_no_change(self):
+        """算出来的值与库里相同 → 不发 UPDATE，提示"未写入"。"""
+        self.submit("2026-10-26", "29402.51")
+        again = self.submit("2026-10-26", "29402.51")
+        self.assertTrue(again["ok"])
+        self.assertIn("未写入", again["message"])
+
+    # -- 写：空值删两处 -----------------------------------------------------
+    def test_empty_deletes_calibration_and_last_calibration(self):
+        """空值 → 删该日校准行 **和** ``lastcalibration``（PHP 两处都删）。"""
+        self.assertIsNotNone(
+            self.connection.single("SELECT id FROM `lastcalibration` WHERE id = ?", (SZ161130,))
+        )
+        result = self.submit("2026-10-26", "")
+        self.assertTrue(result["ok"])
+        self.assertIsNone(self.calibration(date="2026-10-26"))
+        self.assertIsNone(
+            self.connection.single("SELECT id FROM `lastcalibration` WHERE id = ?", (SZ161130,))
+        )
+
+    def test_zero_also_deletes(self):
+        """``empty('0')`` 为真 —— 填 ``0`` 也是删除（pitfalls #123）。"""
+        result = self.submit("2026-10-26", "0")
+        self.assertTrue(result["ok"])
+        self.assertIsNone(self.calibration(date="2026-10-26"))
+
+    # -- 写：拒绝的几支 -----------------------------------------------------
+    def test_missing_cny_refuses_and_writes_nothing(self):
+        """中间价那天没有记录 → 拒绝（PHP 是静默 return，两边都不写）。"""
+        result = self.submit("2026-10-28", "29500")
+        self.assertFalse(result["ok"])
+        self.assertIn("USCNY", result["message"])
+        self.assertIsNone(self.calibration(date="2026-10-28"))
+
+    def test_missing_net_value_refuses(self):
+        """基金自己没有净值 → 没有分母，拒绝（PHP 会写出 INF → 列里变 0）。"""
+        result = self.submit("2026-10-29", "29500")
+        self.assertFalse(result["ok"])
+        self.assertIn("没有净值记录", result["message"])
+
+    def test_china_future_is_refused(self):
+        """商品期货基金：PHP 自己也是 ``unhandled China future symbol``。"""
+        result = self.submit("2026-10-27", "100", symbol="SH518800")
+        self.assertFalse(result["ok"])
+        self.assertIn("商品期货", result["message"])
+
+    def test_unknown_symbol_class_is_refused(self):
+        """既非境内指数也非 QDII → ``unhandled other symbol``。"""
+        result = self.submit("2026-10-26", "100", symbol="SH600030")
+        self.assertFalse(result["ok"])
+        self.assertIn("unhandled", result["message"])
+
+    def test_empty_date_is_refused(self):
+        result = self.submit("", "100")
+        self.assertFalse(result["ok"])
+        self.assertIn("日期", result["message"])
 
 
 class StockOptionPermissionTest(unittest.TestCase):

@@ -112,10 +112,14 @@ PHP 那边同样不覆写 `WriteDaily`，而是另起 `WriteHistory()`（`sqlsto
 "hf_CHA50CFD calibration may in Sunday, which is Monday for SH000300" —— 期货的
 "周日"在这边可能是标的的"周一"，挡了就漏数据。
 
-**一处已知的重复实现**：`updater/autocalibration.py::AutoCalibrator._write()` 里还有
-一份 `CalibrationSql::WriteDaily` 的手写版（带 `time` 的 INSERT + `num = 1` 的 UPDATE），
-是补底座之前写的。两者现在的语义一致（已逐例对照过），但**改 `write_daily` 的判据时
-两处都要看**。收敛它属于改校准链路，本次刻意没动。
+**那份重复实现已经收敛**：`updater/autocalibration.py::AutoCalibrator._write()`
+里原来有一份 `CalibrationSql::WriteDaily` 的手写版（带 `time` 的 INSERT +
+`num = 1` 的 UPDATE），是补底座之前写的。现在它只有一行
+`CalibrationSql(self.connection).write_daily(...)`，模块里那几份副本
+（`MIN_FLOAT_VAL` / `_is_week_day()` / `_now_time()`）一并删掉了 —— 顺带消掉一个
+隐患：原来那份用的是 `datetime.now()`（本机时区），而 `time` 列按
+`DEBUG_TIME_ZONE`（Asia/Shanghai）记录，换台机器就写错 8 小时。
+收敛后 `write_daily` 只有一处实现，判据只改一处。
 
 ## 五、MyISAM：没有事务，所以"先查后写"
 

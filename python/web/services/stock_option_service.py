@@ -51,7 +51,23 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Optional
 
-from core.stocksymbol import StockSymbol, stock_get_symbol
+from calc.fundcalc import (
+    qdii_est_symbol,
+    qdii_eu_est_symbol,
+    qdii_get_calibration,
+    qdii_hk_est_symbol,
+    qdii_jp_est_symbol,
+)
+from core.stocksymbol import (
+    StockSymbol,
+    in_array_china_future,
+    in_array_china_index,
+    in_array_qdii,
+    in_array_qdii_eu,
+    in_array_qdii_hk,
+    in_array_qdii_jp,
+    stock_get_symbol,
+)
 from sql.historytable import (
     MIN_FLOAT_VAL,
     NetValueHistorySql,
@@ -79,6 +95,15 @@ DATE_PREV_CLOSE = "prev_close"  # 行情表里"昨收"那一天
 DATE_NETVALUE = "netvalue"      # 净值表最新一天（没有就退行情表）
 DATE_PREMIUM = "premium"        # futurepremium 最新一天
 DATE_SHARES = "shares"          # shareshistory/sharediff 最新一天
+
+#: ``STOCK_DISP_NETVALUE``（``php/ui/stockdisp.php:15``）：没有"对方"引用时
+#: 表单里显示 ``'对方'.STOCK_DISP_NETVALUE``。
+DISPLAY_NET_VALUE = "净值"
+
+#: 地区 → 中间价符号。PHP 是四个 ``if`` 分支各写一个
+#: ``SqlGetStockId('USCNY')``（``_submitstockoptions.php:373-376``），
+#: 地区判定顺序与 ``StockGetQdiiReference()``（``php/stock.php:306``）相同。
+QDII_CNY_SYMBOLS = {"us": "USCNY", "hk": "HKCNY", "jp": "JPCNY", "eu": "EUCNY"}
 
 
 @dataclass(frozen=True)
@@ -109,11 +134,12 @@ STOCK_OPTIONS: tuple = (
         submit="手工校准值",
         memo="清空输入删除对应日期校准值。",
         date_mode=DATE_NETVALUE,
-        migrated=False,
+        migrated=True,
         note=(
-            "写入要把「手工输入的估算值」换算成校准值"
-            "（QdiiGetCalibration + 地区中间价 + INDA/ASHR 的 Yahoo 净值特例），"
-            "属于估值链路，随 fundestcalc 的校准写入口一起做。"
+            "写的是「估算值」不是校准值：服务层按 QdiiGetCalibration 换算成"
+            "校准值再落库（估算值 × 地区中间价 / 基金净值）。"
+            "INDA / ASHR / hf_CHA50CFD 三支要抓 Yahoo 净值或取期货 VWAP，未迁 —— "
+            "这三支会明确拒绝写入，不会写错值。"
         ),
     ),
     StockOptionSpec(
@@ -501,9 +527,16 @@ class StockOptionService:
         if spec.date_mode == DATE_HISTORY:
             return self.history_sql.get_date_now(stock_id) or _today()
         if spec.date_mode == DATE_NETVALUE:
-            #: ``editcalibration`` / ``editnetvalue``：先净值表、再行情表。
-            #: KWEB 那一支（取行情前一日、抓 Krane 净值）没迁 —— 整个 KWEB
-            #: 特例都在 ``_updateStockOptionNetValue`` 里，见选项 note。
+            #: ``editcalibration`` / ``editnetvalue`` 共用同一个 case
+            #: （``_editstockoptionform.php:32``）。KWEB 是**例外**：它的净值来自
+            #: Krane 官方 CSV，日期取"行情前一日"（净值比行情晚一天），
+            #: 取不到才退今天 —— 注意它**不**退到净值表/行情表的最新一天。
+            if symbol == "KWEB":
+                reference_date = self._quote_date(symbol) or _today()
+                return (
+                    self.history_sql.get_date_prev(stock_id, reference_date)
+                    or _today()
+                )
             return (
                 self.net_value_sql.get_date_now(stock_id)
                 or self.history_sql.get_date_now(stock_id)
@@ -658,6 +691,84 @@ class StockOptionService:
         #: ETF 是 1。这个 0.95 与 ``StockSymbol.get_default_position()`` 同一口径。
         return "INDEX*0.95" if self._symbol_is_lof(symbol) else "INDEX*1"
 
+    def _read_calibration(self, symbol: str, stock_id: Any, date: str) -> str:
+        """``_getStockOptionCalibration()``（``_editstockoptionform.php:212``）。
+
+        **填的是"对方标的"的值，不是库里已存的校准值** —— PHP 就是这么做的：
+        管理员看着对方的净值/点位，改一个数，提交后服务层再按
+        ``估算值 × 中间价 / 基金净值`` 换算成校准值。照抄。
+
+        三支来源按 PHP 顺序（``_editstockoptionform.php:213-227``）：
+
+        1. ``fundpair`` 有记录 → 配对标的（``GetPairRef()``）；
+        2. 否则 QDII 四地区 → est 标的（``GetEstRef()``）；
+        3. 否则 ``INDA`` → ``znb_SENSEX``。
+
+        三支都没有就给 ``'对方净值'``（``'对方'.STOCK_DISP_NETVALUE``）。
+        """
+        est_symbol = self._calibration_est_symbol(symbol)
+        if not est_symbol:
+            return "对方" + DISPLAY_NET_VALUE
+        return self._best_est_net_value(est_symbol, date)
+
+    def _calibration_est_symbol(self, symbol: str) -> Any:
+        """「对方的符号」：配对标的 / est 标的 / INDA 的 ``znb_SENSEX``。"""
+        #: PHP ``if ($ref = StockGetFundPairReference($strSymbol))`` ——
+        #: 门禁是 ``fundpair`` 表里有没有这一行，取到的是**配对标的**。
+        pair = self._fund_pair().get_pair_symbol(symbol)
+        if pair:
+            return pair
+        region = self._qdii_region(symbol)
+        if region == "us":
+            return qdii_est_symbol(symbol)
+        if region == "hk":
+            return qdii_hk_est_symbol(symbol)
+        if region == "jp":
+            return qdii_jp_est_symbol(symbol)
+        if region == "eu":
+            return qdii_eu_est_symbol(symbol)
+        #: ``else if ($strSymbol == 'INDA') $est_ref = new MyStockReference('znb_SENSEX');``
+        if symbol == "INDA":
+            return "znb_SENSEX"
+        return None
+
+    def _best_est_net_value(self, est_symbol: str, date: str) -> str:
+        """``_getBestEstNetValue()``（``_editstockoptionform.php:199``）：三级兜底。
+
+        净值（``netvaluehistory``）→ 该日收盘（``stockhistory``）→ 昨收。
+
+        **不走引用对象**：``$ref->GetClose($strDate)`` 在"日期就是引用当天"时会
+        返回实时价，那要先抓一次行情。表单初值不值得为此联网 —— 库里最近一条
+        与实时价的差别只在"当天还没收盘"这一种情形，而这条路径只在日期恰好
+        等于最新行情日时才会碰到。
+        """
+        est_id = self._stock_id(est_symbol)
+        if not est_id or not date:
+            return ""
+        value = self.net_value_sql.get_close(est_id, date)
+        if value is None:
+            value = self.history_sql.get_close(est_id, date)
+        if value is None:
+            value = self.history_sql.get_close_prev(est_id, date)
+        return "" if value is None else _number_text(value)
+
+    @staticmethod
+    def _qdii_region(symbol: str) -> Any:
+        """四地区判定，**顺序照抄** ``StockGetQdiiReference()``（``php/stock.php:306``）。
+
+        顺序是语义的一部分：先 ``in_arrayQdii`` 再 Hk/Jp/Eu。反过来写，
+        同时落在两个数组里的符号会拿到不同地区的中间价（USCNY vs HKCNY）。
+        """
+        if in_array_qdii(symbol):
+            return "us"
+        if in_array_qdii_hk(symbol):
+            return "hk"
+        if in_array_qdii_jp(symbol):
+            return "jp"
+        if in_array_qdii_eu(symbol):
+            return "eu"
+        return None
+
     # -- 内部：写回（``_updateStockOption*`` / ``_updateOptionDailySql``）----
     def _update_daily(self, sql: Any, stock_id: Any, date: str, value: Any) -> dict:
         """``_updateOptionDailySql()``（``_submitstockoptions.php:208``）。
@@ -675,6 +786,134 @@ class StockOptionService:
             return {"ok": True, "message": "%s：已写入 %s。" % (date, value)}
         #: 写不进去只有两种原因：值没变（MIN_FLOAT_VAL 内）或被周末闸门挡下。
         return {"ok": True, "message": "%s：值没有变化（或落在周末闸门），未写入。" % date}
+
+    def _write_calibration(self, symbol: str, stock_id: Any, date: str, value: str) -> dict:
+        """``_updateStockOptionCalibration()``（``_submitstockoptions.php:340``）。
+
+        ## 两段完全不同的语义
+
+        **空值**（含 ``'0'``，见 :func:`_php_empty`）不只是删那一天的校准行：
+        PHP 先删 ``lastcalibration`` 那一行（``LastCalibrationSql::DeleteById``，
+        **整只标的一条、不分日期**），再由 ``_updateOptionDailySql`` 按日期删
+        ``calibrationhistory``。少删前者的话，估值链路会拿旧校准值继续兜底，
+        页面上看着像"删了没生效"。
+
+        **有值**时填的是**估算值**，要换算成校准值才落库：
+
+        ======================================  ==================================
+        符号                                     换算
+        ======================================  ==================================
+        境内指数基金（``in_arrayChinaIndex``）   ``估算值 ÷ 基金净值``（汇率取 1.0）
+        QDII 四地区                               ``估算值 × 地区中间价 ÷ 基金净值``
+        ======================================  ==================================
+
+        ``QdiiGetCalibration($strEst, $strCNY, $strNetValue)`` 只有一行
+        ``floatval($strEst) * floatval($strCNY) / floatval($strNetValue)``
+        （``php/stock/qdiiref.php:3``）。
+
+        ## 三支没迁的特例（一律拒绝写入，不猜）
+
+        * ``INDA`` / ``ASHR`` —— PHP 先 ``YahooGetNetValue($ref)`` 抓官方净值，
+          再用 ``CalcFactor`` 换算。抓取链路没迁，拿库里的旧净值算会得到错值；
+        * ``hf_CHA50CFD`` —— 用期货 VWAP（``$ref->GetVal()``）换算，同理；
+        * 商品期货基金（``in_arrayChinaFuture``）—— PHP 自己也是
+          ``DebugString('unhandled China future symbol'); return;``，没有写入。
+
+        这三支在本版都返回可读的错误，**不会**退化成"用别的数硬算"。
+
+        ## 一处容错偏离：分母为 0 不写
+
+        PHP 在基金净值取不到时 ``floatval(false)`` = 0，除零得到 ``INF``，
+        ``strval(INF)`` 是 ``"INF"``，非 strict 模式下 ``double`` 列收下就变
+        **0** —— 校准值变 0 等于把这只基金的估值整条打废，而且没有报错。
+        本版直接拒绝并说清缺什么。
+        """
+        if not date:
+            return {"ok": False, "message": "日期不能为空。"}
+        calibration = self._calibration_sql()
+        if _php_empty(value):
+            self._last_calibration().delete_by_id(stock_id)
+            deleted = calibration.delete_by_date(stock_id, date)
+            return {
+                "ok": True,
+                "message": "%s：已删除校准记录（%d 行）与 lastcalibration。" % (date, deleted),
+            }
+
+        #: 先判符号能不能换算。PHP 是"先读净值、再按符号分支"，读净值没有副作用，
+        #: 换成先分支只是为了缺什么就报什么（INDA 缺的是抓取链路，不是净值）。
+        cny, error = self._calibration_cny(symbol, date)
+        if error:
+            return {"ok": False, "message": error}
+        net_value = self.net_value_sql.get_close(stock_id, date)
+        if not net_value:
+            return {
+                "ok": False,
+                "message": "%s 在 %s 没有净值记录 —— 换算是「估算值 × 中间价 ÷ 净值」，"
+                           "没有分母算不出来，没有写入。" % (symbol, date),
+            }
+        try:
+            factor = qdii_get_calibration(float(value), float(cny), float(net_value))
+        except (TypeError, ValueError, ZeroDivisionError):
+            return {"ok": False, "message": "估算值或净值不是数字，没有写入。"}
+        written = calibration.write_daily(stock_id, date, factor)
+        if not written:
+            return {
+                "ok": True,
+                "message": "%s：算出来的校准值是 %s，与库里那条相同（或落在周末闸门），未写入。"
+                           % (date, _number_text(factor)),
+            }
+        return {
+            "ok": True,
+            "message": "%s：估算值 %s × 中间价 %s ÷ 净值 %s = 校准值 %s，已写入。"
+                       % (date, value.strip(), _number_text(cny), _number_text(net_value),
+                          _number_text(factor)),
+        }
+
+    def _calibration_cny(self, symbol: str, date: str) -> tuple:
+        """换算校准值要乘的中间价；返回 ``(值, 错误信息)``。
+
+        错误信息非空就表示"这一支不能写"，此时值恒为 ``None`` —— 不返回 1.0
+        之类"看起来合理"的假值。
+
+        对应 PHP 那段 if-else 链（``_submitstockoptions.php:362-390``）：
+        ``in_arrayChinaFuture`` → 直接 return；``in_arrayChinaIndex`` → ``'1.0'``；
+        四个 QDII 地区各取自己的中间价；其余 → unhandled。
+        """
+        if symbol in ("INDA", "ASHR"):
+            return None, (
+                "%s 的校准值要先用 Yahoo 官方净值换算（PHP 先 YahooGetNetValue 再 "
+                "CalcFactor），那条抓取链路还没迁，本页不写。" % symbol
+            )
+        if symbol == "hf_CHA50CFD":
+            return None, (
+                "hf_CHA50CFD 的校准值用期货 VWAP 换算（CalcFactor 的另一支），"
+                "行情源没迁，本页不写。"
+            )
+        if in_array_china_future(symbol):
+            return None, (
+                "%s 是商品期货基金，PHP 在这个页面上也是 unhandled China future "
+                "symbol 直接 return，没有写入。" % symbol
+            )
+        if in_array_china_index(symbol):
+            #: PHP ``$strCNY = '1.0';`` —— 境内指数基金不乘汇率。
+            return 1.0, ""
+        region = self._qdii_region(symbol)
+        if region is None:
+            return None, (
+                "%s 既不是境内指数基金，也不在 QDII 四个地区清单里，"
+                "PHP 也是 unhandled other symbol，没有写入。" % symbol
+            )
+        cny_symbol = QDII_CNY_SYMBOLS[region]
+        cny_id = self._stock_id(cny_symbol)
+        cny = self.net_value_sql.get_close(cny_id, date) if cny_id else None
+        if not cny:
+            #: PHP ``if ($strCNY == false) return;`` —— 静默返回、一行不写。
+            #: 本版给一句能操作的话（中间价靠 ``forexcli`` 每天补）。
+            return None, (
+                "%s 在 %s 没有中间价记录，算不出校准值 —— 先跑 forexcli 补中间价，"
+                "或换一个日期。" % (cny_symbol, date)
+            )
+        return cny, ""
 
     def _write_stock(self, symbol: str, stock_id: Any, date: str, value: str) -> dict:
         """``_updateStockDescription()``：``StockSql->WriteSymbol()``。"""

@@ -14,8 +14,9 @@
 > * `python/web/templates/stock_option_{index,form}.html`
 > * `python/dbtools/seed_option_tables.py`（演示库缺的三张表 DDL）
 >
-> 单测：`auto/test_optionstore.py`（25 个）+ `web/tests/test_stock_option_edit.py`（51 个）。
-> 逐例对照：`auto/_scratch/_php_optionstore_compare.py`（19 个操作全一致）。
+> 单测：`auto/test_optionstore.py`（25 个）+ `web/tests/test_stock_option_edit.py`（66 个）。
+> 逐例对照：`auto/_scratch/_php_optionstore_compare.py`（19 个操作全一致）+
+> `auto/_scratch/_php_calibration_write_compare.py`（14 例全一致）。
 
 ## 一、为什么用"一个路由顶 16 个页面"
 
@@ -50,7 +51,7 @@ PHP 用 `array_search()` 反查，改顺序会让分派错位；本版靠 key �
 
 | # | key | 动作（`STOCK_OPTION_*` 原文） | 落库 | 日期口径 | 状态 |
 |---|---|---|---|---|---|
-| 1 | `editcalibration` | 手工校准值 | `calibrationhistory` + `lastcalibration` | 净值表 | 未迁 |
+| 1 | `editcalibration` | 手工校准值 | `calibrationhistory` + `lastcalibration` | 净值表 | **已迁**（§六） |
 | 2 | `editfund` | 修改对应配对代码和仓位 | `fundpair` + `fundposition` + `calibrationhistory` + `lastcalibration` | 无 | **已迁** |
 | 3 | `editnetvalue` | 修改净值 | `netvaluehistory` | 净值表 | **已迁** |
 | 4 | `editpremium` | 期货升水 | `futurepremium` | `futurepremium` | **已迁** |
@@ -67,7 +68,7 @@ PHP 用 `array_search()` 反查，改顺序会让分派错位；本版靠 key �
 | 15 | `editstockholdings` | 修改持仓 | `holdings` + `holdingsdate` + `fundposition` | 无 | 已有入口 |
 | 16 | `editstocksplit` | 拆股或合股 | `stocksplit` + `stockhistory` 全序列 | 行情表 | 未迁（要重算） |
 
-**已迁 10 项，未迁 6 项。** 未迁的分三类，理由直接写在 `StockOptionSpec.note`
+**已迁 11 项，未迁 5 项。** 未迁的分三类，理由直接写在 `StockOptionSpec.note`
 里，页面照原样显示 —— 不做成"能点但会算错"的按钮：
 
 1. **已有专门页**：`editquarterreport` → `/holdings/quarter/<symbol>`；
@@ -77,9 +78,7 @@ PHP 用 `array_search()` 反查，改顺序会让分派错位；本版靠 key �
 3. **要连带重算**：`editstockdividend` / `editstocksplit` 写一行之后要重算
    该日之后的全部复权价与校准值（`_updateStockHistoryAdjCloseByDividend` /
    `BySplit`），`editstocksplit` 还要改交易流水
-   （`_updateStockOptionSplitTransactions`）。那是估值链路，不能在这页顺手做；
-   `editcalibration` 同理 —— 它要把"手工估算值"换算成校准值
-   （`QdiiGetCalibration` + 地区中间价 + INDA/ASHR 的 Yahoo 净值特例）。
+   （`_updateStockOptionSplitTransactions`）。那是估值链路，不能在这页顺手做。
 
 ## 三、三种表的形状，混用就会写坏
 
@@ -99,7 +98,7 @@ PHP 用 `array_search()` 反查，改顺序会让分派错位；本版靠 key �
 `IntSql extends ValSql` 才补字符串那套，`PairSql extends IntSql` 因为配对表的
 比较方式是字符串。本版第一版把 `write_string` 放在了 `ValStore` 上，是
 **PHP 探针报 `Call to undefined method ProbeValSql::WriteString()` 才发现的**
-（见 §七）。分层照抄，别"整理"。
+（见 §八）。分层照抄，别"整理"。
 
 **配对表的方向不能反**：`fundpair` 里 `id=SH513100, stock_id=^NDX` 表示
 "SH513100 跟踪 ^NDX"。`editstockah`（A 股页）与 `editstockha`（H 股页）
@@ -148,7 +147,80 @@ INSERT 分支**、`UpdateDaily` 按主键 `id` 而不是 `(stock_id, date)`。
 页面上"值没变"与"写进去了"长得很像，所以 `_update_daily` 分三种提示：
 `已删除该日记录（N 行）` / `已写入 X` / `值没有变化（或落在周末闸门），未写入`。
 
-## 六、演示库缺的三张表
+## 六、`editcalibration`：填的是估算值，落库的是校准值
+
+`_updateStockOptionCalibration()`（`_submitstockoptions.php:340`）与其它 15 项
+**长得一样但语义不同**：表单里那一栏写的是**估算值**（页面上显示的那个点位），
+写库前要先换算成**校准值**：
+
+```
+境内指数基金   cal = est ÷ 净值              （$strCNY 写死 '1.0'）
+QDII 四地区    cal = est × 地区中间价 ÷ 净值
+```
+
+`QdiiGetCalibration($strEst, $strCNY, $strNetValue)` 只有一行
+`floatval($strEst) * floatval($strCNY) / floatval($strNetValue)`
+（`php/stock/qdiiref.php:3`）。**净值是这只基金自己的**（`netvaluehistory`
+的 close，不是行情价）；中间价是 `USCNY` / `HKCNY` / `JPCNY` / `EUCNY` 四张
+外汇符号的净值。
+
+### 读初值：值取"对方标的"，日期取净值日
+
+`_read_calibration` 走的是"对方标的的净值"（`_best_est_net_value`：
+该日净值 → 该日收盘 → 昨收），不是一个数。日期口径是 `DATE_NETVALUE`，
+与 `editnetvalue` 同一支 —— 校准值本来就跟着净值日走。
+
+**`KWEB` 是例外**：`_getStockOptionDate()` 的 `DATE_NETVALUE` 分支里，
+KWEB 取的是"行情前一日"（`GetDatePrev($his_sql->GetDateNow($strStockId))`），
+**不**退到净值表/行情表最新一天。判断写在 `_default_date()` 里，旁边注了
+PHP 行号 —— 这类"某一只标的有自己的日期口径"的分支最容易在重构时被抹平。
+
+### 空值：一次删两处，而且前者不分日期
+
+```php
+if (empty($strVal))  $last_sql->DeleteById($strStockId);        // 整只标的一条
+_updateOptionDailySql(..., $strVal);                            // 按日期删
+```
+
+`lastcalibration` 的主键就是 `stock_id`，所以那一条**没有日期概念** ——
+删它就是这只基金的"上次校准值"彻底没了。少删这一步的症状很阴：估值链路
+继续拿旧校准值兜底，页面上看着像"删了没生效"。
+`'0'` 也走这一支（`empty('0')` 为真，§五）。
+
+### 三支没迁的特例，一律拒绝写入
+
+| 符号 | PHP 怎么算 | 本版 |
+|---|---|---|
+| `INDA` / `ASHR` | 先 `YahooGetNetValue($ref)` 抓官方净值，再 `CalcFactor` | 拒绝：抓取链路没迁 |
+| `hf_CHA50CFD` | 用期货 VWAP（`$ref->GetVal()`）换算 | 拒绝：行情源没迁 |
+| 商品期货基金（`in_arrayChinaFuture`） | PHP 自己也是 `unhandled China future symbol; return;` | 拒绝，理由与 PHP 一致 |
+
+不猜、不退化成"用别的数硬算"。**读初值那一侧也不假装能算**：`KWEB` 这类
+取不到 est 的符号，读出来是占位串 `对方净值`，不是 0。
+
+### 一处容错偏离：分母为 0 不写
+
+基金净值取不到时 PHP 是 `floatval(false)` = 0：
+
+* **PHP 8**（本机 8.0.10）除零直接抛 `DivisionByZeroError` → 整页 500；
+* **PHP 7** 算出 `INF`，`strval(INF)` 是 `"INF"`，非 strict 模式往 `double`
+  列写进去变 **0** —— 校准值变 0 等于把这只基金的估值整条打废，**而且不报错**。
+
+本版直接拒绝并说清缺什么。这一条是拿真 PHP 跑出来的：探针把
+`DivisionByZeroError` 记成 `throw:DivisionByZeroError:Division by zero`，
+所以它在对照表里是"设计差异"，不是"通过"（见 §八）。
+
+### 另一处只有对着真身跑才会看见的：周末闸门静默丢行
+
+`calibrationhistory` 的 `WriteDaily` 继承的是 `DailyCloseSql::WriteDaily`，
+**周末闸门在**（`WriteDailyAverage` 那三行才是被注释掉的，注释写着
+`hf_CHA50CFD calibration may in Sunday`）。所以周六写新值 → 一行都不插。
+
+坑在于 PHP 的返回值是"**要写的值**"不是"写没写"：闸门拦下时它照样把换算结果
+返回给页面，看起来像成功。本版把这一句说出来（`…与库里那条相同（或落在周末
+闸门），未写入`），值和库里的对得上才算数。
+
+## 七、演示库缺的三张表
 
 `sharesdiff` / `stockdividend` / `stocksplit` 在演示库里**根本没有**
 （生产端有，DDL 由 `DailyCloseSql::Create()` 落地）。`seed_option_tables.py`
@@ -167,7 +239,7 @@ D:\python\python.exe -B dbtools\seed_option_tables.py --apply    # 真建表
 `E:\mysqldata\stock_data_20261030_091058.sql`（820.55 KB / 30 张表），
 建完库从 30 张变 33 张，幂等复查通过。
 
-## 七、PHP 逐例对照：19 个操作
+## 八、PHP 逐例对照：19 个操作 + 14 例校准写入
 
 `_scratch/_php_optionstore_check.php` 在本地库建三张临时表
 `os_probe_val` / `os_probe_pair` / `os_probe_daily`，用**真**
@@ -201,7 +273,50 @@ D:\python\python.exe -B dbtools\seed_option_tables.py --apply    # 真建表
 #131 / #132 —— 一个是 `Create()` 硬编码生产库名，一个是
 `CalibrationSql::__construct()` 无参导致"多传的表名被静默忽略、写进了真表"。
 
-## 八、单测
+### 校准写入：14 例
+
+`_scratch/_php_calibration_write_check.php` + `_php_calibration_write_compare.py`
+把 `_updateStockOptionCalibration()` 的**整条分支**照着抄一遍（方法体用真身
+`CalibrationSql::InsertDaily` / `UpdateDaily` / `ValSql::DeleteById`），两边在
+三张临时表 `cw_probe_cal` / `cw_probe_last` / `cw_probe_nav` 上跑，逐例比
+**校准表整表快照 + lastcalibration 快照 + `time` 列**：
+
+```
+[OK  ] QDII 新行换算    44325.176400018      [OK  ] 缺中间价            false
+[OK  ] QDII 同值再写    44325.176400018      [设计] 缺基金净值          throw:DivisionByZeroError
+[OK  ] QDII 覆盖已有行  43810.078478109      [OK  ] 周末闸门            43695.067264574
+[OK  ] 空值双删         （空）                [OK  ] 其它符号            false
+[OK  ] 填 0 双删        0                     [OK  ] 商品期货            false
+[OK  ] 港股 QDII 换算   8275.6356877323       [OK  ] INDA 未迁           false
+[OK  ] 境内指数换算      50                   [OK  ] 期货 VWAP 未迁       false
+14 例全一致
+```
+
+四个**只有这么跑才会发现**的点：
+
+1. **净值也得换成临时表**。演示库只有 179 个符号，没有 A 股个股、没有境内
+   指数基金、也没有商品期货基金，而这三类恰好各走一条不同分支
+   （`in_arrayChinaIndex` 的 `'1.0'`、`in_arrayChinaFuture` 直接 return、
+   其余 unhandled）。真库凑不出来，又绝不能往真表塞种子 —— 所以净值也临时表，
+   符号、净值、中间价全由用例自己给，**真库只被读**（读 `stock` 表翻 id）。
+2. **`num` 列会暴露继承错层**。第一版探针类 `extends DailyTimeSql`，
+   而 `num` 只在 `CalibrationSql::InsertDaily()` 里写 —— INSERT 漏掉 `num`，
+   `NOT NULL` 列被 MySQL 悄悄填 **0**，快照里一眼看见。改成
+   `extends CalibrationSql`、只在构造器里绕到
+   `DailyTimeSql::__construct($table, 'stock')`。
+3. **只在快照里比 `close` 是比不出"值没变不发 UPDATE"的**。覆盖成同一个值和
+   一行都不写，落库结果一模一样。两边都把 `DebugGetTime()` / `now_time()`
+   换成本例归零的计数器（`09:00:01` / `09:00:02`），"发了几条写语句"才进快照。
+4. **pymysql 把 `TIME` 读成 `timedelta`**，`str()` 出来是 `9:00:01`（无前导零），
+   PHP 那边是字符串 `09:00:01` —— 不对齐这一处，14 例会全部假报差异。
+   对照脚本的 `_cell()` 里单独处理。
+
+探针还逐句搬了 `php/sql.php` 的三个全局函数（`SqlGetSingleTableData` /
+`SqlCountTableData` / `SqlDeleteTableData`）：`GetRecord()` / `DeleteData()` 走
+的就是它们，而 `sql.php` include 了 email / httplink / ui，CLI 起不来。
+**搬函数体，不改函数体**。
+
+## 九、单测
 
 `auto/test_optionstore.py`（25 个）用**内存 sqlite**，两处方言差异在包装层抹平：
 
@@ -218,16 +333,21 @@ sqlite 的 `REAL` 列读回 `100.0`，`str()` 是 `"100.0"` 而非 `"100"` —�
 PHP 从 `double(13,6)` 读回来也是 `"100.000000"`，两边都会多写一次，
 结果一样。测试里写清这一点，别拿它当"应该相等"的证据。
 
-`web/tests/test_stock_option_edit.py`（51 个）用 `tests/sqlitedb.py` 的假连接
+`web/tests/test_stock_option_edit.py`（66 个）用 `tests/sqlitedb.py` 的假连接
 （`SqliteConnection` / `SqliteCursor` / `FakeSource`），覆盖：索引页 16 项、
-未知选项 404、符号不在库不摆表单、未迁项 GET/POST、10 项的默认值、
+未知选项 404、符号不在库不摆表单、未迁项 GET/POST、11 项的默认值、
 日频写删、EMA 清空后回填、AH/HA 删除方向、ADR 比例、fund 三支解析、
 非管理员 POST 403、失败回填提交值、三个 PHP 口径助手
 （`_php_empty` / `_is_zero_text` / `_intval`）。
 
-全量：auto **1606** 绿、web **998** 绿、`compileall` 干净。
+`StockOptionCalibrationTest`（15 个）单列校准这一项：读初值三级回落、
+`对方净值` 占位、QDII 换算 `29500*6.7147/4.4324`、境内指数 `cny=1.0`、覆盖已有行、
+同值不再写、空值双删、`0` 也算删、缺中间价 / 缺净值 / 商品期货 / 未分类符号 /
+空日期各自拒绝。
 
-## 九、踩过的坑（写进 pitfalls 的）
+全量：auto **1606** 绿、web **1013** 绿、`compileall` 干净。
+
+## 十、踩过的坑（写进 pitfalls 的）
 
 1. `WriteString` 一族在 `IntSql` 上，不在 `ValSql` 上；
 2. `ValSql` 的构造器接受表名，`CalibrationSql` **不接受** —— 后者多传的实参
@@ -236,12 +356,17 @@ PHP 从 `double(13,6)` 读回来也是 `"100.000000"`，两边都会多写一次
    `double` 列并删掉真 EMA（本版已改顺序，见 §四）；
 4. `intval('1.5')` 是 **1** → `ADR/1.5` 的 `intval != 1` 不成立 → **不写仓位**。
    照抄。1.5 这种比例只能先存 2 再改，或者直接动库。
+5. `CalibrationSql` 的子类探针**必须 `extends CalibrationSql`**，只绕构造器；
+   继承成 `DailyTimeSql` 会让 INSERT 漏写 `num`（`NOT NULL` 被填 0）。
+6. `KWEB` 的默认日期取"行情前一日"，**不**退到净值表/行情表最新一天 ——
+   全局的"取最新一天"回落对它不适用。
+7. 周末闸门在 `calibrationhistory` 上是**在的**（只有 `WriteDailyAverage` 那三行
+   被注释掉）；而 PHP 的返回值是"要写的值"不是"写没写"，闸门拦下也返回数字。
 
-## 十、下一步
+## 十一、下一步
 
-* 剩 6 项按依赖顺序：`editcalibration` 跟 `fundestcalc` 的校准写入口一起做；
-  `editstockdividend` / `editstocksplit` 要先把"改一行 → 重算复权序列与校准值"
-  抽成独立链路；`editstockamount` 等账号体系；
+* 剩 5 项按依赖顺序：`editstockdividend` / `editstocksplit` 要先把"改一行 →
+  重算复权序列与校准值"抽成独立链路；`editstockamount` 等账号体系；
 * `submit` 族还剩 3 个独立页：`submitdividend.php`（抓 SPDR 官方分红）、
   `submitnetvalue.php`（抓 Invesco / SPDR 官方净值）、`submithistory.php`
   （刷新 Yahoo 历史图表）；
