@@ -241,6 +241,21 @@ class StockGroupSql:
             self.TABLE, self.KEY, self.STRING_NAME)
         return self._fetchall(sql, (member_id,))
 
+    def get_data(self) -> list:
+        """对应 ``new TableSql(TABLE_STOCK_GROUP)`` + ``GetData()``：**全部**分组。
+
+        ``get_all()`` 是按会员筛的（``GetAll($strKeyId)``），这里问的是另一件事：
+        "库里一共哪些分组"，与登录会员无关。唯一调用方是拆股写入口
+        （``_updateStockOptionSplitTransactions``，``_submitstockoptions.php:238``），
+        它要遍历**所有**成员的分组去找持有该标的的人 —— 拆股影响的是每个人的股数，
+        不是当前管理员那几组。
+
+        PHP 是 ``$sql = new TableSql(TABLE_STOCK_GROUP); $sql->GetData()``，
+        ``GetData()`` 不带 WHERE / ORDER BY（``sqltable.php:179``）。这里补
+        ``ORDER BY id``：结果集合不变，但顺序稳定，逐例对照才比得下去。
+        """
+        return self._fetchall("SELECT * FROM %s ORDER BY id" % self.TABLE)
+
     def count_by_string(self, group_name: str) -> int:
         """对应 ``CountByString()``：重名检测（不限会员）。"""
         row = self._fetchone(

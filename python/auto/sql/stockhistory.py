@@ -569,8 +569,16 @@ class StockHistorySql:
 
         所以 ``start_date`` 是**上界**而不是下界。
         没有 ``start_date``（``None``）时调用方不该查库。
+
+        ## 为什么要带 ``id``
+
+        PHP 的 ``GetFromDate()`` 走 ``TableSql::GetData()`` → ``SELECT *``，
+        回来的是整行，所以 ``_updateStockHistoryAdjCloseBySplit()`` 能拿
+        ``$record['id']`` 逐条 ``UpdateAdjClose($id, ...)``。本方法原来只
+        ``SELECT `date`, `adjclose```（SMA 只要这两列），拿不到 id ——
+        拆股/分红重算要用它当主键改复权价，缺了就只能静默改不动。
         """
-        sql = ("SELECT `date`, `adjclose` FROM `%s` "
+        sql = ("SELECT `id`, `date`, `adjclose` FROM `%s` "
                "WHERE stock_id = %%s AND `date` <= %%s "
                "ORDER BY `date` DESC" % self.table)
         if num:

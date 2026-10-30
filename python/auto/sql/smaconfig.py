@@ -227,6 +227,27 @@ def file_store_factory(root: Any = None) -> Any:
     return build
 
 
+def unlink_config_file(symbol: Any) -> bool:
+    """对应 PHP ``unlinkConfigFile($strSymbol)``（``php/debug.php:263``）。
+
+    PHP 那边是 ``unlinkEmptyFile(DebugGetConfigFileName($strSymbol))`` ——
+    删掉这只标的的配置文件，让下一次计算重新写一份。拆股/分红改了复权价之后
+    必须删：缓存里的 SMA 是按旧 ``adjclose`` 递推出来的，留着就与历史序列打架。
+
+    **只删、不建目录、不报错**。没开 ``PALMMICRO_SMA_CACHE_DIR`` 时本来就没有
+    文件；PHP 的 ``unlinkEmptyFile`` 对不存在的文件也是静默通过。
+    返回 ``True`` 表示真的删掉了一个文件（测试与日志用得上）。
+    """
+    root = os.getenv(ENV_CACHE_DIR)
+    if not root or not symbol:
+        return False
+    path = config_file_name(_symbol_of(symbol), root)
+    if not os.path.exists(path):
+        return False
+    _remove(path)
+    return True
+
+
 def _memory_store() -> Any:
     """内存实现定义在 ``stockhistory`` 里（那边不许出现 I/O），这里**延迟导入**。
 

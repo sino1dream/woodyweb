@@ -14,9 +14,10 @@
 > * `python/web/templates/stock_option_{index,form}.html`
 > * `python/dbtools/seed_option_tables.py`（演示库缺的三张表 DDL）
 >
-> 单测：`auto/test_optionstore.py`（25 个）+ `web/tests/test_stock_option_edit.py`（66 个）。
+> 单测：`auto/test_optionstore.py`（25 个）+ `web/tests/test_stock_option_edit.py`（86 个）。
 > 逐例对照：`auto/_scratch/_php_optionstore_compare.py`（19 个操作全一致）+
-> `auto/_scratch/_php_calibration_write_compare.py`（14 例全一致）。
+> `auto/_scratch/_php_calibration_write_compare.py`（14 例全一致）+
+> `auto/_scratch/_php_dividend_split_compare.py`（19 例：14 一致 / 5 按设计差异 / 0 失败）。
 
 ## 一、为什么用"一个路由顶 16 个页面"
 
@@ -62,23 +63,24 @@ PHP 用 `array_search()` 反查，改顺序会让分派错位；本版靠 key �
 | 9 | `editstockah` | 修改A股对应H股代码 | `ahpair` | 无 | **已迁** |
 | 10 | `editstockamount` | 基金申购金额 | `groupitemamount` | 无 | 未迁（账号体系） |
 | 11 | `editstockclose` | 更新收盘价 | `stockhistory`（只改已有行） | 昨收那天 | **已迁** |
-| 12 | `editstockdividend` | 分红 | `stockdividend` + 复权重算 | 行情表 | 未迁（要重算） |
+| 12 | `editstockdividend` | 分红 | `stockdividend` + 复权重算 | 行情表 | **已迁**（§七） |
 | 13 | `editstockema` | 修改200/50日EMA | `stockema200` + `stockema50` | 行情表 | **已迁** |
 | 14 | `editstockha` | 修改H股对应A股代码 | `ahpair` | 无 | **已迁** |
 | 15 | `editstockholdings` | 修改持仓 | `holdings` + `holdingsdate` + `fundposition` | 无 | 已有入口 |
-| 16 | `editstocksplit` | 拆股或合股 | `stocksplit` + `stockhistory` 全序列 | 行情表 | 未迁（要重算） |
+| 16 | `editstocksplit` | 拆股或合股 | `stocksplit` + `stockhistory` 全序列 | 行情表 | **已迁**（§七） |
 
-**已迁 11 项，未迁 5 项。** 未迁的分三类，理由直接写在 `StockOptionSpec.note`
+**已迁 13 项，未迁 3 项。** 未迁的分两类，理由直接写在 `StockOptionSpec.note`
 里，页面照原样显示 —— 不做成"能点但会算错"的按钮：
 
 1. **已有专门页**：`editquarterreport` → `/holdings/quarter/<symbol>`；
    `editstockholdings` → 穷举持仓页的「确认更新持仓」（`POST /holdings/submit`）；
 2. **依赖账号体系**：`editstockamount` 要先用 member 邮箱 + 分组名换
-   `stockgroupitem.id`（`SqlGetMyStockGroupItemId`），账号体系整体暂缓；
-3. **要连带重算**：`editstockdividend` / `editstocksplit` 写一行之后要重算
-   该日之后的全部复权价与校准值（`_updateStockHistoryAdjCloseByDividend` /
-   `BySplit`），`editstocksplit` 还要改交易流水
-   （`_updateStockOptionSplitTransactions`）。那是估值链路，不能在这页顺手做。
+   `stockgroupitem.id`（`SqlGetMyStockGroupItemId`），账号体系整体暂缓。
+
+第三类"**缺表 / 要连带重算**"原本有 3 项，现在都落地了：`editsharesdiff` 只是
+一天一个数字（`_updateOptionDailySql` 一条路）；`editstockdividend` /
+`editstocksplit` 的连带重算（校准值 / 自身净值 / 复权序列 / 拆股交易流水）
+收在 `_write_stockdividend` / `_write_stocksplit` 里，见 §七。
 
 ## 三、三种表的形状，混用就会写坏
 
@@ -98,7 +100,7 @@ PHP 用 `array_search()` 反查，改顺序会让分派错位；本版靠 key �
 `IntSql extends ValSql` 才补字符串那套，`PairSql extends IntSql` 因为配对表的
 比较方式是字符串。本版第一版把 `write_string` 放在了 `ValStore` 上，是
 **PHP 探针报 `Call to undefined method ProbeValSql::WriteString()` 才发现的**
-（见 §八）。分层照抄，别"整理"。
+（见 §九）。分层照抄，别"整理"。
 
 **配对表的方向不能反**：`fundpair` 里 `id=SH513100, stock_id=^NDX` 表示
 "SH513100 跟踪 ^NDX"。`editstockah`（A 股页）与 `editstockha`（H 股页）
@@ -208,7 +210,7 @@ _updateOptionDailySql(..., $strVal);                            // 按日期删
 
 本版直接拒绝并说清缺什么。这一条是拿真 PHP 跑出来的：探针把
 `DivisionByZeroError` 记成 `throw:DivisionByZeroError:Division by zero`，
-所以它在对照表里是"设计差异"，不是"通过"（见 §八）。
+所以它在对照表里是"设计差异"，不是"通过"（见 §九）。
 
 ### 另一处只有对着真身跑才会看见的：周末闸门静默丢行
 
@@ -220,7 +222,102 @@ _updateOptionDailySql(..., $strVal);                            // 按日期删
 返回给页面，看起来像成功。本版把这一句说出来（`…与库里那条相同（或落在周末
 闸门），未写入`），值和库里的对得上才算数。
 
-## 七、演示库缺的三张表
+## 七、`editstockdividend` / `editstocksplit`：写一行，连带改一片
+
+这两项与前面 11 项的结构差别只有一条：**它们不止写自己那张表**。分红写
+`stockdividend` 之后要让校准值、基金净值、复权序列一起动；拆股写 `stocksplit`
+之后还要补成员交易流水、删 SMA 配置。所以 `_write_stockdividend` /
+`_write_stocksplit` 的 docstring 比代码长 —— 每一段副作用为什么在这、边界在哪，
+都写在方法里。这里只记**会写坏数据的那几条口径**。
+
+### 分红：三段副作用，次序照抄，整天包在 `if` 里
+
+```php
+if (_updateOptionDailySql($div_sql, $strStockId, $strDate, $strVal))   // 写/删分红行
+{   ... 改校准值 → 改自身净值 → 重算复权价 ... }
+```
+
+1. **校准值**：`calibrationhistory` 里 `date_prev` 那一行改成
+   `昨收 × 原净值 ÷ 新净值`。分红让净值掉了 `D`，同一个配对关系下估值因子必须
+   跟着涨，否则一除就跳空；
+2. **自身净值**：`netvaluehistory` 的 `date_prev` 减去 `D`；
+3. **复权价**：`stockhistory` 里 `date <= 该日` 的全部 `adjclose` 减 `D`，
+   **当天那一行除外**（`if ($record['date'] != $strYMD)`）—— 当天已经是除权后的
+   价格，再减一次就是重复扣。
+
+包在 `if` 里的后果得说清：**值没变（`MIN_FLOAT_VAL` 内）、落在周末闸门、
+清空/填 `0` 删行，三种情况都不重算**。前两种是"本来就不用算"，第三种是照抄的
+硬伤 —— 删掉分红以后复权价不会涨回去、净值也不会加回来。这一版修不了：删行那
+一刻"当初减了多少"只剩 `stockdividend` 里那一行，而它正是要被删掉的东西。
+页面消息直接把这句话说出来（`复权价与净值**没有**回滚`），不让人以为删了会自动
+还原。
+
+### 拆股：四段副作用，后两段在 `if` 外面
+
+1. **交易流水**：给每个**持有该标的**的成员补两笔 —— 按昨收价卖出全部 `Q` 股、
+   再按 `昨收 ÷ 比例` 买回 `intval(比例 × Q)` 股，然后回填成员预统计
+   （`quantity/cost/record`）。这一步在 `if ($sql->InsertDaily(...))` 里面；
+2. **校准值**：本标的有校准行 → `昨收 × 比例` 写回 `date_prev`；否则遍历把它
+   当 est 的 QDII 基金 → `昨收 ÷ 比例`。**两支的乘除方向相反，这是 PHP 原文**，
+   和分红那两支一样，照抄不动；
+3. **复权价**：`date <= 该日` 的全部 `adjclose` 除以比例，**连当天一起除**；
+4. **删 SMA 配置**：`unlinkConfigFile($strSymbol)` → 删
+   `<PALMMICRO_SMA_CACHE_DIR>/config/<符号>.txt`。比例变了，缓存里的均线全作废。
+
+第 2、3 段写在 `if` 外面，于是**同一天提交两次 `10:1`，复权价会被除两次**
+（1/100）、校准值会被乘两次。流水不会重复插（`InsertDaily` 已有行返回 false）。
+照抄，但返回消息里明说"当天已有拆股记录、本次没有新增"外加一句"校准与复权价
+又重算了一遍"，免得管理员看没变化又点一次。
+
+`intval` 是**向零截断**：3 股按 1.5 倍拆只给 4 股，半股被吞。交易表只记整数股，
+这是 PHP 的口径。
+
+### `0` 与 `0:0`：一个走空值、一个走松散比较
+
+| 输入 | 判据 | 结果 |
+|---|---|---|
+| 分红 `''` / `'0'` | `empty($strVal)` | 按日期删 `stockdividend` 那一行，**不重算** |
+| 分红 `'0.0'` | 非空字符串 | **写 0**（与 `'0'` 不是一回事，§五） |
+| 拆股 `0:0` / `0.0:0` / `00:0` | `$ar[0] == '0' && $ar[1] == '0'`，PHP 8 松散比较 | 删 `stocksplit` 那一行，**流水/校准/复权全不回滚** |
+| 拆股 `10:0` | `floatval(0)` 当分母 | PHP 抛 `DivisionByZeroError` 整页 500；**本版写之前就拒绝** |
+| 拆股 `0:10` | 比例算出来是 0 | PHP 先插 `stocksplit`、把校准值写成 0，再在"复权价 ÷ 比例"处抛；**本版拒绝** |
+
+`php_text_equal`（双轨数字比）就是给 `0.0:0` 这一格用的；`_php_empty` 只管
+`''` 与 `'0'`。两个助手别合并 —— 同一族里 `_write_fund` 用的又是第三套
+`_is_zero_text()`（§五）。
+
+### 先算后写：`_dividend_plan`
+
+分红那三段副作用要的分母（原净值）在 `date_prev` 上，取不到就是
+`floatval(false)` = 0：PHP 7 算出 `INF`、PHP 8 抛 `DivisionByZeroError`，
+而那时**分红行已经插进去了**。本版把"要改哪些行、各改成多少"抽成只读的
+`_dividend_plan()`，取不到分母就在写库之前整笔拒绝 —— 库里的状态要么全改、
+要么一点没动。拆股侧同理：比例、昨收价（流水要按昨收成交）都在 `insert_daily`
+之前取。
+
+### 两处刻意偏离（都不写数据）
+
+1. **QDII 分支不写净值**。PHP 的最后一行用的是**循环变量**：
+
+   ```php
+   foreach ($arQdii as $strQdii) { ... $strDatePrev = ...; $fNewNetValue = ...; }
+   if ($strClosePrev)  $net_sql->WriteDaily($strStockId, $strDatePrev, strval($fNewNetValue));
+   ```
+
+   `$strDatePrev` / `$fNewNetValue` 来自最后一个命中的 QDII，却写进**本标的**的
+   净值表。SPY / QQQ 这类 ETF 在 `netvaluehistory` 里常常没有那一天，
+   `GetClose` 给 `false` → 会凭空插一条 `-分红值` 的**负净值**。本版只在本标的
+   分支写净值，QDII 分支的 `plan["net"]` 恒为 `None`；
+2. **分红值不是数字时拒绝**。PHP `floatval('abc')` 是 0，于是插一条"0 元分红"，
+   接着拿原净值当分母算校准值（等于什么都没变，但库多一行）。本版拒绝。
+
+真库受控实测（QQQ，快照备份 → 做完复原 → 逐行核对 `0 / 34` 差异）：
+分红 `0.5` → 校准 `41.107056 → 41.136253`、净值 `704.47 → 703.97`、复权价
+33 行（当天 `704.4` 不动）；拆股 `10:1` → 复权价 34 行（含当天，
+`704.4 → 70.44`）、校准 `41.136253 → 411.36253`，同一天再提交变成
+`7.044` / `4113.6253`（就是"再除一次"）。
+
+## 八、演示库缺的三张表
 
 `sharesdiff` / `stockdividend` / `stocksplit` 在演示库里**根本没有**
 （生产端有，DDL 由 `DailyCloseSql::Create()` 落地）。`seed_option_tables.py`
@@ -239,7 +336,7 @@ D:\python\python.exe -B dbtools\seed_option_tables.py --apply    # 真建表
 `E:\mysqldata\stock_data_20261030_091058.sql`（820.55 KB / 30 张表），
 建完库从 30 张变 33 张，幂等复查通过。
 
-## 八、PHP 逐例对照：19 个操作 + 14 例校准写入
+## 九、PHP 逐例对照：19 个操作 + 14 例校准写入 + 19 例分红拆股
 
 `_scratch/_php_optionstore_check.php` 在本地库建三张临时表
 `os_probe_val` / `os_probe_pair` / `os_probe_daily`，用**真**
@@ -316,7 +413,63 @@ D:\python\python.exe -B dbtools\seed_option_tables.py --apply    # 真建表
 的就是它们，而 `sql.php` include 了 email / httplink / ui，CLI 起不来。
 **搬函数体，不改函数体**。
 
-## 九、单测
+### 分红 / 拆股：19 例，这次用的是"真身"
+
+上一组只能逐句照抄方法体，因为 `sqlstocksymbol.php` 一连串 `require` 拉不起来。
+这一组换了个办法：**在 `SqlDieByQuery()` 里把 `CREATE TABLE` 拦掉**
+（`Create()` 只在表缺失时才建，本地表都在），于是 `php/sql/sqlstocksymbol.php`
+与 `sqlstockgroup.php` 可以**整份 require** —— `Sql` 类与
+`$g_stock_sql->GetId()` / `GetClosePrev()` 全是真身，探针只搬
+`_updateStockOptionDividend` / `Split` / `SplitTransactions` /
+`_updateStockHistoryAdjCloseByDividend` / `BySplit` 五个函数体。
+
+```
+基线：stockdividend=0  stocksplit=0  calibrationhistory=164  netvaluehistory=302
+      stockhistory=1480  stockgroupitem=5  stocktransaction=4
+= dividend_write             一致（7 张表快照相同）
+= dividend_write_spy         一致
+= dividend_clear             一致
+= dividend_zero              一致
+= dividend_same_value        一致
+~ dividend_bad_number        差异 ['dividend']  ← 按设计差异（PHP 插一条 0 分红）
+= dividend_empty_date        一致
+= split_10_1                 一致
+= split_1_10                 一致
+= split_3_2_truncates        一致（3 股 × 1.5 → 4 股）
+= split_delete               一致
+= split_zero_zero_tenths     一致（0.0:0 也算删除）
+= split_no_colon             一致
+~ split_zero_denominator     差异 []            ← PHP throw，两边都没落数据
+~ split_zero_numerator       差异 ['split','cal'] ← PHP 先插行、把校准写成 0，再抛
+= split_already_exists        一致（再除一次的那条）
+= split_with_member           一致（含流水配平 + 预统计回填）
+~ qdii_branch_with_nav        差异 ['nav']     ← PHP 用循环变量写本标的净值
+~ qdii_branch_without_nav     差异 ['history'] ← PHP throw，PY 已写分红行
+19 例：14 例完全一致，5 例按设计差异，0 例失败
+```
+
+七张表进快照：`stockdividend` / `stocksplit` / `calibrationhistory`（含 `num`）/
+`netvaluehistory` / `stockhistory`（按 `history_id` 单取那一行）/ `stockgroupitem`
+/ `stocktransaction`。`time` 列与成员预统计的 `filled` **刻意不入快照** ——
+前者两边时钟不同，后者是"上次结算日期"，与本次写入无关。
+
+三个只有对着真身跑才会踩到的点：
+
+1. **mysqli 与 pymysql 给的 double 形状不同**：前者原样字符串 `"4.569300"`，
+   后者 `4.5693`。第一版每例都假报差异，直到 PHP 侧加 `CellValue()`
+   （日期原样、其余 `strval(floatval($v))`）把两边压成同一形状；
+2. **`$g_stock_sql` 不是 `GetStockSql()` 返回值那么简单**，它要带
+   `cal_sql` / `his_sql` / `net_sql` 三个属性，且 `net_sql` 是
+   `new DailyCloseSql('netvaluehistory')` —— **PHP 里没有 `NetValueHistorySql`
+   这个类**，净值表在 PHP 侧就是一个换了表名的 `DailyCloseSql`；
+3. **五个 `TABLE_*` 常量定义在 `sql.php` 里**，探针要把
+   `MIN_FLOAT_VAL` / `TABLE_STOCK_DIVIDEND` / `TABLE_STOCK_SPLIT` /
+   `TABLE_STOCK_GROUP` / `TABLE_STOCK_GROUP_ITEM` 全 `define` 一遍。
+
+脚本末尾会把基线灌回去，并**用同一套 select 重新数一遍**，`dirty` 非空就返回 2
+——"跑完以为复原了、其实多了一行"是这类对照最容易留的尾巴。
+
+## 十、单测
 
 `auto/test_optionstore.py`（25 个）用**内存 sqlite**，两处方言差异在包装层抹平：
 
@@ -333,9 +486,9 @@ sqlite 的 `REAL` 列读回 `100.0`，`str()` 是 `"100.0"` 而非 `"100"` —�
 PHP 从 `double(13,6)` 读回来也是 `"100.000000"`，两边都会多写一次，
 结果一样。测试里写清这一点，别拿它当"应该相等"的证据。
 
-`web/tests/test_stock_option_edit.py`（66 个）用 `tests/sqlitedb.py` 的假连接
+`web/tests/test_stock_option_edit.py`（86 个）用 `tests/sqlitedb.py` 的假连接
 （`SqliteConnection` / `SqliteCursor` / `FakeSource`），覆盖：索引页 16 项、
-未知选项 404、符号不在库不摆表单、未迁项 GET/POST、11 项的默认值、
+未知选项 404、符号不在库不摆表单、未迁项 GET/POST、13 项的默认值、
 日频写删、EMA 清空后回填、AH/HA 删除方向、ADR 比例、fund 三支解析、
 非管理员 POST 403、失败回填提交值、三个 PHP 口径助手
 （`_php_empty` / `_is_zero_text` / `_intval`）。
@@ -345,9 +498,23 @@ PHP 从 `double(13,6)` 读回来也是 `"100.000000"`，两边都会多写一次
 同值不再写、空值双删、`0` 也算删、缺中间价 / 缺净值 / 商品期货 / 未分类符号 /
 空日期各自拒绝。
 
-全量：auto **1606** 绿、web **1013** 绿、`compileall` 干净。
+分红与拆股各一个类（9 + 11）——**每一段副作用都单独断言**，因为"分红写进去了"
+和"复权价减对了"是两件事：
 
-## 十、踩过的坑（写进 pitfalls 的）
+* `StockOptionDividendTest`（假库：`SZ161130` 在 10-26 校准值 `41.111`、净值
+  `4.3784`）：校准值 `41.111 × 4.3784 ÷ 4.2784`、净值 `4.3784 → 4.2784`、
+  复权价 `4.70 → 4.60` / `4.769 → 4.669` 且**当天那行 `4.80` 不动**、QDII 分支
+  改多只基金的校准值但本标的净值不动、空值与 `'0'` 只删不重算、同值不重算、
+  非数字拒绝、缺净值整笔不写（`stockdividend` 一行都没写）、空日期拒绝；
+* `StockOptionSplitTest`：`10:1` 复权价 `0.47` / `0.4769` / **当天 `0.48` 也除**、
+  校准 `41.111 → 411.11`、QDII 侧 `÷ 比例`、`0:0` / `0.0:0` 删除且不回滚、
+  无冒号 / `10:0` / `0:10` / 缺昨收各自拒绝且不落任何数据、同一天重复提交变成
+  `0.047` / `4111.1`、成员流水两笔配平（`-100 @ 4.769` 与 `+1000 @ 0.4769`）
+  + 预统计回填（`quantity=1000`、`record=3`）、`record = 0` 的成员跳过。
+
+全量：auto **1606** 绿、web **1033** 绿、`compileall` 干净。
+
+## 十一、踩过的坑（写进 pitfalls 的）
 
 1. `WriteString` 一族在 `IntSql` 上，不在 `ValSql` 上；
 2. `ValSql` 的构造器接受表名，`CalibrationSql` **不接受** —— 后者多传的实参
@@ -362,11 +529,24 @@ PHP 从 `double(13,6)` 读回来也是 `"100.000000"`，两边都会多写一次
    全局的"取最新一天"回落对它不适用。
 7. 周末闸门在 `calibrationhistory` 上是**在的**（只有 `WriteDailyAverage` 那三行
    被注释掉）；而 PHP 的返回值是"要写的值"不是"写没写"，闸门拦下也返回数字。
+8. **`GetFromDate()` 是 `date <= $strDate`**（`sqldailyclose.php:43`），
+   `DailyCloseSql.get_from_date` 第一版写成 `>=`，症状是"取回了该日之后那一头"，
+   单测里表现为 `4.7 != 4.6`。拆股/分红要重算的是**过去**，不是未来。
+9. **pymysql 把 `DATE` 列读成 `datetime.date`**，直接与 `'YYYY-MM-DD'` 比较
+   **永远不相等** —— 分红"当天那一行不减"的分支会失效（当天被多减一次）。
+   凡是 `get_date_prev()` / `row["date"]` 的返回值都要过 `_date_text()`。
+10. **mysqli 与 pymysql 给的 double 形状不同**（`"4.569300"` vs `4.5693`），
+   逐例对照必须两边都走 `strval(floatval($v))`，否则每例都假报差异。
+11. **PHP 里没有 `NetValueHistorySql`** —— 净值表就是一个
+    `new DailyCloseSql('netvaluehistory')`。探针的 `$g_stock_sql` 要带
+    `cal_sql` / `his_sql` / `net_sql` 三个属性，`GetId()` 才不空指针。
+12. **`CREATE TABLE` 可以在 `SqlDieByQuery()` 里拦掉**：`Create()` 只在表缺失时
+    才建，本地表都在 → `sqlstocksymbol.php` / `sqlstockgroup.php` 能整份 require，
+    `Sql` 类与工厂函数就是真身。比逐句照抄方法体可靠得多（§九）。
 
-## 十一、下一步
+## 十二、下一步
 
-* 剩 5 项按依赖顺序：`editstockdividend` / `editstocksplit` 要先把"改一行 →
-  重算复权序列与校准值"抽成独立链路；`editstockamount` 等账号体系；
+* 剩 3 项：`editstockamount` 等账号体系（另外 2 项已有专门入口）；
 * `submit` 族还剩 3 个独立页：`submitdividend.php`（抓 SPDR 官方分红）、
   `submitnetvalue.php`（抓 Invesco / SPDR 官方净值）、`submithistory.php`
   （刷新 Yahoo 历史图表）；

@@ -129,6 +129,30 @@ class SqliteConnection:
             % table
         )
 
+    def create_group_tables(self) -> None:
+        """分组三张表：``stockgroup`` / ``stockgroupitem`` / ``stocktransaction``。
+
+        形状照 ``dbtools/seed_stock_group_tables.py``（列名与 MySQL 一致）。
+        拆股写入口要遍历**全部**分组、给持有该标的的成员补两笔流水、再回填
+        成员预统计（``quantity/cost/record``）—— 三张表缺一张就走不通。
+        """
+        self._conn.execute(
+            "CREATE TABLE `stockgroup` (`id` INTEGER PRIMARY KEY, "
+            "`member_id` INTEGER NOT NULL, `groupname` TEXT NOT NULL)"
+        )
+        self._conn.execute(
+            "CREATE TABLE `stockgroupitem` (`id` INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "`stockgroup_id` INTEGER NOT NULL, `stock_id` INTEGER NOT NULL, "
+            "`quantity` INTEGER NOT NULL DEFAULT 0, `cost` REAL NOT NULL DEFAULT 0, "
+            "`record` INTEGER NOT NULL DEFAULT 0)"
+        )
+        self._conn.execute(
+            "CREATE TABLE `stocktransaction` (`id` INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "`groupitem_id` INTEGER NOT NULL, `quantity` INTEGER NOT NULL, "
+            "`price` REAL NOT NULL, `fees` REAL NOT NULL DEFAULT 0, "
+            "`filled` TEXT NOT NULL DEFAULT '', `remark` TEXT NOT NULL DEFAULT '')"
+        )
+
     def insert_daily(self, table: str, stock_id: Any, date: str, close: Any,
                      extra_columns: str = "", extra_values: tuple = ()) -> None:
         columns = "`stock_id`, `date`, `close`"

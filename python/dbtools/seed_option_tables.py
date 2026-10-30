@@ -5,22 +5,22 @@
 ======================  ==========================  ================================
 表                        PHP 类                      编辑页
 ======================  ==========================  ================================
-``stocksplit``           ``StockSplitSql``           ``editstocksplit``（**未迁**）
-``stockdividend``        ``StockDividendSql``        ``editstockdividend``（**未迁**）
-``sharesdiff``           ``SharesDiffSql``           ``editsharesdiff``（**已迁**）
+``stocksplit``           ``StockSplitSql``           ``editstocksplit``（已迁）
+``stockdividend``        ``StockDividendSql``        ``editstockdividend``（已迁）
+``sharesdiff``           ``SharesDiffSql``           ``editsharesdiff``（已迁）
 ======================  ==========================  ================================
 
-## 为什么只建表、不迁那两页
+## 建表之后：三页都写进这两张表了
 
 ``sharesdiff`` 只是 "一天一个数字"，与 ``netvaluehistory`` 完全同形，
-``_updateOptionDailySql()`` 一条路就够，所以建好表、编辑页立刻可用。
+``_updateOptionDailySql()`` 一条路就够。
 
-``stockdividend`` / ``stocksplit`` 不一样：写一次要**连带重算**该日之后的全部
-复权价与校准值（``_updateStockHistoryAdjCloseByDividend`` /
-``_updateStockHistoryAdjCloseBySplit``，还要改交易流水），属于估值链路。
-只把表建出来而写入口留空，等于给一个能点但会算错的按钮 —— 所以这两页仍然
-在"未迁"清单里，本脚本只是把**DLL 缺的那一块**补上，免得以后做的时候
-还得从头查列定义。
+``stockdividend`` / ``stocksplit`` 写一次要**连带重算**（校准值、自身净值、
+该日及之前的复权价、拆股交易流水、SMA 缓存），那部分**不在本脚本里** ——
+在 `web/services/stock_option_service.py` 的 ``_write_stockdividend`` /
+``_write_stocksplit``，见 `auto/README_stock_option_edit_migration.md` §七。
+本脚本只管把 DDL 缺的那一块补上（列定义照抄 ``Create()``），所以先跑它、
+再让页面写，顺序不能反。
 
 ## DDL 从哪抄
 

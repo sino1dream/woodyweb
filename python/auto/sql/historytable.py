@@ -994,15 +994,25 @@ class StockHistorySql(DailyCloseSql):
     def get_from_date(self, stock_id: Any, date: Any, num: int = 0) -> list:
         """``GetFromDate($strKeyId, $strDate, $iNum)``（``sqldailyclose.php:46``）。
 
-        ``date >= $strDate`` 的全部行，``date DESC``（``BuildOrderBy()`` 恒倒序），
+        ``date <= $strDate`` 的全部行，``date DESC``（``BuildOrderBy()`` 恒倒序），
         ``num`` 为 0 时不加 ``LIMIT``。
 
-        拆股写入口（``_updateStockHistoryAdjCloseBySplit``）拿它把"该日往后"
-        的复权价一次性取回来再逐条改 —— 历史数据必须整段重算，只改一天会让
-        复权价序列在拆股日出现断崖。
+        ## ``<=`` 而不是 ``>=``（改过一次，别再翻回去）
+
+        PHP 的 ``_buildWhereFromDate()``（``sqldailyclose.php:41``）是
+        ``BuildWhere_key($id)." AND date <= '$strDate'"``。本方法原来写成
+        ``>=``，配上"倒序 + LIMIT"看起来也能出数，实际取的是**另一头**：
+
+        * 拆股/分红重算（``_updateStockHistoryAdjCloseBySplit`` / ``ByDividend``）
+          要改的是"**该日及之前**"的历史复权价 —— 除权后的新价格从当天往后用，
+          要折算的是过去那一段；
+        * SMA 取"截至 ``start_date`` 往前 N 天"同理。
+
+        写成 ``>=`` 的后果与 ``sql/stockhistory.py`` 那个版本描述的一模一样：
+        只取回一天、均线退化成同一个价格，而且**不报错**，看起来很"有数"。
         """
         columns = ", ".join("`%s`" % name for name in self.columns)
-        sql = ("SELECT %s FROM `%s` WHERE stock_id = %%s AND `date` >= %%s "
+        sql = ("SELECT %s FROM `%s` WHERE stock_id = %%s AND `date` <= %%s "
                "ORDER BY `date` DESC" % (columns, self.table))
         if num:
             sql += " LIMIT %d" % int(num)

@@ -80,6 +80,9 @@ def build_connection() -> SqliteConnection:
     connection.create_daily("sharesdiff")
     connection.create_daily("stockema50")
     connection.create_daily("stockema200")
+    connection.create_daily("stockdividend")
+    connection.create_daily("stocksplit")
+    connection.create_group_tables()
     for table in ("ahpair", "adrpair", "fundpair"):
         connection.create_pair(table)
     connection.create_val("fundposition")
@@ -162,15 +165,16 @@ class StockOptionAppTest(unittest.TestCase):
         body = response.data.decode("utf-8")
         for spec in STOCK_OPTIONS:
             self.assertIn(spec.submit, body)
-        self.assertIn("已迁（11 项）", body)
-        self.assertIn("未迁（5 项）", body)
+        self.assertIn("已迁（13 项）", body)
+        self.assertIn("未迁（3 项）", body)
 
     def test_index_links_point_at_each_option(self):
         body = self.client.get("/stock/SZ161130/edit").data.decode("utf-8")
         self.assertIn("/stock/SZ161130/edit/editnetvalue", body)
         self.assertIn("/stock/SZ161130/edit/editcalibration", body)
+        self.assertIn("/stock/SZ161130/edit/editstocksplit", body)
         #: 未迁的项不给链接（避免点进去发现不能写）
-        self.assertNotIn('href="/stock/SZ161130/edit/editstocksplit"', body)
+        self.assertNotIn('href="/stock/SZ161130/edit/editstockamount"', body)
 
     # -- 未知选项 -----------------------------------------------------------
     def test_unknown_option_is_404(self):
@@ -185,15 +189,15 @@ class StockOptionAppTest(unittest.TestCase):
 
     # -- 未迁的项 -----------------------------------------------------------
     def test_unmigrated_option_get_shows_reason_only(self):
-        body = self.client.get("/stock/SZ161130/edit/editstockdividend").data.decode("utf-8")
+        body = self.client.get("/stock/SZ161130/edit/editstockamount").data.decode("utf-8")
         self.assertIn("还没迁", body)
         self.assertNotIn('<textarea', body)
 
     def test_unmigrated_option_post_refuses_and_writes_nothing(self):
         before = len(self.connection.queries)
         response = self.client.post(
-            "/stock/SZ161130/edit/editstockdividend",
-            data={"date": "2026-10-26", "value": "1.0"},
+            "/stock/SZ161130/edit/editstockamount",
+            data={"date": "2026-10-26", "value": "1000"},
         )
         self.assertEqual(response.status_code, 200)
         body = response.data.decode("utf-8")
@@ -757,6 +761,303 @@ class StockOptionPermissionTest(unittest.TestCase):
         body = response.data.decode("utf-8")
         self.assertIn("没有行情记录", body)
         self.assertIn("9.99", body)
+
+
+class StockOptionDividendTest(unittest.TestCase):
+    """``editstockdividend``：写一行分红，连带改校准值 / 净值 / 复权价。
+
+    对应 ``_updateStockOptionDividend()``（``_submitstockoptions.php:301``）。
+    假库里 ``SZ161130`` 在 10-26 有校准值 41.111、净值 4.3784，行情从 10-22 起。
+    """
+
+    def setUp(self):
+        self.connection = build_connection()
+        self.service = build_service(self.connection)
+        #: 10-27 的行情由本类自己补：共享假库不加这条，否则 ``DATE_HISTORY``
+        #: 的默认日期会从 10-26 变成 10-27，动到 ``editsharesdiff`` /
+        #: ``editstockema`` 那批用例的期望值。
+        self.connection.insert_daily(
+            "stockhistory", SZ161130, "2026-10-27", 4.80,
+            extra_columns="`volume`, `adjclose`", extra_values=(1200, 4.80),
+        )
+
+    def submit(self, date="2026-10-27", value="0.1", symbol="SZ161130"):
+        return self.service.submit(symbol, "editstockdividend", date, value)
+
+    def adjclose(self, date, stock_id=SZ161130):
+        row = self.connection.single(
+            "SELECT adjclose FROM `stockhistory` WHERE stock_id = ? AND `date` = ?",
+            (stock_id, date))
+        return row["adjclose"] if row else None
+
+    def net_value(self, date, stock_id=SZ161130):
+        row = self.connection.single(
+            "SELECT close FROM `netvaluehistory` WHERE stock_id = ? AND `date` = ?",
+            (stock_id, date))
+        return row["close"] if row else None
+
+    def calibration(self, date="2026-10-26", stock_id=SZ161130):
+        row = self.connection.single(
+            "SELECT close FROM `calibrationhistory` WHERE stock_id = ? AND `date` = ?",
+            (stock_id, date))
+        return row["close"] if row else None
+
+    # -- 写：三段副作用 -----------------------------------------------------
+    def test_write_recalculates_calibration_net_value_and_adjclose(self):
+        """校准值 ``昨收×原净值÷新净值``；净值减 D；复权价减 D 但**当天不减**。"""
+        result = self.submit()
+        self.assertTrue(result["ok"], result["message"])
+        #: ``41.111 × 4.3784 ÷ 4.2784``
+        expected = 41.111 * 4.3784 / (4.3784 - 0.1)
+        self.assertAlmostEqual(self.calibration(), expected, places=5)
+        self.assertAlmostEqual(self.net_value("2026-10-26"), 4.2784, places=6)
+        self.assertAlmostEqual(self.adjclose("2026-10-22"), 4.60, places=6)
+        self.assertAlmostEqual(self.adjclose("2026-10-26"), 4.669, places=6)
+        #: ``$record['date'] != $strYMD`` —— 当天已经是除权价，不再减一次。
+        self.assertAlmostEqual(self.adjclose("2026-10-27"), 4.80, places=6)
+
+    def test_write_records_the_dividend_row(self):
+        self.submit()
+        row = self.connection.single(
+            "SELECT close FROM `stockdividend` WHERE stock_id = ? AND `date` = ?",
+            (SZ161130, "2026-10-27"))
+        self.assertAlmostEqual(row["close"], 0.1, places=6)
+
+    def test_same_value_does_not_recalculate(self):
+        """值没变（``MIN_FLOAT_VAL`` 内）→ ``WriteDaily`` 返回 false → 整段不跑。
+
+        这一例靠"复权价没有减第二次"来验 —— 只看返回值是看不出来的
+        （两次提交都报成功）。
+        """
+        self.submit()
+        once = self.adjclose("2026-10-22")
+        again = self.submit()
+        self.assertTrue(again["ok"])
+        self.assertIn("未写入", again["message"])
+        self.assertAlmostEqual(self.adjclose("2026-10-22"), once, places=6)
+
+    # -- 删：不回滚 ---------------------------------------------------------
+    def test_empty_deletes_row_but_does_not_roll_back(self):
+        """清空只删 ``stockdividend`` 那一行 —— 复权价与净值都不回来。"""
+        self.submit()
+        adjusted = self.adjclose("2026-10-22")
+        result = self.submit(value="")
+        self.assertTrue(result["ok"], result["message"])
+        self.assertIsNone(self.connection.single(
+            "SELECT close FROM `stockdividend` WHERE stock_id = ? AND `date` = ?",
+            (SZ161130, "2026-10-27")))
+        self.assertAlmostEqual(self.adjclose("2026-10-22"), adjusted, places=6)
+        self.assertAlmostEqual(self.net_value("2026-10-26"), 4.2784, places=6)
+
+    def test_zero_also_deletes(self):
+        """``empty('0')`` 为真 → 填 0 也是**删**，不是写一条 0 分红。"""
+        self.submit()
+        result = self.submit(value="0")
+        self.assertTrue(result["ok"], result["message"])
+        self.assertIsNone(self.connection.single(
+            "SELECT close FROM `stockdividend` WHERE stock_id = ? AND `date` = ?",
+            (SZ161130, "2026-10-27")))
+
+    # -- 拒绝 ---------------------------------------------------------------
+    def test_missing_net_value_refuses_and_writes_nothing(self):
+        """分母（净值）取不到 → 整笔不写（PHP 这里是 ``INF`` / 除零）。"""
+        self.connection.execute(
+            "DELETE FROM `netvaluehistory` WHERE stock_id = ? AND `date` = ?",
+            (SZ161130, "2026-10-26"))
+        result = self.submit()
+        self.assertFalse(result["ok"])
+        self.assertIsNone(self.connection.single(
+            "SELECT close FROM `stockdividend` WHERE stock_id = ? AND `date` = ?",
+            (SZ161130, "2026-10-27")))
+        #: 复权价一行都没动
+        self.assertAlmostEqual(self.adjclose("2026-10-22"), 4.70, places=6)
+
+    def test_non_number_refuses(self):
+        result = self.submit(value="abc")
+        self.assertFalse(result["ok"])
+        self.assertIn("数字", result["message"])
+
+    def test_missing_date_refuses(self):
+        self.assertFalse(self.submit(date="")["ok"])
+
+    # -- QDII 分支 ----------------------------------------------------------
+    def test_qdii_branch_multiplies_inverted_ratio_and_leaves_net_alone(self):
+        """本标的没有校准行 → 遍历把它当 est 的基金，用**本标的**净值当分母。
+
+        两支的公式**分子分母相反**（``昨收 × 新净值 ÷ 原净值``），是 PHP 原文
+        的形状。另一处刻意偏离：不走 ``WriteDaily`` 写本标的净值 ——
+        PHP 那一行用的是循环变量，会给本标的凭空插一条负净值。
+        """
+        before = self.net_value("2026-10-26", NDX)
+        result = self.submit(symbol="^NDX")
+        self.assertTrue(result["ok"], result["message"])
+        expected = 41.111 * (29402.51 - 0.1) / 29402.51
+        self.assertAlmostEqual(self.calibration(), expected, places=5)
+        #: 本标的（^NDX）的净值**不该被改**
+        self.assertAlmostEqual(self.net_value("2026-10-26", NDX), before, places=6)
+
+
+class StockOptionSplitTest(unittest.TestCase):
+    """``editstocksplit``：比例、四段副作用、以及"重复提交会再除一次"。
+
+    对应 ``_updateStockOptionSplit()``（``_submitstockoptions.php:253``）。
+    """
+
+    def setUp(self):
+        self.connection = build_connection()
+        self.service = build_service(self.connection)
+        self.connection.insert_daily(
+            "stockhistory", SZ161130, "2026-10-27", 4.80,
+            extra_columns="`volume`, `adjclose`", extra_values=(1200, 4.80),
+        )
+        #: 一个持有 100 股 + 一笔建仓流水的成员。成员表里的 100 股必须与流水
+        #: 那笔对上，否则拆股后的回填会把 ``quantity`` 算成"只有新买的那部分"。
+        self.connection.execute(
+            "INSERT INTO `stockgroup` (`id`, `member_id`, `groupname`) VALUES (?, ?, ?)",
+            (1, 1, "演示分组"),
+        )
+        self.connection.execute(
+            "INSERT INTO `stockgroupitem` (`id`, `stockgroup_id`, `stock_id`, `quantity`, "
+            "`cost`, `record`) VALUES (?, ?, ?, ?, ?, ?)",
+            (1, 1, SZ161130, 100, 400.0, 1),
+        )
+        self.connection.execute(
+            "INSERT INTO `stocktransaction` (`id`, `groupitem_id`, `quantity`, `price`, "
+            "`fees`, `filled`, `remark`) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (1, 1, 100, 4.0, 0.0, "2026-10-20 10:00:00", "建仓"),
+        )
+
+    def submit(self, date="2026-10-27", value="10:1", symbol="SZ161130"):
+        return self.service.submit(symbol, "editstocksplit", date, value)
+
+    def adjclose(self, date, stock_id=SZ161130):
+        row = self.connection.single(
+            "SELECT adjclose FROM `stockhistory` WHERE stock_id = ? AND `date` = ?",
+            (stock_id, date))
+        return row["adjclose"] if row else None
+
+    def split_row(self, date="2026-10-27", stock_id=SZ161130):
+        return self.connection.single(
+            "SELECT close FROM `stocksplit` WHERE stock_id = ? AND `date` = ?",
+            (stock_id, date))
+
+    def calibration(self, date="2026-10-26", stock_id=SZ161130):
+        row = self.connection.single(
+            "SELECT close FROM `calibrationhistory` WHERE stock_id = ? AND `date` = ?",
+            (stock_id, date))
+        return row["close"] if row else None
+
+    # -- 写：比例与三段重算 -------------------------------------------------
+    def test_write_divides_adjclose_including_same_day(self):
+        result = self.submit()
+        self.assertTrue(result["ok"], result["message"])
+        self.assertAlmostEqual(self.split_row()["close"], 10.0, places=6)
+        self.assertAlmostEqual(self.adjclose("2026-10-22"), 0.47, places=6)
+        self.assertAlmostEqual(self.adjclose("2026-10-26"), 0.4769, places=6)
+        #: 与分红相反：拆股**连当天一起**除（当天开盘就是除权价）。
+        self.assertAlmostEqual(self.adjclose("2026-10-27"), 0.48, places=6)
+
+    def test_write_multiplies_calibration(self):
+        """本标的有校准行 → ``昨收 × 比例`` 写回 ``date_prev``。"""
+        self.submit()
+        self.assertAlmostEqual(self.calibration(), 411.11, places=4)
+
+    def test_zero_zero_deletes_row_only(self):
+        """``0:0`` 只删 ``stocksplit`` 那一行，复权价与校准值都不回滚。"""
+        self.submit()
+        adjusted = self.adjclose("2026-10-22")
+        result = self.submit(value="0:0")
+        self.assertTrue(result["ok"], result["message"])
+        self.assertIsNone(self.split_row())
+        self.assertAlmostEqual(self.adjclose("2026-10-22"), adjusted, places=6)
+        self.assertAlmostEqual(self.calibration(), 411.11, places=4)
+
+    def test_zero_zero_accepts_numeric_equivalents(self):
+        """``$ar[0] == '0'`` 是 PHP 8 松散比较：``0.0:0`` 也算删除。"""
+        self.submit()
+        result = self.submit(value="0.0:0")
+        self.assertTrue(result["ok"], result["message"])
+        self.assertIsNone(self.split_row())
+
+    # -- 拒绝（都在写之前）--------------------------------------------------
+    def test_without_colon_refuses(self):
+        result = self.submit(value="101")
+        self.assertFalse(result["ok"])
+        self.assertIn("冒号", result["message"])
+        self.assertIsNone(self.split_row())
+
+    def test_zero_denominator_refuses_before_inserting(self):
+        """``10:0`` —— PHP 8 在算比例时就抛，但那时行**已经插进去了**。本版不插。"""
+        result = self.submit(value="10:0")
+        self.assertFalse(result["ok"])
+        self.assertIsNone(self.split_row())
+
+    def test_zero_numerator_refuses(self):
+        """``0:10`` 比例是 0，后面"复权价 ÷ 比例"会除零。"""
+        result = self.submit(value="0:10")
+        self.assertFalse(result["ok"])
+        self.assertIsNone(self.split_row())
+
+    def test_missing_prev_close_refuses(self):
+        """没有昨收价 → 流水按 0 价成交（PHP 是 ``floatval(false)``）→ 拒绝。"""
+        result = self.submit(date="2026-10-02")
+        self.assertFalse(result["ok"])
+        self.assertIn("昨收", result["message"])
+        self.assertIsNone(self.split_row(date="2026-10-02"))
+
+    # -- 重复提交 -----------------------------------------------------------
+    def test_second_submit_same_day_divides_again(self):
+        """``InsertDaily`` 有行返回 false，但**重算在 if 外面** —— 会再除一次。
+
+        这是照抄的行为（见 ``_write_stocksplit`` 的 docstring），用测试钉住，
+        免得有人"顺手修好"以后与 PHP 对不上。
+        """
+        self.submit()
+        again = self.submit()
+        self.assertTrue(again["ok"])
+        self.assertIn("当天已有拆股记录", again["message"])
+        self.assertAlmostEqual(self.split_row()["close"], 10.0, places=6)
+        self.assertAlmostEqual(self.adjclose("2026-10-22"), 0.047, places=6)
+        self.assertAlmostEqual(self.calibration(), 4111.1, places=4)
+
+    # -- 交易流水 -----------------------------------------------------------
+    def test_split_inserts_two_transactions_and_rebuilds_item(self):
+        """卖出全部 + 按新比例买回，再回填 ``quantity/cost/record``。"""
+        self.submit()
+        rows = self.connection.execute(
+            "SELECT quantity, price FROM `stocktransaction` WHERE groupitem_id = ? "
+            "ORDER BY id", (1,))
+        #: 第一行是 setUp 里那笔建仓，后两行才是拆股补的
+        self.assertEqual([(r["quantity"], round(r["price"], 4)) for r in rows],
+                         [(100, 4.0), (-100, 4.769), (1000, 0.4769)])
+        item = self.connection.single(
+            "SELECT quantity, record FROM `stockgroupitem` WHERE id = ?", (1,))
+        #: 100（原持仓）− 100（卖出）+ 1000（按 10:1 买回）
+        self.assertEqual(item["quantity"], 1000)
+        #: 原有 1 笔 + 新插 2 笔
+        self.assertEqual(item["record"], 3)
+
+    def test_member_without_transaction_is_skipped(self):
+        """``GetStockIdArray(true)`` 跳过 ``record = 0`` 的成员 —— 一笔没成交不拆。"""
+        self.connection.execute(
+            "INSERT INTO `stockgroupitem` (`id`, `stockgroup_id`, `stock_id`, `quantity`, "
+            "`cost`, `record`) VALUES (?, ?, ?, ?, ?, ?)",
+            (2, 1, GSPC, 50, 100.0, 0),
+        )
+        self.connection.execute(
+            "INSERT INTO `stockgroup` (`id`, `member_id`, `groupname`) VALUES (?, ?, ?)",
+            (2, 1, "空成员组"),
+        )
+        self.connection.execute(
+            "INSERT INTO `stockgroupitem` (`id`, `stockgroup_id`, `stock_id`, `quantity`, "
+            "`cost`, `record`) VALUES (?, ?, ?, ?, ?, ?)",
+            (3, 2, SZ161130, 10, 40.0, 0),
+        )
+        self.submit()
+        #: 只给真正成交过的那个成员补了流水
+        count = self.connection.single(
+            "SELECT COUNT(*) AS n FROM `stocktransaction`")["n"]
+        self.assertEqual(count, 3)
 
 
 class PhpSemanticsTest(unittest.TestCase):

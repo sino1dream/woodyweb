@@ -19,17 +19,20 @@ PHP 那边 16 个页面 = 16 个 4 行壳子 + 1 张分派表 + 1 张表单 + 1 
 
 ## 为什么有些选项没迁
 
-16 项里迁了 10 项。没迁的 6 项分成三类，每类的原因写在 ``note`` 里，页面上
-也照原样显示 —— **不装作能写**（半截的写入口比没有更危险）：
+16 项里迁了 13 项。没迁的 3 项分两类，原因写在 ``note`` 里，页面上也照原样
+显示 —— **不装作能写**（半截的写入口比没有更危险）：
 
 1. **已有专门页**：``editquarterreport``（``/holdings/quarter/<symbol>``）、
    ``editstockholdings``（穷举持仓页的「确认更新持仓」）；
 2. **依赖账号体系**：``editstockamount`` 要用 member id + 分组名
-   （``SqlGetMyStockGroupItemId``）才能找到 ``stockgroupitem`` 行；
-3. **缺表 / 要连带重算**：``editsharesdiff`` 缺 ``sharesdiff`` 表（已补 DDL 种子）；
-   ``editstockdividend`` / ``editstocksplit`` 除了缺表，写一次还要重算
-   **该日之后的全部复权价与校准值**（``_updateStockHistoryAdjCloseBySplit``
-   / ``ByDividend``），那属于估值链路，不能在这里顺手做。
+   （``SqlGetMyStockGroupItemId``）才能找到 ``stockgroupitem`` 行。
+
+第三类"缺表 / 要连带重算"原本有 3 项，现在都落地了：``editsharesdiff`` 只是
+一天一个数字（``_updateOptionDailySql`` 一条路）；``editstockdividend`` /
+``editstocksplit`` 的连带重算（校准值 / 自身净值 / 复权序列 / 拆股交易流水）
+写在 :meth:`StockOptionService._write_stockdividend` 与
+:meth:`StockOptionService._write_stocksplit` 里 —— 它们是"写一行顺带改一片"，
+与 ``editcalibration`` 那种"一次换算"不同，所以单列一节说明。
 
 ## 一处刻意偏离 PHP（会毁数据的那条）
 
@@ -57,7 +60,9 @@ from calc.fundcalc import (
     qdii_get_calibration,
     qdii_hk_est_symbol,
     qdii_jp_est_symbol,
+    qdii_symbols_for_est,
 )
+from core.stockgroupsql import StockGroupItemSql, StockGroupSql
 from core.stocksymbol import (
     StockSymbol,
     in_array_china_future,
@@ -68,11 +73,13 @@ from core.stocksymbol import (
     in_array_qdii_jp,
     stock_get_symbol,
 )
+from core.submittransaction import update_stock_group_item_transaction
 from sql.historytable import (
     MIN_FLOAT_VAL,
     NetValueHistorySql,
     SharesHistorySql,
     StockHistorySql,
+    php_text_equal,
 )
 from sql.optionstore import (
     AdrPairStore,
@@ -81,9 +88,12 @@ from sql.optionstore import (
     FundPairStore,
     LastCalibrationStore,
     SharesDiffSql,
+    StockDividendSql,
     StockEmaSql,
+    StockSplitSql,
 )
 from sql.positiontable import FundPositionSql
+from sql.smaconfig import unlink_config_file
 from sql.stocksql import StockSql
 
 
@@ -216,11 +226,7 @@ STOCK_OPTIONS: tuple = (
         submit="分红",
         memo="清空输入删除对应分红。",
         date_mode=DATE_HISTORY,
-        migrated=False,
-        note=(
-            "演示库缺 stockdividend 表；且写一次要连带重算校准值与"
-            "该日之后的全部复权价（_updateStockHistoryAdjCloseByDividend）。"
-        ),
+        migrated=True,
     ),
     StockOptionSpec(
         key="editstockema",
@@ -251,11 +257,7 @@ STOCK_OPTIONS: tuple = (
         submit="拆股或合股",
         memo="输入1:10表示10股合1股，10:1表示1股拆10股，0:0删除对应日期数据。",
         date_mode=DATE_HISTORY,
-        migrated=False,
-        note=(
-            "演示库缺 stocksplit 表；且要连带改交易流水、校准值与复权序列"
-            "（_updateStockOptionSplitTransactions / AdjCloseBySplit）。"
-        ),
+        migrated=True,
     ),
 )
 
@@ -948,6 +950,413 @@ class StockOptionService:
         self.history_sql.update_close(record.get("id"), text)
         return {"ok": True, "message": "%s %s：收盘价与复权价已改为 %s。" % (symbol, date, text)}
 
+    def _write_stockdividend(self, symbol: str, stock_id: Any, date: str, value: str) -> dict:
+        """``_updateStockOptionDividend()``（``_submitstockoptions.php:301``）。
+
+        ## 三段副作用，次序照抄
+
+        ``stockdividend`` 表只存"每股派现"一行，真正的负担在后面：
+
+        1. **校准值**：把 ``calibrationhistory`` 里**该日之前**那一行的校准值
+           按"净值下降"重算 —— 分红让净值掉了 ``D``，同一个配对关系下
+           估值因子必须跟着变，否则一除就跳空；
+        2. **自身净值**：``netvaluehistory`` 的 ``date_prev`` 减去 ``D``；
+        3. **复权价**：``stockhistory`` 里 ``date <= 该日`` 的全部 ``adjclose``
+           减去 ``D``，**当天那一行除外**（``if ($record['date'] != $strYMD)``）——
+           当天已经是除权后的价格，再减一次等于重复扣。
+
+        与拆股（:meth:`_write_stocksplit`）的次序相同，差别只有"减"与"除"，
+        以及**要不要排除当天**：拆股连当天一起除，分红不碰当天。
+
+        ## 只有"真的写了分红行"才重算
+
+        PHP 把整段副作用包在 ``if (_updateOptionDailySql(...))`` 里，于是：
+
+        * 值没变（``MIN_FLOAT_VAL`` 内）→ 不重算；
+        * 落在周末闸门 → 不重算；
+        * **清空（含 ``'0'``）删行 → 也不重算**。
+
+        最后那条是照抄的硬伤：删掉分红以后复权价不会涨回去、净值也不会加回来。
+        这一版修不了 —— 删行那一刻"当初减了多少"只剩 ``stockdividend`` 里那一行，
+        而它正是要被删掉的东西。
+
+        ## 一处刻意偏离：QDII 分支不写净值
+
+        PHP::
+
+            if ($strClosePrev = $cal_sql->GetClosePrev($strStockId, $strDate))
+            {   // 本标的分支
+                $fNetValue = floatval($net_sql->GetClose($strStockId, $strDatePrev));
+                ...
+            }
+            else
+            {   foreach ($arQdii as $strQdii)
+                {   if ($strClosePrev = $cal_sql->GetClosePrev($strQdiiId, $strDate))
+                    {   $strDatePrev = $cal_sql->GetDatePrev($strQdiiId, $strDate);
+                        $fNetValue = floatval($net_sql->GetClose($strStockId, $strDatePrev));
+                        ...
+                    }
+                }
+            }
+            if ($strClosePrev)  $net_sql->WriteDaily($strStockId, $strDatePrev, strval($fNewNetValue));
+
+        最后一行用的是**循环变量**：走 QDII 分支时 ``$strDatePrev`` 与
+        ``$fNewNetValue`` 来自最后一个命中的 QDII，却写进**本标的**的净值表。
+        本标的（SPY / QQQ 这类 ETF）在 ``netvaluehistory`` 里经常没有那一天，
+        ``GetClose`` 给 ``false`` → ``floatval`` 是 0 → 会凭空插一条
+        ``-分红值`` 的**负净值**。本版只在本标的分支写净值。
+
+        ## 另一处偏离：分母取不到时整笔不写
+
+        与 :meth:`_write_calibration` 同一个理由（``floatval(false)`` = 0）：
+        PHP 7 算出 ``INF`` 写进 ``double`` 列变 0，PHP 8 抛
+        ``DivisionByZeroError`` 整页 500。本版把两处取数（本标的净值 /
+        各 QDII 净值）提前到写库之前，缺了直接拒绝，一行都不动。
+
+        注意 ``_dividend_plan`` 里两支的公式**分子分母正好相反**
+        （``close × net ÷ new`` 与 ``close × new ÷ net``）—— 那是 PHP 原文的
+        样子，照抄不动。
+        """
+        if not date:
+            return {"ok": False, "message": "日期不能为空。"}
+        dividend_sql = StockDividendSql(self.connection)
+        if _php_empty(value):
+            deleted = dividend_sql.delete_by_date(stock_id, date)
+            return {
+                "ok": True,
+                "message": "%s：已删除分红记录（%d 行）。复权价与净值**没有**回滚 —— "
+                           "PHP 的重算整段写在「写成功」分支里，删行不重算。"
+                           % (date, deleted),
+            }
+        text = value.strip()
+        if not _is_number(text):
+            return {"ok": False, "message": "分红要是一个数字（每股派现），没有写入。"}
+        dividend = float(text)
+
+        #: 先算好要改哪些行（全是只读）。取不到分母就整笔不写 —— 见 docstring。
+        plan, error = self._dividend_plan(symbol, stock_id, date, dividend)
+        if error:
+            return {"ok": False, "message": error}
+
+        if not dividend_sql.write_daily(stock_id, date, text):
+            return {
+                "ok": True,
+                "message": "%s：%s 与库里那条相同（或落在周末闸门），未写入，也没有重算。"
+                           % (date, text),
+            }
+
+        cal = self._calibration_sql()
+        changed = []
+        for target_id, date_prev, factor in plan["calibration"]:
+            if cal.write_daily(target_id, date_prev, _number_text(factor)):
+                changed.append("%s=%s" % (date_prev, _number_text(factor)))
+        net_date = new_net_value = None
+        if plan["net"] is not None:
+            net_date, new_net_value = plan["net"]
+        net_written = False
+        if net_date:
+            net_written = self.net_value_sql.write_daily(
+                stock_id, net_date, _number_text(new_net_value))
+        adjusted = self._recalc_adjclose(stock_id, date, dividend, by_ratio=False)
+        unlink_config_file(symbol)
+
+        parts = ["%s：已写入分红 %s。" % (date, text)]
+        if changed:
+            parts.append("校准值改了 %d 行（%s）。" % (len(changed), "，".join(changed)))
+        if net_date:
+            parts.append("净值 %s 改为 %s%s。" % (
+                net_date, _number_text(new_net_value), "" if net_written else "（无变化，未写）"))
+        parts.append("复权价重算 %d 行（当天那一行按定义不减）。" % adjusted)
+        return {"ok": True, "message": "".join(parts)}
+
+    def _dividend_plan(self, symbol: str, stock_id: Any, date: str, dividend: float) -> tuple:
+        """分红要改的校准行与净值行，全是只读；返回 ``(plan, 错误信息)``。
+
+        ``plan`` 形如::
+
+            {"calibration": [(stock_id, date_prev, factor), ...],
+             "net": (date_prev, new_net_value) | None}
+
+        ``net`` 只有**本标的分支**才给值 —— 见 :meth:`_write_stockdividend`
+        里那段"QDII 分支不写净值"的说明。
+        """
+        cal = self._calibration_sql()
+        close_prev = cal.get_close_prev(stock_id, date)
+        if close_prev is not None:
+            #: ``get_date_prev`` 给的是 ``datetime.date``（pymysql 原生类型），
+            #: 统一成 ``'YYYY-MM-DD'`` 再往下传 —— 消息里、SQL 参数里、对照
+            #: 脚本里就都是同一个形状。
+            date_prev = _date_text(cal.get_date_prev(stock_id, date))
+            net_value = self.net_value_sql.get_close(stock_id, date_prev)
+            new_net_value = self._net_value_after(net_value, dividend)
+            if new_net_value is None:
+                return None, (
+                    "%s 在 %s 没有基金净值，或分红把净值扣成了 0 —— 校准值是 "
+                    "「昨收 × 原净值 ÷ 新净值」，分母不成立，没有写入。"
+                    % (symbol, date_prev)
+                )
+            factor = float(close_prev) * float(net_value) / new_net_value
+            return ({"calibration": [(stock_id, date_prev, factor)],
+                     "net": (date_prev, new_net_value)}, "")
+
+        #: QDII 分支：本标的自己没有校准行，说明它是别人的配对标的
+        #: （``QdiiGetArray($strSymbol)`` 找出把本标的当 est 的基金）。
+        changes = []
+        for qdii_symbol in qdii_symbols_for_est(symbol):
+            qdii_id = self._stock_id(qdii_symbol)
+            if not qdii_id:
+                continue
+            qdii_close_prev = cal.get_close_prev(qdii_id, date)
+            if qdii_close_prev is None:
+                continue
+            qdii_date_prev = _date_text(cal.get_date_prev(qdii_id, date))
+            #: PHP 这里取的是 **$strStockId（本标的）** 的净值，不是 QDII 的。
+            net_value = self.net_value_sql.get_close(stock_id, qdii_date_prev)
+            new_net_value = self._net_value_after(net_value, dividend)
+            if new_net_value is None:
+                continue
+            #: 分子分母与上面那一支**相反**（``new ÷ net`` 而不是 ``net ÷ new``）。
+            #: 两支是分别写的，PHP 原文如此 —— 照抄。
+            factor = float(qdii_close_prev) * new_net_value / float(net_value)
+            changes.append((qdii_id, qdii_date_prev, factor))
+        return ({"calibration": changes, "net": None}, "")
+
+    @staticmethod
+    def _net_value_after(net_value: Any, dividend: float) -> Any:
+        """``$fNewNetValue = $fNetValue - floatval($strVal)``；取不到或扣成 0 给 ``None``。
+
+        PHP 那边取不到是 ``floatval(false)`` = 0，减完是负数，再当分母除 ——
+        ``INF`` / ``DivisionByZeroError`` 二选一。这里的 ``None`` 只是把
+        "算不出来"与"算出来是 0"区分开，两个都拒绝。
+        """
+        if net_value is None:
+            return None
+        try:
+            value = float(net_value)
+        except (TypeError, ValueError):
+            return None
+        new_value = value - float(dividend)
+        if not value or not new_value:
+            return None
+        return new_value
+
+    def _write_stocksplit(self, symbol: str, stock_id: Any, date: str, value: str) -> dict:
+        """``_updateStockOptionSplit()``（``_submitstockoptions.php:253``）。
+
+        ## 比例与"删除"的判据
+
+        ``$ar = explode(':', $strVal)``，只认**前两段**（``1:2:3`` 的第三段被
+        丢掉）。``$ar[0] == '0' && $ar[1] == '0'`` 是删行，用的是 PHP 8 的
+        松散比较 —— 两个数字串按**数值**比，所以 ``0.0:0``、``00:0`` 都算删除。
+        本版用 :func:`sql.historytable.php_text_equal` 复刻这个双轨。
+
+        ``0:0`` 之外的比例一律 ``floatval(a) / floatval(b)``：
+        ``'abc'`` 的 ``floatval`` 是 0，于是 ``10:abc`` 会变成除零 —— 本版在
+        算之前就拒绝（PHP 8 在这里抛 ``DivisionByZeroError`` 整页 500，
+        而且那时 ``stocksplit`` 行**已经插进去了**）。
+
+        ## 四段副作用
+
+        1. **交易流水**：给每个持有该标的的成员补两笔 —— 按昨收价卖出全部股数、
+           再按 ``昨收 ÷ 比例`` 买回 ``intval(比例 × 股数)`` 股，然后回填成员
+           预统计（``quantity/cost/record``）。只在**真的插入**了拆股行时才做
+           （``if ($sql->InsertDaily(...))``）；
+        2. **校准值**：本标的有校准行 → ``昨收 × 比例`` 写回 ``date_prev``；
+           否则遍历把它当 est 的 QDII 基金 → ``昨收 ÷ 比例``；
+        3. **复权价**：``date <= 该日`` 的全部 ``adjclose`` 除以比例，
+           **连当天一起除**（与分红相反）；
+        4. 删掉 SMA 配置文件（``unlinkConfigFile``）。
+
+        ## 重复提交同一天会**再除一次**
+
+        ``InsertDaily`` 是"已有就返回 false"，但**校准与复权价的重算写在 if 外面**。
+        于是同一天提交两次 ``10:1``，复权价会被除两次（1/100），校准值也被
+        乘两次。流水倒是不会重复插。这是 PHP 的行为，照抄 —— 只在返回消息里
+        说清"当天已有记录、本次没有新增"，免得管理员以为没生效又点一次。
+        """
+        if not date:
+            return {"ok": False, "message": "日期不能为空。"}
+        text = value.strip()
+        if ":" not in text:
+            #: PHP ``if (strpos($strVal, ':') === false) return;`` —— 静默返回，
+            #: 页面上一点变化都没有。本版给一句话。
+            return {"ok": False,
+                    "message": "拆股/合股要写成「拆:合」（例如 10:1 表示 1 股拆 10 股），"
+                               "值里没有冒号，没有写入。"}
+        parts = text.split(":")
+        split_sql = StockSplitSql(self.connection)
+        if php_text_equal(parts[0], "0") and php_text_equal(parts[1], "0"):
+            deleted = split_sql.delete_by_date(stock_id, date)
+            return {
+                "ok": True,
+                "message": "%s：已删除拆股记录（%d 行）。复权价、校准值与交易流水"
+                           "**都没有**回滚 —— PHP 的 0:0 分支只删这一行。"
+                           % (date, deleted),
+            }
+
+        ratio, error = self._split_ratio(parts)
+        if error:
+            return {"ok": False, "message": error}
+
+        existing = split_sql.get_record(stock_id, date)
+        will_insert = existing is None
+        #: 流水要先知道昨收当单价。PHP 是 ``floatval(GetClosePrev())`` ——
+        #: 取不到就写 0 价交易。本版在写任何东西之前拒绝。
+        items = self._split_transaction_items(stock_id) if will_insert else []
+        price_text = None
+        if items:
+            price_text = self.history_sql.get_close_prev(stock_id, date)
+            if price_text is None:
+                return {
+                    "ok": False,
+                    "message": "%s 在 %s 之前没有行情记录，取不到昨收价 —— 拆股流水要按"
+                               "昨收价成交，没有写入。" % (symbol, date),
+                }
+
+        inserted = bool(split_sql.insert_daily(stock_id, date, _number_text(ratio))) \
+            if will_insert else False
+        trans_count = 0
+        if inserted and items:
+            trans_count = self._insert_split_transactions(items, ratio, price_text)
+
+        cal = self._calibration_sql()
+        changed = []
+        close_prev = cal.get_close_prev(stock_id, date)
+        if close_prev is not None:
+            date_prev = _date_text(cal.get_date_prev(stock_id, date))
+            factor = float(close_prev) * ratio
+            if cal.write_daily(stock_id, date_prev, _number_text(factor)):
+                changed.append("%s=%s" % (date_prev, _number_text(factor)))
+        else:
+            for qdii_symbol in qdii_symbols_for_est(symbol):
+                qdii_id = self._stock_id(qdii_symbol)
+                if not qdii_id:
+                    continue
+                qdii_close_prev = cal.get_close_prev(qdii_id, date)
+                if qdii_close_prev is None:
+                    continue
+                qdii_date_prev = _date_text(cal.get_date_prev(qdii_id, date))
+                #: 与上一支的乘除方向相反，PHP 原文如此。
+                factor = float(qdii_close_prev) / ratio
+                if cal.write_daily(qdii_id, qdii_date_prev, _number_text(factor)):
+                    changed.append("%s=%s" % (qdii_date_prev, _number_text(factor)))
+
+        adjusted = self._recalc_adjclose(stock_id, date, ratio, by_ratio=True)
+        unlink_config_file(symbol)
+
+        head = ("%s：已写入拆股比例 %s（%s）。" % (date, _number_text(ratio), text)
+                if inserted else
+                "%s：当天已有拆股记录，没有新增（比例仍是库里的 %s）。"
+                % (date, _number_text(existing.get("close")) if existing else "?"))
+        parts = [head]
+        if not will_insert:
+            parts.append("注意：校准与复权价按 PHP 口径又重算了一遍。")
+        if trans_count:
+            parts.append("交易流水补了 %d 个成员。" % trans_count)
+        if changed:
+            parts.append("校准值改了 %d 行（%s）。" % (len(changed), "，".join(changed)))
+        parts.append("复权价重算 %d 行（含当天）。" % adjusted)
+        return {"ok": True, "message": "".join(parts)}
+
+    @staticmethod
+    def _split_ratio(parts: list) -> tuple:
+        """``$fRatio = floatval($ar[0]) / floatval($ar[1])``；返回 ``(比例, 错误信息)``。
+
+        两道 PHP 会在**写完之后**才炸的闸门都提到前面：分母为 0、比例为 0
+        （后者会让"复权价 ÷ 比例"除零）。
+        """
+        try:
+            numerator = float(parts[0])
+            denominator = float(parts[1])
+        except (TypeError, ValueError):
+            return None, "比例的两段都要是数字（例如 10:1），没有写入。"
+        if denominator == 0:
+            return None, ("比例的分母是 0 —— PHP 8 在这里抛 DivisionByZeroError "
+                          "整页 500，本页不写。")
+        ratio = numerator / denominator
+        if ratio == 0:
+            return None, ("比例算出来是 0（%s:%s），后面「复权价 ÷ 比例」会除零，"
+                          "PHP 也是 500，本页不写。" % (parts[0], parts[1]))
+        return ratio, ""
+
+    def _split_transaction_items(self, stock_id: Any) -> list:
+        """``_updateStockOptionSplitTransactions()`` 的前半段：谁持有这只标的。
+
+        PHP 先 ``new TableSql(TABLE_STOCK_GROUP)`` 取**全部**分组（不是当前
+        登录会员那几组），再逐组 ``GetStockIdArray(true)``（跳过
+        ``record == 0`` 的成员）看有没有这只标的。返回
+        ``[(StockGroupItemSql, 该成员在组里的行)]``。
+        """
+        items = []
+        for group in StockGroupSql(self.connection).get_data():
+            item_sql = StockGroupItemSql(self.connection, group["id"])
+            if str(stock_id) not in set(item_sql.get_stock_id_array(True).values()):
+                continue
+            record = item_sql.get_record(stock_id)
+            if record is None:
+                continue
+            items.append((item_sql, record))
+        return items
+
+    def _insert_split_transactions(self, items: list, ratio: float, price_text: Any) -> int:
+        """补"卖出 + 按新比例买回"两笔流水，再回填成员预统计。
+
+        PHP（``_updateStockOptionSplitGroupTransactions``）::
+
+            $iQuantity = intval($record['quantity']);
+            $sql->trans_sql->Insert($strGroupItemId, strval(0 - $iQuantity), strval($fPrice));
+            $sql->trans_sql->Insert($strGroupItemId, strval(intval($fRatio * $iQuantity)),
+                                    strval($fPrice / $fRatio));
+            UpdateStockGroupItemTransaction($sql, $strGroupItemId);
+
+        两笔是**配平**的：卖出 ``Q`` 股、买回 ``intval(ratio × Q)`` 股，
+        金额一侧差出来的部分由价格 ``price`` 与 ``price / ratio`` 承担，
+        所以 ``cost`` 不变、``quantity`` 变成新股数。
+
+        ``intval`` 是**向零截断**：3 股按 1.5 倍拆只给 4 股（0.5 股被吞）。
+        交易表只记整数股，这是 PHP 的口径。
+        """
+        price = float(price_text)
+        count = 0
+        for item_sql, record in items:
+            item_id = record["id"]
+            quantity = _intval(record["quantity"])
+            trans_sql = item_sql.trans_sql
+            trans_sql.insert(item_id, str(0 - quantity), _number_text(price))
+            trans_sql.insert(item_id, str(_intval(ratio * quantity)),
+                             _number_text(price / ratio))
+            update_stock_group_item_transaction(item_sql, item_id)
+            count += 1
+        return count
+
+    def _recalc_adjclose(self, stock_id: Any, date: str, amount: float,
+                         by_ratio: bool) -> int:
+        """拆股/分红共用的复权序列重算；返回真的改了值的行数。
+
+        ``GetFromDate($strKeyId, $strDate)`` 的 WHERE 是 ``date <= $strDate``
+        （``sqldailyclose.php:43``）—— 取**该日及之前**的全部历史。拆股/分红
+        之后要按新口径重算的是"过去"，不是"未来"：新价格是从除权日开始
+        往后用的，历史价格要倒着折算。
+
+        两种口径唯一的结构差异：**分红跳过当天那一行**
+        （``if ($record['date'] != $strYMD)``），拆股不跳。
+        """
+        changed = 0
+        for row in self.history_sql.get_from_date(stock_id, date):
+            #: ``row['date']`` 是 ``datetime.date``（pymysql 对 ``date`` 列的
+            #: 原生类型），直接与 ``'YYYY-MM-DD'`` 字符串比**永远不等** ——
+            #: 分红那天会被多减一次。`str()` 一下的唯一原因。
+            if not by_ratio and _date_text(row["date"]) == date:
+                continue
+            try:
+                adjclose = float(row["adjclose"] or 0)
+            except (TypeError, ValueError):
+                continue
+            value = adjclose / amount if by_ratio else adjclose - amount
+            self.history_sql.update_adjclose(row["id"], _number_text(value))
+            changed += 1
+        return changed
+
     def _write_netvalue(self, symbol: str, stock_id: Any, date: str, value: str) -> dict:
         """``_updateOptionDailySql(GetNetValueHistorySql())``。"""
         return self._update_daily(self.net_value_sql, stock_id, date, value)
@@ -1126,8 +1535,9 @@ class StockOptionService:
     def _calibration_sql(self) -> Any:
         """``calibrationhistory`` 的写对象（``GetCalibrationSql()``）。
 
-        只在 ``_write_fund`` 的删除分支里用到 —— ``DeleteAll($stockId)`` 把这只
-        标的的全部校准记录清掉，因为配对换了以后旧校准值全部失去意义。
+        三处用到：``_write_fund`` 的删除分支（``DeleteAll($stockId)`` 把这只
+        标的的全部校准记录清掉，因为配对换了以后旧校准值全部失去意义）、
+        ``_write_stockdividend`` 与 ``_write_stocksplit``（改历史校准值）。
         """
         from sql.historytable import CalibrationSql
 

@@ -318,10 +318,10 @@ class DailyTableWriteTest(unittest.TestCase):
         self.assertEqual(row["adjclose"], 1.05)
 
     def test_get_from_date_is_inclusive_and_desc(self):
-        """``date >= $strDate``，倒序 —— 拆股重算要靠"含当天"这个边界。"""
+        """``date <= $strDate``，倒序 —— 拆股重算要靠"含当天"这个边界。"""
         rows = self.history.get_from_date(59, "2026-10-02")
         self.assertEqual([row["date"] for row in rows],
-                         ["2026-10-05", "2026-10-02"])
+                         ["2026-10-02", "2026-10-01"])
         self.assertEqual(len(self.history.get_from_date(59, "2026-10-02", num=1)), 1)
 
     def test_delete_all_refuses_false_key(self):
