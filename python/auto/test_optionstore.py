@@ -282,6 +282,40 @@ class PairStoreTest(unittest.TestCase):
         self.assertEqual(str(store.read_pair(63)), "62")
         self.assertIsNone(store.read_pair(59))
 
+    # -- GetSymbolArray（三个 compare 页的行序就靠它） ---------------------
+    def test_symbol_array_is_sorted_by_symbol_not_by_id(self):
+        """``sort($arSymbol)`` 是**字符串升序**，不是写入/主键顺序。
+
+        故意让 id 小的符号排在字母序后面：SH600030(id 59) 与 SH513100(id 63)
+        按主键是 59 在前，但按 sort() 是 "SH513100" < "SH600030"。
+        """
+        store = AhPairStore(self.connection)
+        store.write_pair_symbol("SH600030", "HK06030")
+        store.write_pair_symbol("SH513100", "HK06030")
+        self.assertEqual(store.get_symbol_array(), ["SH513100", "SH600030"])
+
+    def test_symbol_array_skips_ids_without_stock_row(self):
+        """``GetStockSymbol()`` 查不到的 id 跳过（PHP 会把 false 塞进数组，
+        但 compare 页随后建引用对象会 fatal，这里按跳过处理）。"""
+        store = AhPairStore(self.connection)
+        store.write_pair_symbol("SH600030", "HK06030")
+        store.write_pair(999, 60)       # 999 不在 stock 表里
+        self.assertEqual(store.get_symbol_array(), ["SH600030"])
+
+    def test_symbol_array_empty_table_and_unknown_pair(self):
+        store = AhPairStore(self.connection)
+        self.assertEqual(store.get_symbol_array(), [])
+        # 传了配对符号时：查不到它的 id 直接返回空数组（PHP 同款行为）
+        self.assertEqual(store.get_symbol_array("NOPE"), [])
+
+    def test_symbol_array_by_pair_symbol_returns_hosts(self):
+        """传配对符号时只列"跟踪它"的本体，方向不能反。"""
+        store = AhPairStore(self.connection)
+        store.write_pair_symbol("SH600030", "HK06030")
+        store.write_pair_symbol("SH513100", "HK06030")
+        self.assertEqual(store.get_symbol_array("HK06030"), ["SH513100", "SH600030"])
+        self.assertEqual(store.get_symbol_array("SH600030"), [])
+
 
 class DailyTableWriteTest(unittest.TestCase):
     """本次给 ``historytable`` 新增的三个方法。"""

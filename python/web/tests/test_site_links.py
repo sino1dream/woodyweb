@@ -75,8 +75,14 @@ class ProductionLinksTest(unittest.TestCase):
         self.assertTrue(urls["义工群对冲计算器"].endswith("overnightcnh.php?overnightcnh=95000"))
 
     def test_link_count(self):
-        """5 工具页 + 账号工具 + 开发记录 + 7 菜单 + 10 分类。"""
-        self.assertEqual(len(production_links()), 5 + 1 + 1 + 7 + 10)
+        """4 工具页（``ahcompare`` 已迁本地） + 账号工具 + 开发记录 + 7 菜单 + 10 分类。"""
+        self.assertEqual(len(production_links()), 4 + 1 + 1 + 7 + 10)
+
+    def test_ahcompare_is_not_external_anymore(self):
+        """迁完 ``/ahcompare`` 后，页脚不该再留一条生产端外链（会成死链）。"""
+        self.assertFalse(
+            [link for link in production_links() if "ahcompare" in link["url"]]
+        )
 
 
 class LocalLinksTest(unittest.TestCase):
@@ -102,6 +108,10 @@ class LocalLinksTest(unittest.TestCase):
         self.assertNotIn("/admin.groups", urls)
         urls = [link["url"] for link in local_links(_url_for, is_admin=True)]
         self.assertIn("/admin.groups", urls)
+
+    def test_ahcompare_points_to_local_page(self):
+        urls = {link["text"]: link["url"] for link in local_links(_url_for)}
+        self.assertEqual(urls["A股和H股对比"], "/compare.ahcompare_page")
 
     def test_group_title_has_no_trailing_space(self):
         texts = [link["text"] for link in local_links(_url_for)]

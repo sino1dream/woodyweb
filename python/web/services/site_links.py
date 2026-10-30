@@ -95,11 +95,14 @@ STOCK_CATEGORY = (
 #: ``EchoLinks()`` 开头那串"工具页"：``(页面, 查询串, 显示文本)``。
 #: ``overnightcnh`` 的查询串是 ``overnightcnh=95000``（PHP 默认金额），
 #: "键就是页面名本身"这一点照抄 —— 换掉它页面读不到参数。
+#:
+#: **``ahcompare`` 已从这里移除**：2026-10-30 它迁成了本地页 ``/ahcompare``
+#: （``woody/res/ahcomparecn.php``），迁完再指向生产端就是自己给自己留死链。
+#: 本地入口在 :func:`local_links` 里，别两处都挂。
 UTILITY_LINKS = (
     ("lof.php", "", "LOF基金"),
     ("overnight.php", "", "义工群对比"),
     ("overnightcnh.php", "overnightcnh=95000", "义工群对冲计算器"),
-    ("ahcompare.php", "", "A股和H股对比"),
     ("autotractor.php", "", "拖拉机自动化"),
 )
 
@@ -164,6 +167,12 @@ def local_links(url_for: Callable[..., str], symbol: Optional[str] = None,
         links.append({"text": group["title"].replace("基金指数对照表", "").strip(),
                       "url": url_for("fund.fund_group_page", group=name),
                       "external": False})
+
+    #: PHP 那串"工具页"里**唯一已迁到本地**的一页：``ahcomparecn.php``
+    #: （``/ahcompare``）。另外两个对比页（``abcompare`` / ``adrhcompare``）
+    #: 生产端本来就不进页脚，本地也从对比页自己的页尾导航进。
+    links.append({"text": "A股和H股对比", "url": url_for("compare.ahcompare_page"),
+                  "external": False})
 
     links.append({"text": "股票列表", "url": url_for("stock.stock_page"), "external": False})
     #: ``GetMyPortfolioLink()`` —— 只对"登录用户"输出（PHP 在

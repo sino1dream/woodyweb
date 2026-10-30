@@ -640,6 +640,20 @@ class DayWeekMonthSlicingTest(unittest.TestCase):
         _, _, monthly = instance.get_day_week_month_data()
         self.assertEqual(monthly, [97.0])
 
+    def test_month_end_uses_market_now_not_local_date(self):
+        """判据里的"今天"必须是**市场时区**的今天，不是本机日期。
+
+        PHP ``_isMonthEnd()`` 取的是 ``SetTimeZone()`` **之后**的 ``GetNowYMD()``。
+        若退到本机日期，本机周六时周末分支会跳到"下一交易日"（跨到 11 月），
+        把 10-09 那条误判成月末 —— 也就是这个用例在真机周六会红的原因。
+        把注入的 now 挪到周六 2026-10-10，月线仍应只有 09-30 一条。
+        """
+        import datetime
+
+        instance, _ = _build(now=datetime.datetime(2026, 10, 10, 10, 0))
+        _, _, monthly = instance.get_day_week_month_data()
+        self.assertEqual(monthly, [97.0])
+
     def test_from_date_is_called_with_start_date_and_620(self):
         """``_configSMA()`` 期间已经算过一次，所以这里断言"至少一次且参数正确"。"""
         instance, sql = _build()

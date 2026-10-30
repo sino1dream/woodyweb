@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% from "_data_table.html" import data_table %}
+{% block title %}{{ symbol }} AH历史价格比较 - 基金估值{% endblock %}
+{% block content %}
+  {# AH 历史价格比较（woody/res/ahhistorycn.php?symbol=X）。
+
+       PHP 的日期取自这只 **A 股自己的** ``stockhistory``，再拿当天去查
+       港币中间价与 H 股收盘价；中间价查不到就整天不出现，H 价查不到时
+       这一行只显示前三格（行是变长的）。 #}
+  <h1>{{ symbol }} AH历史价格比较</h1>
+
+  {% if page %}
+    {{ data_table(page.table, "ah-history-table") }}
+
+    {% if paging.show %}
+      <p class="hint">
+        共 {{ paging.total }} 条，当前 {{ paging.first }}–{{ paging.last }}。
+        {% if paging.prev_start is not none %}
+          <a href="{{ url_for('compare.ah_history_page', symbol=symbol, start=paging.prev_start, num=paging.num) }}">上一页</a>
+        {% endif %}
+        {% if paging.next_start is not none %}
+          <a href="{{ url_for('compare.ah_history_page', symbol=symbol, start=paging.next_start, num=paging.num) }}">下一页</a>
+        {% endif %}
+        {% if paging.all %}
+          <a href="{{ url_for('compare.ah_history_page', symbol=symbol) }}">回到首页</a>
+        {% endif %}
+      </p>
+    {% endif %}
+
+    <p class="table-note">
+      按中国A股交易日期排序显示；同时显示港币人民币中间价历史。
+      仅包括 2014-01-01 以后的数据（与 PHP 同步口径一致）。
+      走势图与 CSV 下载本版未迁。
+    </p>
+  {% else %}
+    <p class="empty">
+      这个符号没有 AH 配对记录，或者数据库不可用 —— PHP 在该符号查不到
+      ``AhPairReference`` 的配对标的时同样整段不输出。
+    </p>
+  {% endif %}
+
+  <p>
+    <a href="{{ url_for('compare.ahcompare_page') }}">A股和H股对比</a>
+    <a href="{{ url_for('stock.stock_detail_page', symbol=symbol) }}">股票详情</a>
+    <a href="{{ url_for('main.index') }}">返回首页</a>
+  </p>
+{% endblock %}

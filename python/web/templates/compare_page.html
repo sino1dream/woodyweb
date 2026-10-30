@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% from "_data_table.html" import data_table %}
+{% block title %}{{ page.title }} - 基金估值{% endblock %}
+{% block content %}
+  {# 对比页（woody/res/abcomparecn.php / ahcomparecn.php / adrhcomparecn.php）。
+       与分类页同源（_mystockgroup.php 的 _echoStockGroupArray），差别是：
+       符号数组来自三张配对表，且主角是 EchoAb/Ah/AdrhParagraph 三张对比表。
+       表格全部来自 page / sections，模板里不出现任何页面特判。 #}
+  <h1>{{ page.title }}</h1>
+  <p class="group-description">{{ page.description }}</p>
+  {% for note in page.notes %}
+    <p class="table-note">{{ note }}</p>
+  {% endfor %}
+
+  {% if page.counts.symbols %}
+    <p class="hint">
+      共 {{ page.counts.symbols }} 个符号
+      {%- if page.counts.skipped %}，其中 {{ page.counts.skipped }} 个建不出引用对象已跳过{% endif %}。
+    </p>
+  {% endif %}
+
+  {# 表1：参考数据。窄屏时全部符号都在这里；宽屏时已配对的会被移到对应对比表。 #}
+  {% if page.reference %}
+    <h2>参考数据</h2>
+    {{ data_table(page.reference, "reference-table", first_cell_is_html=True) }}
+    <p class="table-note">参考数据来自外部行情源，抓不到时对应行留空。</p>
+  {% endif %}
+
+  {# 表2：净值估算。对比页的符号通常不是 A 股基金，这一段基本不出现；
+       留着是为了数组里万一混进基金时不至于丢一段。 #}
+  {% if page.est %}
+    <h2>估值</h2>
+    {{ data_table(page.est, "fund-est-table", first_cell_is_html=True) }}
+  {% endif %}
+
+  {# 表3~5：三张配对对比表（php/ui/ahparagraph.php）。 #}
+  {% for section in page.sections %}
+    <h2>{{ section.title }}</h2>
+    {{ data_table(section.table, "pair-table", first_cell_is_html=True) }}
+    {% if section.table.history_link %}
+      <p class="table-note">
+        <a href="{{ section.table.history_link.url }}">{{ section.table.history_link.text }}</a>
+      </p>
+    {% endif %}
+    {% if section.table.cell_count and section.table.cell_count != section.table.columns|length %}
+      <p class="table-note">
+        行为是变长的：缺配对价格 / 比价 / 仓位时对应格子不出现（照 PHP 行为保留）。
+      </p>
+    {% endif %}
+  {% endfor %}
+
+  {% if not page.reference and not page.est and not page.sections %}
+    <p class="empty">暂无数据（数据库不可用，或三张配对表里没有记录）。</p>
+  {% endif %}
+
+  <h2>其它对比</h2>
+  <ul class="group-nav">
+    {% for item in nav %}
+      <li><a href="{{ url_for('compare.' ~ item.name ~ '_page') }}">{{ item.display }}</a></li>
+    {% endfor %}
+  </ul>
+
+  <p><a href="{{ url_for('main.index') }}">返回首页</a></p>
+{% endblock %}

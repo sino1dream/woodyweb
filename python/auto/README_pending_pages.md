@@ -1,7 +1,7 @@
 # 剩余未迁页面清单（"生产端未展示页面"及其它）
 
-> 复核日期：2026-10-30
-> 判定依据：`woody/res/*.php` 全量清点 + Flask `url_map` 45 条路由 + 真库/测试客户端实测
+> 复核日期：2026-10-31
+> 判定依据：`woody/res/*.php` 全量清点 + Flask `url_map` 49 条路由 + 真库/测试客户端实测
 > 本文只记**现状与缺口**，已完成项的细节见各自的 `README_*_migration.md`
 
 ## 一、这一批指什么
@@ -20,9 +20,9 @@
 | 分类页 | 16 | `biotechcn.php` 一族 4 行壳子，**已全部迁掉**（一个注册表 + 一个视图），见 `README_category_pages_migration.md` |
 | 其它 | 34 | 分组页 / 历史页 / 账号页 / 工具页 |
 
-Flask 侧现有 **45 条路由**（`create_app().url_map`）。
+Flask 侧现有 **49 条路由**（`create_app().url_map`）。
 
-## 二、已迁的部分（10 个入口）
+## 二、已迁的部分（11 个入口）
 
 | PHP 页面 | Python | 备注 |
 |---|---|---|
@@ -37,6 +37,7 @@ Flask 侧现有 **45 条路由**（`create_app().url_map`）。
 | `submitdividend.php` / `submitnetvalue.php` / `submithistory.php` | `GET /submit`（工具页）+ `POST /submit/<name>`（`dividend` / `netvalue` / `history`） | 三页在 PHP 里都零输出、且入口链接点不到，所以合成一张工具页；细节见 `README_submit_pages_migration.md` |
 | `deletesymbol.php` | `GET/POST /stock/<symbol>/delete` | 五道闸门 + 6 张表；**PHP 漏清 15 张残留表**，本版可显式级联；见 `README_deletesymbol_migration.md` |
 | **分类页 16 个** | `GET /category/<name>`，另有短路径 `GET /qdii` | 16 个 4 行壳子全部落到 `_mystockgroup.php`，所以做成一个注册表 + 一个视图；`_stocklink.php::GetCategoryArray()` 的数组与 `_getTitleStr()` / `_getMetaDescriptionStr()` 的文本都逐例对照过，见 `README_category_pages_migration.md` |
+| **对比页 4 个** | `GET /abcompare`、`GET /ahcompare`、`GET /adrhcompare`、`GET /ahhistory/<symbol>` | 三个对比页与分类页**共用同一个 `EchoAll()`**，差别只是符号数组来自 `abpair` / `ahpair` / `adrpair` 三张配对表；`ahhistorycn.php` 另走 `_ahhistory.php`。PHP 真身对照 **39 例全一致**，见 `README_compare_pages_migration.md`。**演示库三张表都是 0 行**（且没有 A 股与 H 股标的），所以本地恒空态 |
 
 ## 三、edit 族：16 项全部有去处（0 项未迁）
 
@@ -124,7 +125,7 @@ require('../../php/ui/_editcn.php');
 | 类别 | 缺口 | 证据 |
 |---|---|---|
 | **行业分类页** | **2026-10-30 已全部迁掉**：`chinaindexcn` / `chinainternetcn` / `biotechcn` / `commoditycn` / `chinafuturecn` / `hangsengcn` / `hstechcn` / `hsharescn` / `mscius50cn` / `oilfundcn` / `qqqfundcn` / `spyfundcn` / `qdiihkcn` / `qdiijpcn` / `qdiieucn` / `qdiimixcn` 共 16 个 → `/category/<name>`（`qdiicn.php` 另有短路径 `/qdii`） | 见 `README_category_pages_migration.md`。**原判断是错的**：这里曾写成"`FUND_GROUPS` 加个键即可复用 `/fund/<group>`"，实测这些页根本不是"基金指数对照表"，而是 `_mystockgroup.php` 驱动的分类页（参考数据表 + 估值表）；`/fund/qdiihk` 之类的 404 是**另一个**东西（那 22 个名字本就不是分组名）。`btbondcn.php` 也不属于这一族（是公司介绍页，`_res.php`）。数组随后按生产端对齐（27 / 38 / 15），见该文 §七；**剩下的缺口是数据不是页面**：`chinaindex` 的 27 只 A 股 ETF 在演示库里连 `stock` 行都没有 |
-| **对比页** | `ahcomparecn.php` / `abcomparecn.php` / `adrhcomparecn.php` / `ahhistorycn.php` | 无对应路由；配对数据只出现在 `/stock/<symbol>` 的段落里。**注意**分类页家族里 `GetCategoryArray()` 还有 `ahcompare` / `abcompare` / `adrhcompare` 三个键，它们的数组来自配对表、还要渲染 AB/AH/ADR 三个段落，比这 16 个基金分类页重，未进本轮 |
+| ~~**对比页**~~ | ~~`ahcomparecn.php` / `abcomparecn.php` / `adrhcomparecn.php` / `ahhistorycn.php`~~ | **2026-10-31 已全部迁**：`/abcompare` / `/ahcompare` / `/adrhcompare` / `/ahhistory/<symbol>`，见 `README_compare_pages_migration.md`。**剩余缺口是数据不是页面**：演示库 `abpair` / `ahpair` / `adrpair` 都是 0 行，且 `stock` 表里没有 A 股（`SH600*` 0 只）也没有 H 股（`HK*` 只有外汇 `HKCNY`），所以四页恒空态 |
 | **工具页** | `autotractorcn.php`（拖拉机自动化）/ `overnightcn.php`（义工群对比）/ `overnightcnhcn.php`（对冲计算器）/ `rotationtradingcn.php`（轮动交易） | 无对应路由 |
 | **账号体系** | `fundaccountcn.php`（`/account` 目前是演示数据，未切真库）；`member` 表 + 登录 + 分组可见性整体暂缓 | `WEB_MIGRATION_PLAN.md` T4b |
 | **博客/杂文** | `cateyescn.php`、`thanousparadoxcn.php`、`woody/blog/*` | 站点内容，不在迁移范围 |
@@ -159,6 +160,15 @@ require('../../php/ui/_editcn.php');
    —— 同日已迁（`GET /submit` + 三个 POST），对照 19 例、真库 smoke 见
    `README_submit_pages_migration.md`。**左侧真正的缺口只剩 `uploadfile`**
    （上传历史 CSV，本地用 `dbtools/seed_*` 顶替，不建议迁）。
+7. ~~**对比页四页**（`GetCategoryArray()` 里那三个 compare 分支）~~ ——
+   **2026-10-31 已全部迁**（`/abcompare` / `/ahcompare` / `/adrhcompare` /
+   `/ahhistory/<symbol>`）。与分类页共用 `_mystockgroup.php` 的 `EchoAll()`，
+   差别只是数组来自三张配对表，所以单开一个 `compare_bp`（数据源必须带）。
+   PHP 真身对照 39 例全一致（含 `fundpair` 76 行那条"有数据的同款"），
+   见 `README_compare_pages_migration.md`。**同日顺手修掉一个周末红灯**：
+   `is_month_end()` / `is_week_end()` 的"没有下一天"分支原来回退到本机日期，
+   而 PHP 用的是 `SetTimeZone()` 之后的 `GetNowYMD()` —— 本机周六时月末判据
+   会整体偏移，改成显式传 `_market_ymd()`。
 
 ## 八、怎么自己复核一遍
 

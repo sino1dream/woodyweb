@@ -834,6 +834,14 @@ class StockHistory:
 
         ``prepend``（``_onTest`` 用它）会在取数**之前**先塞进当天的现价，
         这样均线里包含"还没收盘的今天"。
+
+        ## "今天"必须走市场时区
+
+        最前面那条没有"下一天"，``_isWeekEnd`` / ``_isMonthEnd`` 会退到
+        ``GetNowYMD()`` —— PHP 那是 ``SetTimeZone()`` **之后**的时间，
+        而 :func:`_today_ywd` 取的是**本机**日期。两者在跨时区或周末时会分叉
+        （典型：本机周六而市场还在周五，``IsWeekend()`` 让月末判据整体偏移）。
+        所以这里显式传 :func:`_market_ymd`，既对齐 PHP 也让结果可注入。
         """
         quotes = self._prepended_quotes()
         daily = list(quotes)
@@ -844,6 +852,7 @@ class StockHistory:
         if sql is not None and self.start_date is not None:
             stock_id = self._stock_id()
             if stock_id is not None:
+                now_ymd = self._market_ymd()
                 next_day = None
                 for record in sql.get_from_date(stock_id, self.start_date, MAX_QUOTES_DAYS):
                     close = _as_number(record.get("adjclose"))
@@ -851,9 +860,9 @@ class StockHistory:
                     daily.append(close)
                     if date is not None:
                         text = str(date)
-                        if is_week_end(text, next_day):
+                        if is_week_end(text, next_day, now_ymd):
                             weekly.append(close)
-                        if is_month_end(text, next_day):
+                        if is_month_end(text, next_day, now_ymd):
                             monthly.append(close)
                         next_day = text
         return daily, weekly, monthly

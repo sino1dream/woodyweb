@@ -379,6 +379,59 @@ class StockPairStore(PairStore):
             return 0
         return self.delete_by_pair_id(pair_id)
 
+    # -- 全表/按配对侧列出符号 ---------------------------------------------
+    def get_id_array(self, pair_id: Any = None) -> list:
+        """``GetIdArray($strPairId = false)``：取**本体 id** 列表。
+
+        PHP 的 ``GetIdArray()`` 在 ``KeySql`` 上；不传 ``pair_id`` 就是全表
+        ``id``，传了就是"配对标的是它"的那些 ``id``（``BuildWhere_key``）。
+        这里只用到前者，后者留给以后真需要时再补。
+
+        **不去重、不排序** —— PHP 的 ``foreach ($ar as $strStockId)`` 原样塞进
+        数组，重复照样留下；顺序交给 :meth:`get_symbol_array` 的 ``sort()``。
+        """
+        if pair_id is None:
+            sql = "SELECT `id` FROM `%s`" % self.table
+            params: tuple = ()
+        else:
+            sql = "SELECT `id` FROM `%s` WHERE `stock_id` = %%s" % self.table
+            params = (pair_id,)
+        cursor = self.connection.cursor()
+        try:
+            cursor.execute(sql, params)
+            rows = cursor.fetchall()
+        finally:
+            cursor.close()
+        return [row[0] if not isinstance(row, dict) else row["id"] for row in rows]
+
+    def get_symbol_array(self, pair_symbol: Any = None) -> list:
+        """``GetSymbolArray($strPairSymbol = false)``（``php/sql/sqlstockpair.php:5``）。
+
+        三步与 PHP 逐句对应：
+
+        1. 传了配对符号时先查它的 ``stock_id``，**查不到返回空数组**（PHP 是
+           ``return $arSymbol;``），不是一个大方异常；
+        2. ``id`` → 符号；``GetStockSymbol()`` 返回假值的跳过（PHP 会把 ``false``
+           一起塞进数组，但上层建引用对象时会炸，这里按"跳过"更稳）；
+        3. ``sort($arSymbol)`` —— **字符串升序**。这一步很关键：compare 三页的
+           行序完全等于它（`GetIdArray()` 的顺序则看主键顺序，不保证）。
+        """
+        if pair_symbol:
+            pair_id = self.stock_sql.get_id(pair_symbol)
+            if not pair_id:
+                return []
+            stock_ids = self.get_id_array(pair_id)
+        else:
+            stock_ids = self.get_id_array()
+
+        symbols = []
+        for stock_id in stock_ids:
+            symbol = self.stock_sql.get_symbol(stock_id)
+            if symbol:
+                symbols.append(str(symbol))
+        symbols.sort()
+        return symbols
+
 
 class AhPairStore(StockPairStore):
     """``ahpair``：A 股 ↔ H 股。``id`` = A 股，``stock_id`` = H 股。"""
