@@ -156,6 +156,32 @@ class FundPositionSql:
         """
         return self.write_val(stock_id, _php_strval_float(position))
 
+    def delete_by_id(self, stock_id: Any) -> int:
+        """对应 PHP ``DeleteById($strId)``（``php/sql/sqltable.php:212``）。
+
+        编辑页的两条路要用它（都来自 ``_submitstockoptions.php``）：
+
+        * ``_updateStockOptionFund()``：仓位填 0 时删掉仓位行（回落 1.0 = 满仓）；
+        * ``_updateStockOptionAdr()``：ADR 比例填 0 时删掉 ADR 的仓位行。
+
+        返回删除行数（PHP 返回布尔，这里给行数以便 flash 报"删了几条"）。
+        **MyISAM 删了回不来**，真要保护数据靠 ``dbtools/backup_db.py``。
+        """
+        if stock_id is None or str(stock_id) == "":
+            return 0
+        cursor = self.connection.cursor()
+        try:
+            cursor.execute(
+                "DELETE FROM `%s` WHERE `id` = %%s" % self.table, (stock_id,)
+            )
+            rowcount = cursor.rowcount
+            commit = getattr(self.connection, "commit", None)
+            if commit is not None:
+                commit()
+            return rowcount
+        finally:
+            cursor.close()
+
 
 # ---------------------------------------------------------------------------
 # PHP 原名别名（见 AGENTS.md：保留 camelCase 别名）

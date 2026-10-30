@@ -817,6 +817,25 @@ class DailyCloseSql:
         """
         return self._update_by_id(record_id, {"close": self._prepare_close(close)})
 
+    def delete_all(self, stock_id: Any) -> int:
+        """``DeleteAll($strKeyId)``（``php/sql/sqlkey.php:75``）：删掉一只标的的全部行。
+
+        ``$strKeyId !== false`` 那道闸照抄：``False`` 进来**一行都不删**。
+        这不是洁癖 —— 缺了它，调用方传 ``False`` 时会拼出
+        ``WHERE stock_id = 0``，看起来"什么也没删"，实际上把手工塞进
+        ``stock_id = 0`` 的脏行清掉了（演示库里 ``realtimequote`` 就有这种行）。
+
+        返回删除行数（PHP 返回布尔，这里给行数以便编辑页报"删了几条"）。
+        **没有 dry-run**：这是编辑页的正式语义（改 EMA 前先清空两张表），
+        真要保护数据靠 ``dbtools/backup_db.py``。全表级的危险操作见
+        :meth:`delete_close` / :meth:`delete_invalid_dates`，那两个默认 dry-run。
+        """
+        if stock_id is False or stock_id is None:
+            return 0
+        return self._execute(
+            "DELETE FROM `%s` WHERE stock_id = %%s" % self.table, (stock_id,)
+        )
+
     def delete_by_date(self, stock_id: Any, date: Any) -> int:
         """``DeleteByDate()``（``sqldailyclose.php:201``）：返回删除行数。
 
@@ -971,6 +990,51 @@ class StockHistorySql(DailyCloseSql):
         if row is None and not strict:
             row = self.get_record_prev(stock_id, date)
         return row["adjclose"] if row else None
+
+    def get_from_date(self, stock_id: Any, date: Any, num: int = 0) -> list:
+        """``GetFromDate($strKeyId, $strDate, $iNum)``（``sqldailyclose.php:46``）。
+
+        ``date >= $strDate`` 的全部行，``date DESC``（``BuildOrderBy()`` 恒倒序），
+        ``num`` 为 0 时不加 ``LIMIT``。
+
+        拆股写入口（``_updateStockHistoryAdjCloseBySplit``）拿它把"该日往后"
+        的复权价一次性取回来再逐条改 —— 历史数据必须整段重算，只改一天会让
+        复权价序列在拆股日出现断崖。
+        """
+        columns = ", ".join("`%s`" % name for name in self.columns)
+        sql = ("SELECT %s FROM `%s` WHERE stock_id = %%s AND `date` >= %%s "
+               "ORDER BY `date` DESC" % (columns, self.table))
+        if num:
+            sql += " LIMIT %d" % int(num)
+        return self._fetchall(sql, (stock_id, date))
+
+    def update_close(self, record_id: Any, close: Any) -> bool:
+        """``UpdateClose($strId, $strClose)``（``php/sql/sqlstocksymbol.php:50``）。
+
+        **同时写 ``close`` 和 ``adjclose`` 两列** —— 照抄 PHP::
+
+            return $this->UpdateById(array('close' => $strClose, 'adjclose' => $strClose), $strId);
+
+        「改收盘价 = 重新对齐复权基准」是有意的：手工订正收盘价时通常就是在修
+        最近一天，而最近一天的复权价按定义等于收盘价（除权都发生在更早）。
+        只改 ``close`` 会让"净值价格比较"那段用的复权价与收盘价打架。
+
+        与父类 :meth:`DailyCloseSql.update_daily` 的区别就在这 —— 那个只改
+        ``close``，用在 ``netvaluehistory`` 这类没有复权列的表上。
+        """
+        return self._update_by_id(
+            record_id,
+            {"close": self._prepare_close(close), "adjclose": self._prepare_close(close)},
+        )
+
+    def update_adjclose(self, record_id: Any, adjclose: Any) -> bool:
+        """``UpdateAdjClose($strId, $strAdjClose)``：只改复权价。
+
+        拆股/分红重算复权序列时用（``_updateStockHistoryAdjCloseBySplit``），
+        ``close`` 保持原值不动。两列都 ``NOT NULL``，所以照样过
+        :meth:`_prepare_close`（``None`` → 0.0，不依赖服务器 sql_mode）。
+        """
+        return self._update_by_id(record_id, {"adjclose": self._prepare_close(adjclose)})
 
     def write_history(
         self, stock_id: Any, date: Any, close: Any, volume: Any = "", adjclose: Any = False
