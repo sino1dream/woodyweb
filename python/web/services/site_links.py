@@ -150,7 +150,7 @@ def local_links(url_for: Callable[..., str], symbol: Optional[str] = None,
     """
     links: list = [
         {"text": "首页", "url": url_for("main.index"), "external": False},
-        {"text": "美股QDII", "url": url_for("fund.qdii_page"), "external": False},
+        {"text": "美股QDII", "url": url_for("category.qdii_page"), "external": False},
     ]
 
     #: ``GetCategoryLinks(GetStockCategoryArray())`` 的本地替身：两个 QDII 分组。

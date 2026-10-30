@@ -1,8 +1,12 @@
 """QDII 分类页的测试（``woody/res/qdiicn.php`` → ``qdii_page_service.py``）。
 
 **全部离线**：引用对象与数据源都是内存假实现，不联网、不连 MySQL。
-分类逻辑用 ``mock.patch.object`` 打在 ``qdii_page_service`` 模块自己的全局名上
+
+分类逻辑用 ``mock.patch.object`` 打在 ``category_page_service`` 模块自己的全局名上
 （项目踩坑记录 #39：补丁要打在**被调用的那个命名空间**，打错了会静默失效）。
+2026-10-30 之后 ``classify_symbols`` 搬到了 ``category_page_service``（16 个分类页
+共用同一套装配），``qdii_page_service`` 只剩薄包装 + 再导出 —— 补丁目标必须跟着搬，
+打在本模块的名字上单测会"全绿但没测到真东西"。
 """
 
 import sys
@@ -21,7 +25,7 @@ from web.bootstrap import install_paths  # noqa: E402
 
 install_paths()
 
-from web.services import qdii_page_service  # noqa: E402
+from web.services import category_page_service  # noqa: E402
 from web.services.fundest_service import FundEstService  # noqa: E402
 from web.services.qdii_page_service import (  # noqa: E402
     PAGE_DESCRIPTION,
@@ -140,8 +144,8 @@ class ClassifySymbolsTest(unittest.TestCase):
     def _patch(self, ref_factory, qdii_factory):
         """把两个构造器换成假的，返回``(ref_patch, qdii_patch)``上下文。"""
         return (
-            mock.patch.object(qdii_page_service, "MysqlReference", ref_factory),
-            mock.patch.object(qdii_page_service, "build_qdii_reference", qdii_factory),
+            mock.patch.object(category_page_service, "MysqlReference", ref_factory),
+            mock.patch.object(category_page_service, "build_qdii_reference", qdii_factory),
         )
 
     def test_fund_with_official_net_value_lands_in_both_tables(self):
@@ -250,12 +254,12 @@ class BuildQdiiPageTest(unittest.TestCase):
     def _patch_constructors(self, official=1.5, fund_a=True):
         return (
             mock.patch.object(
-                qdii_page_service,
+                category_page_service,
                 "MysqlReference",
                 lambda symbol, source=None: FakeRef(symbol, source=source, fund_a=fund_a),
             ),
             mock.patch.object(
-                qdii_page_service,
+                category_page_service,
                 "build_qdii_reference",
                 lambda symbol, source=None: FakeRef(
                     symbol, source=source, fund_a=True, official=official
@@ -368,12 +372,12 @@ class QdiiPageRouteTest(unittest.TestCase):
 
     def setUp(self):
         self._ref_patch = mock.patch.object(
-            qdii_page_service,
+            category_page_service,
             "MysqlReference",
             lambda symbol, source=None: FakeRef(symbol, source=source, fund_a=True),
         )
         self._qdii_patch = mock.patch.object(
-            qdii_page_service,
+            category_page_service,
             "build_qdii_reference",
             lambda symbol, source=None: FakeRef(symbol, source=source, official=1.5),
         )
@@ -424,11 +428,15 @@ class QdiiPageRouteTest(unittest.TestCase):
             response = self.client.get(f"/qdii?sort={sort}")
             self.assertEqual(200, response.status_code, f"sort={sort}")
 
-    def test_page_links_to_other_groups(self):
-        """页尾的「其它分组」导航要与首页同一套分组定义。"""
+    def test_page_links_to_other_categories(self):
+        """页尾导航要列出**其它分类页**（同一份注册表，不是基金分组）。"""
         html = self.client.get("/qdii").get_data(as_text=True)
-        self.assertIn("其它分组", html)
-        self.assertIn("QDII-LOF 基金指数对照表", html)
+        self.assertIn("其它分类", html)
+        # 恒生科技指数分类页的标题，来自 category_page_service 的注册表
+        self.assertIn("恒生科技指数", html)
+        # 当前页自己不该出现在"其它分类"里（导航链接走 /category/<name>；
+        # 注意别用 ``/category/qdii`` 做子串判断 —— 它会撞上 qdiieu/qdiihk 等）
+        self.assertNotIn('href="/category/qdii"', html)
 
 
 class _NameOnlySource:

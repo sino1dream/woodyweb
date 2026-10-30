@@ -24,7 +24,7 @@ from web.bootstrap import install_paths
 install_paths()
 
 from cli.fundcli import parse_market_values  # noqa: E402
-from calc.fundgroups import get_fund_group, get_fund_group_names, get_symbol_group  # noqa: E402
+from calc.fundgroups import get_symbol_group  # noqa: E402
 from core.stocksymbol import (  # noqa: E402
     in_array_lof_mix,
     in_array_qdii,
@@ -48,7 +48,6 @@ from web.services.fundest_service import (  # noqa: E402
     build_est_formula_note,
     fund_position_memo_parts,
 )
-from web.services.qdii_page_service import build_qdii_page  # noqa: E402
 from web.services.reference_service import (  # noqa: E402
     _fund_reference_symbols,
     _leverage_symbols,
@@ -144,48 +143,6 @@ def _fund_position_href(symbol: str) -> str:
     if not _has_fund_position(symbol):
         return ""
     return url_for("history.history_page", kind="fundposition", symbol=symbol)
-
-
-def _build_qdii_page() -> dict[str, Any]:
-    """QDII 分类页（``woody/res/qdiicn.php``）的两张表。
-
-    与 ``_render_fund`` 的分工：那边是**一只**基金的详情，这边是**整个分类**
-    的汇总；两张表本身复用同一批服务（``reference_service`` /
-    ``fundest_service``），分类规则在
-    :func:`~web.services.qdii_page_service.build_qdii_page` 里。
-
-    ``sort`` 透传 PHP 的 ``?sort=symbol`` / ``?sort=premium``
-    （``_echoFundEstParagraph()`` 里那两个分支，只在超过 2 行时生效）。
-    """
-    reference_service = _get_reference_service()
-    fundest_service = _get_fundest_service()
-    page = build_qdii_page(
-        source=getattr(reference_service, "source", None),
-        reference_service=reference_service,
-        fundest_service=fundest_service,
-        sort=request.args.get("sort") or None,
-    )
-    return page, _fund_group_nav()
-
-
-def _fund_group_nav() -> list:
-    """页尾的「其它分组」导航。
-
-    与首页 ``routes/main.py::_list_groups()`` 同一套写法：**只读分组定义、
-    不连数据库**。区别是首页要的是数量，这里只要标题；分组数量让模板自己
-    从 ``item.count`` 取，所以直接复用同一结构。
-    """
-    groups = []
-    for name in get_fund_group_names():
-        definition = get_fund_group(name)
-        groups.append(
-            {
-                "name": name,
-                "title": definition["title"],
-                "count": len(definition["symbols"]()),
-            }
-        )
-    return groups
 
 
 def _wants_live_refresh() -> bool:
@@ -1036,18 +993,3 @@ def fund_page(symbol: str):
     if group is None or group != symbol_group:
         group = symbol_group
     return _render_fund(symbol, group)
-
-
-@fund_bp.route("/qdii")
-def qdii_page():
-    """QDII 分类页，例如 /qdii、/qdii?sort=premium。
-
-    对应 PHP ``woody/res/qdiicn.php`` —— 生产端把整个 QDII 分类的两张表
-    （参考数据 + 估值）放在一页里，代码列分别是新浪外链和站内详情页链接。
-
-    **没有重定向到 /fund/<group>**：那两页（qdiilof / qdiietf）是另一张
-    "基金指数对照表"，列定义与服务都不同（``fundlistparagraph.php``），
-    与 PHP 的页面划分一致，不合并。
-    """
-    page, groups = _build_qdii_page()
-    return render_template("qdii.html", page=page, groups=groups)

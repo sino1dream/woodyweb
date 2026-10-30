@@ -4,6 +4,7 @@ from flask import Flask
 
 from web.routes.account import account_bp
 from web.routes.admin import admin_bp
+from web.routes.category import category_bp
 from web.routes.fund import fund_bp
 from web.routes.group import group_bp
 from web.routes.health import health_bp
@@ -21,6 +22,9 @@ def register_blueprints(app: Flask) -> None:
     """注册全部蓝图。"""
     app.register_blueprint(main_bp)
     app.register_blueprint(fund_bp)
+    # 分类页（16 个 woody/res/*cn.php 共用一个视图）：/category/<name> 与
+    # 生产端短路径 /qdii。见 web/routes/category.py
+    app.register_blueprint(category_bp)
     app.register_blueprint(history_bp)
     app.register_blueprint(stock_bp)
     app.register_blueprint(portfolio_bp)

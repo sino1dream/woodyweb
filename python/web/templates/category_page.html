@@ -2,15 +2,18 @@
 {% from "_data_table.html" import data_table %}
 {% block title %}{{ page.title }} - 基金估值{% endblock %}
 {% block content %}
-  {# QDII 分类页（woody/res/qdiicn.php）。
+  {# 分类页（woody/res/biotechcn.php / hstechcn.php / qdiicn.php …… 共 16 个）。
 
-       PHP 那边是 _mystockgroup.php 的 _echoStockGroupArray() 先按
-       IsFundA() / GetOfficialNetValue() 把符号分成 $arRef 与 $arFund 两组，
-       再依次渲染两个段落。这里两张表的数据都由 services 给好，
+       PHP 那边全部落到 _mystockgroup.php 的 _echoStockGroupArray()：
+       先按 IsFundA() / GetOfficialNetValue() 把符号分成 $arRef 与 $arFund
+       两组，再依次渲染两个段落。这里两张表的数据都由 services 给好，
        模板只决定顺序与说明文字 —— 与 fund_detail.html 的分工一致。
 
        表1 代码列是新浪外链（GetExternalLink()），表2 代码列是站内详情页
-       链接（GetStockLink()）；生产端就是这个差别，别改成同一个。 #}
+       链接（GetStockLink()）；生产端就是这个差别，别改成同一个。
+
+       一个模板顶 16 个页面，所以标题/说明/表格全部来自 page 与 nav，
+       模板里不允许出现任何分类名 —— 那会让第 17 个分类漏改。 #}
   <h1>{{ page.title }}</h1>
   <p class="group-description">{{ page.description }}</p>
 
@@ -22,7 +25,7 @@
   {% endif %}
 
   {# 表1：参考数据（php/ui/referenceparagraph.php 的 EchoReferenceParagraph）。
-       非宽屏时全部符号都进这张表，所以行数与 QDII 分类的符号数一致。 #}
+       非宽屏时全部符号都进这张表，所以行数与分类的符号数一致。 #}
   {% if page.reference %}
     <h2>参考数据</h2>
     {{ data_table(page.reference, "reference-table", first_cell_is_html=True) }}
@@ -39,8 +42,8 @@
       官方 / 参考 / 实时三档估值，缺哪档就不显示哪两列。
       {% if page.est.count > 2 %}
         排序：
-        <a href="{{ url_for('fund.qdii_page', sort='symbol') }}">按代码</a>、
-        <a href="{{ url_for('fund.qdii_page', sort='premium') }}">按官方溢价</a>
+        <a href="{{ sort_urls.symbol }}">按代码</a>、
+        <a href="{{ sort_urls.premium }}">按官方溢价</a>
         （对应 PHP 的 ``?sort=symbol`` / ``?sort=premium``）。
       {% endif %}
     </p>
@@ -50,10 +53,12 @@
     <p class="empty">暂无数据（数据库不可用或分类为空）。</p>
   {% endif %}
 
-  <h2>其它分组</h2>
+  {# 页尾导航：同一份注册表来的其它分类页（PHP 用 EchoLinks()，
+       这里换成横向分类清单，链接不会与符号数组走散）。 #}
+  <h2>其它分类</h2>
   <ul class="group-nav">
-    {% for item in groups %}
-      <li><a href="{{ url_for('fund.fund_group_page', group=item.name) }}">{{ item.title }}</a>（{{ item.count }} 只）</li>
+    {% for item in nav %}
+      <li><a href="{{ url_for('category.category_page', name=item.name) }}">{{ item.display }}</a>（{{ item.count }} 只）</li>
     {% endfor %}
   </ul>
 

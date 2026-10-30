@@ -11,8 +11,11 @@
 
   <h2>基金分类</h2>
   <ul class="group-nav">
-    {# 美股QDII 分类页（woody/res/qdiicn.php）：参考数据 + 估值两张表 #}
-    <li><a href="{{ url_for('fund.qdii_page') }}">美股QDII基金净值计算工具</a>（共 {{ qdii_count }} 只）</li>
+    {# 16 个分类页（woody/res/biotechcn.php 一族，同一份注册表）：
+       每页都是"参考数据 + 估值"两张表，入口顺序与 PHP 的分派表同序。 #}
+    {% for item in categories %}
+      <li><a href="{{ url_for('category.category_page', name=item.name) }}">{{ item.title }}</a>（共 {{ item.count }} 只）</li>
+    {% endfor %}
   </ul>
 
   <h2>基金分组</h2>

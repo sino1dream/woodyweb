@@ -1,7 +1,7 @@
 # 剩余未迁页面清单（"生产端未展示页面"及其它）
 
 > 复核日期：2026-10-30
-> 判定依据：`woody/res/*.php` 全量清点 + Flask `url_map` 41 条路由 + 真库/测试客户端实测
+> 判定依据：`woody/res/*.php` 全量清点 + Flask `url_map` 42 条路由 + 真库/测试客户端实测
 > 本文只记**现状与缺口**，已完成项的细节见各自的 `README_*_migration.md`
 
 ## 一、这一批指什么
@@ -17,11 +17,12 @@
 | 按符号生成的详情页 | 131 | `sh513100cn.php` 这类，靠 URL 参数生成，Python 用 `/fund/<symbol>`、`/stock/<symbol>` 一个路由覆盖 |
 | **edit 族** | 3 | `_editstockoption.php` 的 16 项分派表**全部有去处**（14 项由同一个路由承担、2 项跳专门页），另 3 个独立页 |
 | **submit 族** | 4 | 表单 POST 目标（其中 `submitstockoptions` 的 11 个分支已由编辑页承接） |
-| 其它 | 50 | 分组页 / 历史页 / 账号页 / 工具页 |
+| 分类页 | 16 | `biotechcn.php` 一族 4 行壳子，**已全部迁掉**（一个注册表 + 一个视图），见 `README_category_pages_migration.md` |
+| 其它 | 34 | 分组页 / 历史页 / 账号页 / 工具页 |
 
-Flask 侧现有 **41 条路由**（`create_app().url_map`）。
+Flask 侧现有 **42 条路由**（`create_app().url_map`）。
 
-## 二、已迁的部分（7 个入口）
+## 二、已迁的部分（8 个入口）
 
 | PHP 页面 | Python | 备注 |
 |---|---|---|
@@ -33,6 +34,7 @@ Flask 侧现有 **41 条路由**（`create_app().url_map`）。
 | `submitholdings.php` | `POST /holdings/submit` | 穷举页"确认更新持仓"按钮 |
 | `submittransaction.php` | `POST /transactions/submit` | `core/submittransaction.py` 七动作 |
 | `submitstockoptions.php` | **只迁了 REPORT 分支** | 16 项里另 13 项的分派已在 `/stock/<symbol>/edit/<option>`，但**不是**走这个 POST 入口 |
+| **分类页 16 个** | `GET /category/<name>`，另有短路径 `GET /qdii` | 16 个 4 行壳子全部落到 `_mystockgroup.php`，所以做成一个注册表 + 一个视图；`_stocklink.php::GetCategoryArray()` 的数组与 `_getTitleStr()` / `_getMetaDescriptionStr()` 的文本都逐例对照过，见 `README_category_pages_migration.md` |
 
 ## 三、edit 族：16 项全部有去处（0 项未迁）
 
@@ -113,8 +115,8 @@ require('../../php/ui/_editcn.php');
 
 | 类别 | 缺口 | 证据 |
 |---|---|---|
-| **行业分类/股票菜单分组页** | 只迁了 `qdiicn.php`（`/qdii`）与两张"基金指数对照表"（`/fund/qdiilof`、`/fund/qdiietf`）。`chinaindexcn` / `chinainternetcn` / `biotechcn` / `commoditycn` / `chinafuturecn` / `hangsengcn` / `hstechcn` / `hsharescn` / `mscius50cn` / `oilfundcn` / `qqqfundcn` / `spyfundcn` / `btbondcn` / `qdiihkcn` / `qdiijpcn` / `qdiieucn` / `qdiimixcn` 共 17 个都**没有** | `calc/fundgroups.py` 的 `FUND_GROUPS` 只有 2 个键；实测 `/fund/qdiihk` 等 22 个名字全部 **404** |
-| **对比页** | `ahcomparecn.php` / `abcomparecn.php` / `adrhcomparecn.php` / `ahhistorycn.php` | 无对应路由；配对数据只出现在 `/stock/<symbol>` 的段落里 |
+| **行业分类页** | **2026-10-30 已全部迁掉**：`chinaindexcn` / `chinainternetcn` / `biotechcn` / `commoditycn` / `chinafuturecn` / `hangsengcn` / `hstechcn` / `hsharescn` / `mscius50cn` / `oilfundcn` / `qqqfundcn` / `spyfundcn` / `qdiihkcn` / `qdiijpcn` / `qdiieucn` / `qdiimixcn` 共 16 个 → `/category/<name>`（`qdiicn.php` 另有短路径 `/qdii`） | 见 `README_category_pages_migration.md`。**原判断是错的**：这里曾写成"`FUND_GROUPS` 加个键即可复用 `/fund/<group>`"，实测这些页根本不是"基金指数对照表"，而是 `_mystockgroup.php` 驱动的分类页（参考数据表 + 估值表）；`/fund/qdiihk` 之类的 404 是**另一个**东西（那 22 个名字本就不是分组名）。`btbondcn.php` 也不属于这一族（是公司介绍页，`_res.php`） |
+| **对比页** | `ahcomparecn.php` / `abcomparecn.php` / `adrhcomparecn.php` / `ahhistorycn.php` | 无对应路由；配对数据只出现在 `/stock/<symbol>` 的段落里。**注意**分类页家族里 `GetCategoryArray()` 还有 `ahcompare` / `abcompare` / `adrhcompare` 三个键，它们的数组来自配对表、还要渲染 AB/AH/ADR 三个段落，比这 16 个基金分类页重，未进本轮 |
 | **工具页** | `autotractorcn.php`（拖拉机自动化）/ `overnightcn.php`（义工群对比）/ `overnightcnhcn.php`（对冲计算器）/ `rotationtradingcn.php`（轮动交易） | 无对应路由 |
 | **账号体系** | `fundaccountcn.php`（`/account` 目前是演示数据，未切真库）；`member` 表 + 登录 + 分组可见性整体暂缓 | `WEB_MIGRATION_PLAN.md` T4b |
 | **博客/杂文** | `cateyescn.php`、`thanousparadoxcn.php`、`woody/blog/*` | 站点内容，不在迁移范围 |
@@ -133,8 +135,15 @@ require('../../php/ui/_editcn.php');
    写入口（`SqlGetIdByEmail` + `sql_get_my_stock_group_item_id`），季报 / 持仓
    **302 到专门页**；`editstockdividend` / `editstocksplit` 同日迁完
    （`_dividend_plan` / `_recalc_adjclose` / `_insert_split_transactions`）；
-5. 行业分组页：`FUND_GROUPS` 加键即可复用现有 `/fund/<group>` 全套服务；
-6. `deletesymbol.php` 最后做（要连带清 8 张表，风险最高）。
+5. ~~**行业分组页：`FUND_GROUPS` 加键即可复用 `/fund/<group>`**~~ —— 2026-10-30
+   已做，但**做法与原判断不同**：这 16 个页面不是对照表，而是
+   `_mystockgroup.php` 的分类页，所以新建了 `category_page_service` 注册表 +
+   `GET /category/<name>` 一个视图，见 `README_category_pages_migration.md`；
+   顺带查出 3 个分类的数组落后生产端（`chinaindex` / `qdiihk` / `qdiimix`），
+   那是 `core/stocksymbol.py` 的公共数组，单独排期；
+6. **`deletesymbol.php` 仍排在最后**（要连带清 8 张表，风险最高）；
+   `submitdividend` / `submitnetvalue` / `submithistory` 三个抓外部 JSON/XLS 的页
+   未动 —— 它们要联网、要有 fixture 才能对照，独立排期。
 
 ## 八、怎么自己复核一遍
 

@@ -40,3 +40,7 @@ python/dbtools/_snapshots/
 # 继续做对照。它是外部页面的快照：内容随生产端每天变，进版本库只会得到一份
 # 过期且无人维护的副本。需要时重跑对照脚本即可重新抓取。
 python/auto/_scratch/_qdiicn_prod.html
+# _prod_category_check.py 抓 16 个分类页 + qdii 的缓存（HTML 与线上行序 JSON）。
+# 同上：外部页面快照，需要时 `--fetch` 重抓；行序的含义见
+# python/auto/README_category_pages_migration.md §6.2。
+python/auto/_scratch/_prod_category_cache/
