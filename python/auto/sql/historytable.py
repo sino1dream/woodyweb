@@ -978,6 +978,28 @@ class StockHistorySql(DailyCloseSql):
         row = self.get_record(stock_id, date)
         return row["volume"] if row else "0"
 
+    def delete_by_zero_volume(self, stock_id: Any) -> int:
+        """``DeleteByZeroVolume($strStockId)``（``php/sql/sqlstocksymbol.php:60``）。
+
+        ``DELETE ... WHERE volume = '0' AND stock_id = N`` —— 删掉"成交量是 0"的
+        假交易日。**调用点是 ``UpdateYahooHistoryChart()`` 结尾那一句，而且是无条件
+        执行的**：PHP 源码里包着它的 ``if ($ref->IsSymbolA() || $ref->IsSymbolH())``
+        被注释掉了（``php/stock/yahoostock.php:477-479``），注释写着
+        "Yahoo has wrong Chinese and Hongkong holiday record with '0' volume"
+        —— 也就是说 A 股/港股需要、美股其实也需要，索性全清。
+
+        这不是可选的收尾：抓回来的窗口里只要有一行 0 成交量（假期），均线、
+        ``get_from_date()`` 的取样、K 线都会跟着歪，所以每次抓完都扫一遍。
+
+        返回删除行数（PHP 返回布尔）。
+        """
+        if stock_id is False or stock_id is None:
+            return 0
+        return self._execute(
+            "DELETE FROM `%s` WHERE volume = '0' AND stock_id = %%s" % self.table,
+            (stock_id,),
+        )
+
     def get_adjclose(self, stock_id: Any, date: Any, strict: bool = False) -> Any:
         """对应 PHP ``GetAdjClose()``（``php/sql/sqlstocksymbol.php:83``）。
 
@@ -1096,6 +1118,64 @@ class StockHistorySql(DailyCloseSql):
                 ),
             )
         )
+
+
+class StockHistoryDateSql:
+    """``stockhistorydate`` 表：每只标的最新一条**行情**的日期。
+
+    对应 PHP ``php/sql/sqldate.php:29`` 的 ``StockHistoryDateSql extends DateSql``
+    （``DateSql extends ValSql``，只有 ``id`` + ``date`` 两列）。
+
+    ## 这张表干什么用
+
+    ``UpdateYahooHistoryChart()``（``php/stock/yahoostock.php:407``）进来第一件事
+    就是拿它比对::
+
+        if ($strCurDate == $date_sql->ReadDate($strStockId)) return false;   // 已经更新过
+
+    也就是说它是"这只标的的历史抓到哪天"的**水位线**，防止同一天重复抓几 MB
+    的日线。抓完再 ``WriteDate($strStockId, $strCurDate)`` 把水位推上去。
+
+    ## 条件列是 ``id`` 不是 ``stock_id``
+
+    与 ``holdingsdate`` 同一个坑（``holdingstable.py`` 模块文档记着）：
+    表里没有 ``stock_id`` 列，写 ``WHERE stock_id =`` 会**静默返回空**。
+    这里的 SQL 一律用 ``id``。
+    """
+
+    def __init__(self, connection: Any):
+        self.connection = connection
+        self.table = "stockhistorydate"
+
+    def _fetchone(self, sql: str, params: tuple = ()) -> Any:
+        cursor = self.connection.cursor()
+        try:
+            cursor.execute(sql, params)
+            row = cursor.fetchone()
+            return dict(row) if row else None
+        finally:
+            cursor.close()
+
+    def read_date(self, stock_id: Any) -> Any:
+        """对应 PHP ``ReadDate()``：水位线日期；没有返回 ``None``。"""
+        row = self._fetchone(
+            "SELECT `date` FROM `%s` WHERE id = %%s LIMIT 1" % self.table,
+            (stock_id,),
+        )
+        return row["date"] if row else None
+
+    def write_date(self, stock_id: Any, date: Any) -> Any:
+        """对应 PHP ``WriteDate()``：``id`` 是主键，upsert 语义。"""
+        cursor = self.connection.cursor()
+        try:
+            cursor.execute(
+                "INSERT INTO `%s` (id, `date`) VALUES (%%s, %%s) "
+                "ON DUPLICATE KEY UPDATE `date` = %%s" % self.table,
+                (stock_id, date, date),
+            )
+            return cursor.lastrowid
+        finally:
+            cursor.close()
 
 
 class DailyTimeSql(DailyCloseSql):

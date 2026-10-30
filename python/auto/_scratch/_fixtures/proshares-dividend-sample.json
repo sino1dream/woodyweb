@@ -1,0 +1,6 @@
+[
+ {"CashDividendPerShare": 0.275411, "Dividend": 0.275411, "EffectiveDate": "2024-12-20T00:00:00", "ExDate": "2024-12-23T00:00:00", "LongTermCapGains": "", "OtherPerShare": "", "PayableDate": "2024-12-31T00:00:00", "RecordDate": "2024-12-23T00:00:00", "ReturnOfCapital": "", "ShortTermCapGains": "", "SpecialPerShare": "", "Symbol": "TQQQ"},
+ {"CashDividendPerShare": 0.230214, "Dividend": 0.230214, "EffectiveDate": "2024-09-24T00:00:00", "ExDate": "2024-09-25T00:00:00", "LongTermCapGains": "", "OtherPerShare": "", "PayableDate": "2024-10-02T00:00:00", "RecordDate": "2024-09-25T00:00:00", "ReturnOfCapital": "", "ShortTermCapGains": "", "SpecialPerShare": "", "Symbol": "TQQQ"},
+ {"CashDividendPerShare": 0.282777, "Dividend": 0.282777, "EffectiveDate": "2024-06-25T00:00:00", "ExDate": "2024-06-26T00:00:00", "LongTermCapGains": "", "OtherPerShare": "", "PayableDate": "2024-07-03T00:00:00", "RecordDate": "2024-06-26T00:00:00", "ReturnOfCapital": "", "ShortTermCapGains": "", "SpecialPerShare": "", "Symbol": "TQQQ"},
+ {"CashDividendPerShare": 0.215144, "Dividend": 0.215144, "EffectiveDate": "2024-03-19T00:00:00", "ExDate": "2024-03-20T00:00:00", "LongTermCapGains": "", "OtherPerShare": "", "PayableDate": "2024-03-27T00:00:00", "RecordDate": "2024-03-21T00:00:00", "ReturnOfCapital": "", "ShortTermCapGains": "", "SpecialPerShare": "", "Symbol": "TQQQ"}
+]

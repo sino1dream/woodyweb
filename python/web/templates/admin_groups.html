@@ -14,6 +14,9 @@
   <p class="table-note">
     共 {{ rows|length }} 个分组。
     <a href="{{ url_for('admin.group_new') }}">新建分组</a>
+    {# 抓取工具页（三个 submit*.php 的合并入口）—— 分组页是 /admin 的入口，
+       把它挂在这里最容易被找到；反向链接在 submit_tools.html 里。 #}
+    · <a href="{{ url_for('submit.index') }}">抓取工具</a>
   </p>
 
   <table class="data-table admin-groups">

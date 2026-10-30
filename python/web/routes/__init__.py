@@ -15,6 +15,7 @@ from web.routes.portfolio import portfolio_bp
 from web.routes.quote import quote_bp
 from web.routes.status import status_bp
 from web.routes.stock import stock_bp
+from web.routes.submit import submit_bp
 from web.routes.transactions import transactions_bp
 
 
@@ -41,3 +42,6 @@ def register_blueprints(app: Flask) -> None:
     # 后台管理（stockgroup/stockgroupitem 增删改查）—— 2026-10-16 立项，
     # 登录态未接，页面有常驻说明。见 auto/README_stockgroupsql_migration.md
     app.register_blueprint(admin_bp)
+    # 三个"抓外部数据写库"的后台动作（woody/res/submitdividend.php 一族）——
+    # 一张工具页 + 三个 POST 端点。见 auto/README_submit_pages_migration.md
+    app.register_blueprint(submit_bp)

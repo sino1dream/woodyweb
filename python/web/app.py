@@ -101,6 +101,9 @@ def create_app(
     fundlist_link_builder: Any = None,
     fundlist_refs_builder: Any = None,
     admin_source_factory: Any = None,
+    #: 抓取工具页（``/submit``，三个 ``submit*.php``）的数据源工厂 ——
+    #: 与 ``admin_source_factory`` 同一套路：注入后不连库。
+    submit_source_factory: Any = None,
     #: 交易页（web/routes/transactions.py）的数据源工厂 —— 与
     #: ``admin_source_factory`` 同一套路：缺省 None → 请求级库连接，
     #: 测试注入假数据源即可不连库。
@@ -213,6 +216,10 @@ def create_app(
     # 请求级库连接（web.db.get_db）；测试注入假数据源即可不连库。
     if admin_source_factory is not None:
         app.extensions["admin_source_factory"] = admin_source_factory
+    # 抓取工具页（web/routes/submit.py）的数据源工厂。与 admin 同一套路：
+    # 缺省 None → 路由现场用请求级库连接；测试注入假数据源即可不连库。
+    if submit_source_factory is not None:
+        app.extensions["submit_source_factory"] = submit_source_factory
     if transactions_source_factory is not None:
         app.extensions["transactions_source_factory"] = (
             transactions_source_factory)

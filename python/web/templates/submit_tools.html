@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+{% block title %}后台 · 抓取工具 - Palmmicro Python Web{% endblock %}
+{% block content %}
+  {# 三个 woody/res/submit*.php 的合并入口。PHP 那三页没有可见内容
+     （AdminProcess 跑完就 SwitchToSess 跳回），所以这里做成一张工具表：
+     一个符号框 + 三行动作，每行显示目标表现状，便于判断"要不要点"。 #}
+  <h1>后台 · 抓取工具</h1>
+  <p class="hint">
+    三张 PHP 页面（<code>submitdividend.php</code> /
+    <code>submitnetvalue.php</code> / <code>submithistory.php</code>）在
+    生产端都是"点一下就把外部数据抓进库"的管理员动作，跑完跳回、页面上
+    什么也看不到。这里合成一张表：填符号 → 看现状 → 点哪一行就抓哪一路。
+    <strong>写操作一律 POST</strong>；非管理员点不动。
+  </p>
+  <p class="table-note">
+    <a href="{{ url_for('admin.groups') }}">← 回分组管理</a>
+  </p>
+
+  <form method="get" action="{{ url_for('submit.index') }}" class="submit-lookup">
+    <label for="symbol">符号</label>
+    <input id="symbol" name="symbol" value="{{ symbol }}" placeholder="SPY / QQQ / XOP / ^NDX"
+           autocomplete="off" size="12">
+    <button type="submit">查看现状</button>
+    <span class="hint">三类工具的目标表不同，符号不一定要是 ETF —— 只有「历史价格」对指数也成立。</span>
+  </form>
+
+  {% if status %}
+    {% if not status.stock_id %}
+      <p class="warning">数据库 <code>stock</code> 表里没有
+        <code>{{ status.symbol }}</code> 这个符号 —— 三个工具都会拒绝执行
+        （PHP 那边会静默什么都不做）。先把它加进符号表。</p>
+    {% else %}
+      <p class="table-note">
+        <code>{{ status.symbol }}</code> 的现状（stock_id = {{ status.stock_id }}）：
+        分红 {{ status.dividend.count }} 条{% if status.dividend.latest %}（最新 {{ status.dividend.latest }}）{% endif %} ·
+        净值 {{ status.netvalue.count }} 条{% if status.netvalue.latest %}（最新 {{ status.netvalue.latest }}）{% endif %} ·
+        历史 {{ status.history.count }} 条{% if status.history.latest %}（最新 {{ status.history.latest }}）{% endif %}
+        · 历史水位线 {{ status.history.watermark or "未记录" }}
+      </p>
+    {% endif %}
+  {% endif %}
+
+  <table class="data-table submit-tools">
+    <thead>
+      <tr>
+        <th style="width: 150px;">工具</th>
+        <th>数据源</th>
+        <th style="width: 210px;">写入</th>
+        <th style="width: 300px;">操作</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for tool in tools %}
+        <tr>
+          <td>
+            <strong>{{ tool.title }}</strong><br>
+            <span class="hint"><code>{{ tool.php }}</code></span>
+          </td>
+          <td>
+            {{ tool.sources }}<br>
+            <span class="hint">{{ tool.note }}</span>
+          </td>
+          <td><code>{{ tool.writes }}</code></td>
+          <td>
+            <form method="post" action="{{ url_for('submit.run', name=tool.key) }}"
+                  class="submit-form"
+                  onsubmit="return confirm('确认对 ' + document.getElementById('tool-symbol-{{ tool.key }}').value + ' 执行「{{ tool.title }}」？');">
+              <input id="tool-symbol-{{ tool.key }}" name="symbol"
+                     value="{{ symbol }}" placeholder="符号" autocomplete="off" size="10"
+                     {% if not is_admin %}disabled{% endif %}>
+              <button type="submit" {% if not is_admin %}disabled{% endif %}>执行</button>
+            </form>
+          </td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <p class="hint">
+    已知限制：<strong>Proshares 的分红接口</strong>现在被 Cloudflare 拦（403），
+    TQQQ 这类非 SPDR 符号会报"没取到数据"；<strong>iShares 的老式 .xls</strong>
+    本版不解析；<strong>Yahoo 日线</strong>已全面 403，历史价格改抓新浪。
+    细节见 <code>python/auto/README_submit_pages_migration.md</code>。
+  </p>
+{% endblock %}

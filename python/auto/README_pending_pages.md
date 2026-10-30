@@ -1,7 +1,7 @@
 # 剩余未迁页面清单（"生产端未展示页面"及其它）
 
 > 复核日期：2026-10-30
-> 判定依据：`woody/res/*.php` 全量清点 + Flask `url_map` 42 条路由 + 真库/测试客户端实测
+> 判定依据：`woody/res/*.php` 全量清点 + Flask `url_map` 44 条路由 + 真库/测试客户端实测
 > 本文只记**现状与缺口**，已完成项的细节见各自的 `README_*_migration.md`
 
 ## 一、这一批指什么
@@ -16,13 +16,13 @@
 |---|---|---|
 | 按符号生成的详情页 | 131 | `sh513100cn.php` 这类，靠 URL 参数生成，Python 用 `/fund/<symbol>`、`/stock/<symbol>` 一个路由覆盖 |
 | **edit 族** | 3 | `_editstockoption.php` 的 16 项分派表**全部有去处**（14 项由同一个路由承担、2 项跳专门页），另 3 个独立页 |
-| **submit 族** | 4 | 表单 POST 目标（其中 `submitstockoptions` 的 11 个分支已由编辑页承接） |
+| **submit 族** | 4 | 表单 POST 目标：3 个抓外部数据的页已迁（`POST /submit/xxx`），`submitstockoptions` 的分支由编辑页承接 |
 | 分类页 | 16 | `biotechcn.php` 一族 4 行壳子，**已全部迁掉**（一个注册表 + 一个视图），见 `README_category_pages_migration.md` |
 | 其它 | 34 | 分组页 / 历史页 / 账号页 / 工具页 |
 
-Flask 侧现有 **42 条路由**（`create_app().url_map`）。
+Flask 侧现有 **44 条路由**（`create_app().url_map`）。
 
-## 二、已迁的部分（8 个入口）
+## 二、已迁的部分（9 个入口）
 
 | PHP 页面 | Python | 备注 |
 |---|---|---|
@@ -34,6 +34,7 @@ Flask 侧现有 **42 条路由**（`create_app().url_map`）。
 | `submitholdings.php` | `POST /holdings/submit` | 穷举页"确认更新持仓"按钮 |
 | `submittransaction.php` | `POST /transactions/submit` | `core/submittransaction.py` 七动作 |
 | `submitstockoptions.php` | **只迁了 REPORT 分支** | 16 项里另 13 项的分派已在 `/stock/<symbol>/edit/<option>`，但**不是**走这个 POST 入口 |
+| `submitdividend.php` / `submitnetvalue.php` / `submithistory.php` | `GET /submit`（工具页）+ `POST /submit/<name>`（`dividend` / `netvalue` / `history`） | 三页在 PHP 里都零输出、且入口链接点不到，所以合成一张工具页；细节见 `README_submit_pages_migration.md` |
 | **分类页 16 个** | `GET /category/<name>`，另有短路径 `GET /qdii` | 16 个 4 行壳子全部落到 `_mystockgroup.php`，所以做成一个注册表 + 一个视图；`_stocklink.php::GetCategoryArray()` 的数组与 `_getTitleStr()` / `_getMetaDescriptionStr()` 的文本都逐例对照过，见 `README_category_pages_migration.md` |
 
 ## 三、edit 族：16 项全部有去处（0 项未迁）
@@ -94,14 +95,20 @@ require('../../php/ui/_editcn.php');
 细节与对照见 `README_stock_option_edit_migration.md` §八（申购金额 / 跳转）、
 §七（分红拆股）、§十（19 + 14 + 19 + 11 例）。
 
-## 四、submit 族：还剩 3 个页面（+ `submitstockoptions` 的 6 个分支）
+## 四、submit 族：三个抓取页 2026-10-30 迁完（`submitstockoptions` 仍有 2 个分支在专门页）
 
 | 页面 | 干什么 | 状态 |
 |---|---|---|
 | `submitstockoptions.php` | `_editstockoptionform` 的 POST 目标，按选项分派到 15 张表 | 16 项里 **14 项**已由 `/stock/<symbol>/edit/<option>` 的 POST 承接（走服务层分派，不复用这个文件）；另 2 项在专门页提交 |
-| `submitdividend.php` | 抓 SPDR 官方分红（`ssga.com` JSON）写 `stockdividend` | 未迁 |
-| `submitnetvalue.php` | 抓 Invesco / SPDR 官方净值写 `netvaluehistory` | 未迁 |
-| `submithistory.php` | 管理员刷新 Yahoo 历史图表（`UpdateYahooHistoryChart`） | 未迁 |
+| `submitdividend.php` | 抓 SPDR / Proshares 分红 JSON 写 `stockdividend` | **已迁** → `POST /submit/dividend` |
+| `submitnetvalue.php` | 抓 Invesco JSON / SPDR xlsx 写 `netvaluehistory`（+`shareshistory`） | **已迁** → `POST /submit/netvalue` |
+| `submithistory.php` | 管理员刷新历史日线（`UpdateYahooHistoryChart`） | **已迁** → `POST /submit/history`（Yahoo 已 403，改抓新浪） |
+
+三页在 PHP 里都没有可见输出（`AdminProcess()` 跑完就 `SwitchToSess()`），
+而且 `submitdividend` / `submitnetvalue` 的管理员链接挂在两页未迁的展示页上、
+`submithistory` 的链接函数 `GetUpdateStockHistoryLink()` **没有任何调用点** ——
+所以本地合成一张工具页 `GET /submit` + 三个 POST 端点。细节与对照见
+`README_submit_pages_migration.md`。
 
 ## 五、其它未展示的杂项页
 
@@ -142,8 +149,10 @@ require('../../php/ui/_editcn.php');
    同日查出并修掉 3 个分类的数组落后生产端（`chinaindex` 27 / `qdiihk` 38 /
    `qdiimix` 15，见该文 §七）。现在 `_prod_category_check.py` 是 17/17 一致；
 6. **`deletesymbol.php` 仍排在最后**（要连带清 8 张表，风险最高）；
-   `submitdividend` / `submitnetvalue` / `submithistory` 三个抓外部 JSON/XLS 的页
-   未动 —— 它们要联网、要有 fixture 才能对照，独立排期。
+   ~~`submitdividend` / `submitnetvalue` / `submithistory` 三个抓外部 JSON/XLS 的页未动~~
+   —— **2026-10-30 已迁**（`GET /submit` + 三个 POST），对照 19 例、真库 smoke 见
+   `README_submit_pages_migration.md`。左侧真正的缺口只剩 `deletesymbol` 与
+   `uploadfile`（后者本地用 `dbtools/seed_*` 顶替，不建议迁）。
 
 ## 八、怎么自己复核一遍
 

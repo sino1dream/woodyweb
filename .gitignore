@@ -44,3 +44,20 @@ python/auto/_scratch/_qdiicn_prod.html
 # 同上：外部页面快照，需要时 `--fetch` 重抓；行序的含义见
 # python/auto/README_category_pages_migration.md §6.2。
 python/auto/_scratch/_prod_category_cache/
+
+# 六、页面/截图快照与二进制抓取物
+# _scratch 下的 .html（抓下来的页面）与 .png（截图）都是"某次会话的观测量"，
+# 进版本库只会积压过期副本；脚本（.py/.php）与小体积 JSON 输入才是要留的。
+python/auto/_scratch/*.html
+python/auto/_scratch/*.png
+# 改真库前的 mysqldump 备份（submit 族 smoke 用），随机器而异，几百 KB 起步。
+python/auto/_scratch/_db_backup/
+
+# 七、外部数据的二进制 fixture
+# submit 族三页（分红 / 净值 / 历史）的对照 fixture 目录里，JSON 是真实样本的
+# 全文（几百字节到十几 KB，进版本库便于离线复现解析差异）；xlsx / 老式 xls 是
+# 二进制且在几十万字节量级。来源 URL 与重抓命令见
+# python/auto/_scratch/_fixtures/README.md；单测不依赖这个目录（样本以常量形式
+# 写在 auto/test_submitupdaters.py 里）。
+python/auto/_scratch/_fixtures/*.xlsx
+python/auto/_scratch/_fixtures/*.xls
