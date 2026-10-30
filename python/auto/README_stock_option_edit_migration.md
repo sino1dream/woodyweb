@@ -336,6 +336,10 @@ D:\python\python.exe -B dbtools\seed_option_tables.py --apply    # 真建表
 `E:\mysqldata\stock_data_20261030_091058.sql`（820.55 KB / 30 张表），
 建完库从 30 张变 33 张，幂等复查通过。
 
+三张表现在都有页面写了（`editsharesdiff` / `editstockdividend` /
+`editstocksplit`）。**顺序不能反**：缺表时那三页会带着驱动异常渲染
+（`get_form` 里有 `try`），先把表建好再写。
+
 ## 九、PHP 逐例对照：19 个操作 + 14 例校准写入 + 19 例分红拆股
 
 `_scratch/_php_optionstore_check.php` 在本地库建三张临时表
