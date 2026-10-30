@@ -153,6 +153,22 @@ class SqliteConnection:
             "`filled` TEXT NOT NULL DEFAULT '', `remark` TEXT NOT NULL DEFAULT '')"
         )
 
+    def create_member(self, rows: list = ()) -> None:
+        """``member`` 表；``rows`` 是 ``(id, email)`` 二元组。
+
+        账号体系整体暂缓，编辑页只用到 ``SqlGetIdByEmail`` 这一条查询
+        （``editstockamount`` 要 email → member id）。列只建这一条查询碰得着
+        的：``id`` 与 ``email``。
+        """
+        self._conn.execute(
+            "CREATE TABLE `member` (`id` INTEGER PRIMARY KEY, `email` TEXT UNIQUE NOT NULL)"
+        )
+        for member_id, email in rows:
+            self._conn.execute(
+                "INSERT INTO `member` (`id`, `email`) VALUES (?, ?)",
+                (member_id, email),
+            )
+
     def insert_daily(self, table: str, stock_id: Any, date: str, close: Any,
                      extra_columns: str = "", extra_values: tuple = ()) -> None:
         columns = "`stock_id`, `date`, `close`"

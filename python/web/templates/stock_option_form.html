@@ -28,16 +28,18 @@
     <ul class="flash"><li>{{ error }}</li></ul>
   {% endif %}
 
-  {% if not admin %}
+  {% if not editable %}
     <p class="hint">
-      当前身份不是管理员，只能查看不能写。本地演示环境默认就是管理员身份
+      当前身份没有这一项的写权限，只能查看。本地演示环境默认就是管理员身份
       （<code>web/services/admin_auth.py</code>）；要把自己切成非管理员来验权限，
       设环境变量 <code>PALMMICRO_ADMIN_EMAIL=someone@example.com</code> 即可。
+      唯一的例外是「基金申购金额」—— 那是会员级入口，登录就能改自己名下那一行。
     </p>
   {% endif %}
 
   {% if form.notice %}
-    {# 符号不在库 / 该项未迁：只摆提示，不摆表单 —— 让人先填一遍再被拒没意义 #}
+    {# 符号不在库 / 该项未迁 / 会员级那一项找不到分组项：只摆提示，不摆表单
+       —— 让人先填一遍再被拒没意义 #}
     <p class="hint">{{ form.notice }}</p>
   {% elif form.option.migrated %}
     <form class="admin-form" method="post"
@@ -46,7 +48,7 @@
         <label for="date">日期</label><br />
         <input type="text" id="date" name="date" size="12" value="{{ form.date }}"
                class="textfield"
-               {% if not form.date_enabled %}disabled{% elif not admin %}readonly{% endif %} />
+               {% if not form.date_enabled %}disabled{% elif not editable %}readonly{% endif %} />
         {% if not form.date_enabled %}
           <span class="table-note">这一项没有日期（整份替换）。</span>
         {% endif %}
@@ -54,11 +56,11 @@
       <p>
         <label for="value">值</label><br />
         <textarea id="value" name="value" rows="6" cols="75"
-                  {% if not admin %}readonly{% endif %}>{{ form.value }}</textarea>
+                  {% if not editable %}readonly{% endif %}>{{ form.value }}</textarea>
       </p>
       <p>
         <button type="submit" name="submit" value="{{ form.option.submit }}"
-                {% if not admin %}disabled{% endif %}>{{ form.option.submit }}</button>
+                {% if not editable %}disabled{% endif %}>{{ form.option.submit }}</button>
         <a href="{{ url_for('stock.stock_option_index', symbol=symbol) }}">全部可编辑项</a>
       </p>
     </form>

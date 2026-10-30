@@ -14,10 +14,11 @@
 > * `python/web/templates/stock_option_{index,form}.html`
 > * `python/dbtools/seed_option_tables.py`（演示库缺的三张表 DDL）
 >
-> 单测：`auto/test_optionstore.py`（25 个）+ `web/tests/test_stock_option_edit.py`（86 个）。
+> 单测：`auto/test_optionstore.py`（25 个）+ `web/tests/test_stock_option_edit.py`（101 个）。
 > 逐例对照：`auto/_scratch/_php_optionstore_compare.py`（19 个操作全一致）+
 > `auto/_scratch/_php_calibration_write_compare.py`（14 例全一致）+
-> `auto/_scratch/_php_dividend_split_compare.py`（19 例：14 一致 / 5 按设计差异 / 0 失败）。
+> `auto/_scratch/_php_dividend_split_compare.py`（19 例：14 一致 / 5 按设计差异 / 0 失败）+
+> `auto/_scratch/_php_amount_compare.py`（11 例全一致）。
 
 ## 一、为什么用"一个路由顶 16 个页面"
 
@@ -38,7 +39,7 @@ require('../../php/ui/_editcn.php');
 
 * **可发现**：PHP 那 16 页不进任何导航（`GetStockMenuLinks()`、`EchoLinks()`
   都没有入口），只能手敲 URL。这里补了一个索引页 `/stock/<symbol>/edit`，
-  已迁的直接给链接、未迁的写明理由；
+  可写的直接给链接，有专门页的指过去 —— 16 项一个都不落下；
 * **口径集中**：`empty('0')` → 删除、`WriteDaily` 的容差、周末闸门，
   全都收在服务层一处，16 个页面不可能各自跑偏；
 * **写入口带守卫**：PHP 的表单没有"表不存在"这条分支（演示库比生产端少
@@ -56,31 +57,33 @@ PHP 用 `array_search()` 反查，改顺序会让分派错位；本版靠 key �
 | 2 | `editfund` | 修改对应配对代码和仓位 | `fundpair` + `fundposition` + `calibrationhistory` + `lastcalibration` | 无 | **已迁** |
 | 3 | `editnetvalue` | 修改净值 | `netvaluehistory` | 净值表 | **已迁** |
 | 4 | `editpremium` | 期货升水 | `futurepremium` | `futurepremium` | **已迁** |
-| 5 | `editquarterreport` | 修改季报持仓 | `quarterreport` | 无 | 已有专门页 |
+| 5 | `editquarterreport` | 修改季报持仓 | `quarterreport` | 无 | **跳专门页**（§八） |
 | 6 | `editsharesdiff` | 场内新增(万) | `sharesdiff` | `shareshistory` | **已迁** |
 | 7 | `editstock` | 修改股票说明 | `stock.name` | 无 | **已迁** |
 | 8 | `editstockadr` | 修改H股对应ADR代码 | `adrpair` + `fundposition` | 无 | **已迁** |
 | 9 | `editstockah` | 修改A股对应H股代码 | `ahpair` | 无 | **已迁** |
-| 10 | `editstockamount` | 基金申购金额 | `groupitemamount` | 无 | 未迁（账号体系） |
+| 10 | `editstockamount` | 基金申购金额 | `groupitemamount` | 无 | **已迁**（会员级，§八） |
 | 11 | `editstockclose` | 更新收盘价 | `stockhistory`（只改已有行） | 昨收那天 | **已迁** |
 | 12 | `editstockdividend` | 分红 | `stockdividend` + 复权重算 | 行情表 | **已迁**（§七） |
 | 13 | `editstockema` | 修改200/50日EMA | `stockema200` + `stockema50` | 行情表 | **已迁** |
 | 14 | `editstockha` | 修改H股对应A股代码 | `ahpair` | 无 | **已迁** |
-| 15 | `editstockholdings` | 修改持仓 | `holdings` + `holdingsdate` + `fundposition` | 无 | 已有入口 |
+| 15 | `editstockholdings` | 修改持仓 | `holdings` + `holdingsdate` + `fundposition` | 无 | **跳专门页**（§八） |
 | 16 | `editstocksplit` | 拆股或合股 | `stocksplit` + `stockhistory` 全序列 | 行情表 | **已迁**（§七） |
 
-**已迁 13 项，未迁 3 项。** 未迁的分两类，理由直接写在 `StockOptionSpec.note`
-里，页面照原样显示 —— 不做成"能点但会算错"的按钮：
+**16 项都有去处：14 项在本页可写，2 项跳到专门页，没有"未迁"。**
 
-1. **已有专门页**：`editquarterreport` → `/holdings/quarter/<symbol>`；
-   `editstockholdings` → 穷举持仓页的「确认更新持仓」（`POST /holdings/submit`）；
-2. **依赖账号体系**：`editstockamount` 要先用 member 邮箱 + 分组名换
-   `stockgroupitem.id`（`SqlGetMyStockGroupItemId`），账号体系整体暂缓。
+两种"不在这页写"的理由不同，所以分开说：
 
-第三类"**缺表 / 要连带重算**"原本有 3 项，现在都落地了：`editsharesdiff` 只是
-一天一个数字（`_updateOptionDailySql` 一条路）；`editstockdividend` /
-`editstocksplit` 的连带重算（校准值 / 自身净值 / 复权序列 / 拆股交易流水）
-收在 `_write_stockdividend` / `_write_stocksplit` 里，见 §七。
+* **会员级**：`editstockamount`（基金申购金额）—— PHP 的 `Process()` 里只有
+  这一支没有 `$bAdmin`，改的是登录会员**自己**名下那一行。写入口在本页，
+  闸门放到"有登录身份"（§八）；
+* **专门页**：`editquarterreport` → `/holdings/quarter/<symbol>`；
+  `editstockholdings` → 穷举持仓页的「确认更新持仓」（`POST /holdings/submit`）。
+  这两项**不重复实现**写入口，GET/POST 都 302 过去（§八）。
+
+"缺表 / 要连带重算"那三项也都落地了：`editsharesdiff` 只是一天一个数字
+（`_updateOptionDailySql` 一条路）；`editstockdividend` / `editstocksplit`
+的连带重算收在 `_write_stockdividend` / `_write_stocksplit` 里，见 §七。
 
 ## 三、三种表的形状，混用就会写坏
 
@@ -100,7 +103,7 @@ PHP 用 `array_search()` 反查，改顺序会让分派错位；本版靠 key �
 `IntSql extends ValSql` 才补字符串那套，`PairSql extends IntSql` 因为配对表的
 比较方式是字符串。本版第一版把 `write_string` 放在了 `ValStore` 上，是
 **PHP 探针报 `Call to undefined method ProbeValSql::WriteString()` 才发现的**
-（见 §九）。分层照抄，别"整理"。
+（见 §十）。分层照抄，别"整理"。
 
 **配对表的方向不能反**：`fundpair` 里 `id=SH513100, stock_id=^NDX` 表示
 "SH513100 跟踪 ^NDX"。`editstockah`（A 股页）与 `editstockha`（H 股页）
@@ -118,13 +121,13 @@ PHP 用 `array_search()` 反查，改顺序会让分派错位；本版靠 key �
 
 另有几处**容错**上的差异（不改语义）：
 
-* `get_form` 在符号不在 `stock` 表、或选项未迁时仍然渲染页面，只给
+* `get_form` 在符号不在 `stock` 表、或该项有专门页/缺少可写行时仍然渲染页面，只给
   `notice` 不摆表单；PHP 那边是 `EchoStockGroup()` 拿不到引用后直接空页。
 * `_read_value` 里各读函数外面包了 `try`，表缺了给空值；PHP 这些取数都在
   `try` 之外，缺表直接 500。演示库少表时"能看见取不到"比白屏有用。
 * `_prev_price` 两处都取不到时给**空串**。PHP 的 `rtrim0('')` 得到 `'0'`，
   那个值提交上去等于把收盘价改成 0 —— 宁可不给。
-* 未迁项的 POST 直接回错误、不写库（PHP 那边有 15 个能写的分支）。
+* 有专门页的两项，POST 也 302 过去（本页不接），一个字节都不写。
 
 ## 五、`_updateOptionDailySql` 的语义（最容易错的一条）
 
@@ -210,7 +213,7 @@ _updateOptionDailySql(..., $strVal);                            // 按日期删
 
 本版直接拒绝并说清缺什么。这一条是拿真 PHP 跑出来的：探针把
 `DivisionByZeroError` 记成 `throw:DivisionByZeroError:Division by zero`，
-所以它在对照表里是"设计差异"，不是"通过"（见 §九）。
+所以它在对照表里是"设计差异"，不是"通过"（见 §十）。
 
 ### 另一处只有对着真身跑才会看见的：周末闸门静默丢行
 
@@ -317,7 +320,86 @@ if (_updateOptionDailySql($div_sql, $strStockId, $strDate, $strVal))   // 写/�
 `704.4 → 70.44`）、校准 `41.136253 → 411.36253`，同一天再提交变成
 `7.044` / `4113.6253`（就是"再除一次"）。
 
-## 八、演示库缺的三张表
+## 八、剩下的三项：一个会员级写入口 + 两个跳转
+
+### `editstockamount`：PHP 里只有这一支没有 `$bAdmin`
+
+```php
+function _updateFundPurchaseAmount($strEmail, $strSymbol, $strVal)
+{
+    $strMemberId = SqlGetIdByEmail($strEmail);
+    $strStockId = SqlGetStockId($strSymbol);
+    if ($strMemberId && $strStockId && is_numeric($strVal))
+    {
+        if ($strGroupItemId = SqlGetMyStockGroupItemId($strMemberId, $strStockId))
+        {   $amount_sql = new GroupItemAmountSql();
+            $amount_sql->WriteString($strGroupItemId, $strVal);
+        }
+    }
+}
+```
+
+**定位链是这一项的全部难点**：`email → member.id → 分组名 = 符号 →
+stockgroup.id → 组里这只标的 → stockgroupitem.id → groupitemamount.num`。
+算术一步都没有。
+
+`SqlGetMyStockGroupItemId()` 用的分组名是 `SqlGetStockSymbol($stockId)`，也就是
+**符号本身**（`'SPY'`）—— 生产端"我的自选"当初就是这么建的。本地后台页
+（`/admin/groups`）**不允许**这种名字：与任何符号重名都会被加 `@` 前缀
+（`is_group_name_reserved`，对应 `_submitgroup.php:72`），所以演示库只能由
+`dbtools/seed_stock_group_tables.py` 灌一份样例（`DEMO_GROUPS["SPY"]`），
+否则这一项在本地"永远没有可写的对象"。
+
+三种"什么都不做"要分开说（PHP 一律静默，页面上看起来像提交成功）：
+
+| 情况 | PHP | 本版 |
+|---|---|---|
+| `member` 表里没这个邮箱 | 组合 `if` 直接假 | 提示邮箱 + 演示库的会员邮箱 + 怎么切身份 |
+| 没有「分组名 = 符号」的分组项 | 内层 `if` 为假 | 提示缺哪一行（申诉金额挂在 item 上） |
+| `is_numeric($strVal)` 为假 | 组合 `if` 直接假 | 提示"要是数字"，一个字节都不写 |
+
+读侧 `ReadAmount()` 读不到回落 **`'100000'`**（PHP 的默认申购金额），所以空白
+表单里显示的就是它；本版照抄，但**不摆表单** —— 没有可写的行时让人先填一遍
+再被拒没意义（PHP 那边往框里填一句 `出错了`，照样让人提交）。
+
+三条容易照错的细节：
+
+1. **`WriteString` 不是"空值即删除"**。它走 `WriteVal($id, $val, true)`：
+   字符串比较、不同就 `Update`、没有行就 `Insert`，**没有删除分支**。
+   于是 `'0'` 是**合法值**（写 0），而空串在 `is_numeric` 那一道就被挡掉了 ——
+   这一项**删不掉**记录，只能改数字。与 §五的 `empty('0')` 那套完全不是一回事；
+2. **`is_numeric` 的口径**：可选前后空白（PHP 7.0 起两边都允许）、正负号、
+   小数点、指数；`'0x1A'` / `'1_000'` / `'1,000'` 都不算。本版的
+   `_php_is_numeric()` 就是这条正则，别用 `float()` 硬转（`float(' 12 ')`
+   在 Python 里恰好也过，但 `float('1_000')` 会过而 PHP 不过）；
+3. **值是原样交给 MySQL 的**：`'50000.7'`、`' 12 '` 都往 `int` 列塞，
+   四舍五入/裁空白由 MySQL 做。本版只 `strip()`（为了让"同值再提交"能比较），
+   落库结果与 PHP 一致 —— 对照里 `write_decimal` / `write_spaces` 两例就是钉这个。
+
+**权限**：`member_level=True`。路由的 `editable = is_admin() or spec.member_level`，
+写的永远是**当前身份**（`current_admin_email()`）名下那一行 —— 会员级不是
+"绕过闸门"，而是"闸门本来就只到登录这一层"（PHP 的 `Account::Process()` 也是
+登录后才进来）。
+
+演示怎么试：本地会员邮箱是 `demo@palmmicro.com`（种子灌的），而默认演示身份是
+管理员邮箱，所以要么设 `PALMMICRO_ADMIN_EMAIL=demo@palmmicro.com`，要么给
+`woody@palmmicro.com` 建一条 `member`。
+
+### 季报 / 持仓：302，不重写
+
+`StockOptionSpec.route` 非空的两项，`/stock/<symbol>/edit/<option>` **GET 与
+POST 都 302** 到专门页（POST 额外 flash 一句"本页不接收"），索引页也不再给
+`<option>` 链接，直接指向：
+
+| 项 | 目标 | 为什么不在本页重写 |
+|---|---|---|
+| `editquarterreport` | `/holdings/quarter/<symbol>` | 那张表是 `DailyStringSql`：**没有**周末闸门、比较走 PHP 8 双轨数字比（#124），与日频表的两套口径完全不同 |
+| `editstockholdings` | `/holdings/exhaustive/<symbol>` | 写完还要连带 `fundposition`，逻辑在 `process_admin_holdings` 里，一套就够 |
+
+索引页因此分三段：**可在此页编辑（14）** / **另有专门页（2）** /
+**未迁（0 —— 空了就不渲染）**。留第三段是为了以后加新选项时不用改模板。
+
+## 九、演示库缺的三张表
 
 `sharesdiff` / `stockdividend` / `stocksplit` 在演示库里**根本没有**
 （生产端有，DDL 由 `DailyCloseSql::Create()` 落地）。`seed_option_tables.py`
@@ -340,7 +422,7 @@ D:\python\python.exe -B dbtools\seed_option_tables.py --apply    # 真建表
 `editstocksplit`）。**顺序不能反**：缺表时那三页会带着驱动异常渲染
 （`get_form` 里有 `try`），先把表建好再写。
 
-## 九、PHP 逐例对照：19 个操作 + 14 例校准写入 + 19 例分红拆股
+## 十、PHP 逐例对照：19 个操作 + 14 例校准 + 19 例分红拆股 + 11 例申购金额
 
 `_scratch/_php_optionstore_check.php` 在本地库建三张临时表
 `os_probe_val` / `os_probe_pair` / `os_probe_daily`，用**真**
@@ -473,7 +555,45 @@ D:\python\python.exe -B dbtools\seed_option_tables.py --apply    # 真建表
 脚本末尾会把基线灌回去，并**用同一套 select 重新数一遍**，`dirty` 非空就返回 2
 ——"跑完以为复原了、其实多了一行"是这类对照最容易留的尾巴。
 
-## 十、单测
+### 申购金额：11 例（这一组连靶子都要先造）
+
+`_php_amount_check.php` 照样拦掉 `CREATE TABLE`，于是 `sqlmember.php` /
+`sqlstockgroup.php` / `sqlstocksymbol.php` 整份 require ——
+`SqlGetIdByEmail()` / `SqlGetMyStockGroupItemId()` / `GroupItemAmountSql`
+全是真身。靶子（分组名 = 符号的那一行）由 Python 侧先造、跑完删掉：
+
+```
+靶子：member=1 group=8 item=16（分组名 SPY）
+基线：groupitemamount 0 行；符号 SPY = stock id 5
+= write_50000        一致（wrote / 写成 50000）
+= write_zero         一致（wrote / 写成 0）          ← '0' 是值，不是删除
+= write_negative     一致（wrote / 写成 -1）
+= write_decimal      一致（wrote / 写成 50000.7）    ← int 列，MySQL 自己四舍五入
+= write_spaces       一致（wrote / 写成 12）         ← PHP 不 strip、PY strip，落库同值
+= repeat_same        一致（unchanged / 没有变化）
+= repeat_differs     一致（wrote / 60000 最后一次赢）
+= write_non_numeric  一致（not_numeric / 拒绝）
+= write_empty        一致（not_numeric / 拒绝）      ← is_numeric('') 为假
+= no_item_symbol     一致（no_item / 拒绝）
+= no_member          一致（no_member / 拒绝）
+11 例全一致
+```
+
+每例之间把 `groupitemamount` 复原到基线（演示库里是空表），最后删掉靶子分组 +
+组项、重查一遍"分组剩 0 个、金额表 0 行"。**靶子先查后造**：`stockgroup` 里已经
+有同名分组就直接退出，不覆盖真数据。
+
+两个只有跑起来才会发现的坑：
+
+1. **子进程看不到 `.env`**。`load_mysql_env()` 把口令读进当前进程的
+   `os.environ`，但 `subprocess` 默认继承的是**启动时**的环境 —— 第一版 PHP
+   侧每例都 `Access denied for user 'root'`，而 Python 侧一切正常。要像上一组
+   那样显式 `env={**os.environ, **load_mysql_env(os.environ)}`；
+2. **`num` 是 `int` 列**，`'50000.7'` 与 `' 12 '` 都由 MySQL 自己转 ——
+   两边都别在 Python 里先转成 int，否则 `write_decimal` 会以"50000 vs 50001"
+   假报差异。
+
+## 十一、单测
 
 `auto/test_optionstore.py`（25 个）用**内存 sqlite**，两处方言差异在包装层抹平：
 
@@ -490,9 +610,9 @@ sqlite 的 `REAL` 列读回 `100.0`，`str()` 是 `"100.0"` 而非 `"100"` —�
 PHP 从 `double(13,6)` 读回来也是 `"100.000000"`，两边都会多写一次，
 结果一样。测试里写清这一点，别拿它当"应该相等"的证据。
 
-`web/tests/test_stock_option_edit.py`（86 个）用 `tests/sqlitedb.py` 的假连接
+`web/tests/test_stock_option_edit.py`（101 个）用 `tests/sqlitedb.py` 的假连接
 （`SqliteConnection` / `SqliteCursor` / `FakeSource`），覆盖：索引页 16 项、
-未知选项 404、符号不在库不摆表单、未迁项 GET/POST、13 项的默认值、
+未知选项 404、符号不在库不摆表单、专门页两项 302、14 项的默认值、
 日频写删、EMA 清空后回填、AH/HA 删除方向、ADR 比例、fund 三支解析、
 非管理员 POST 403、失败回填提交值、三个 PHP 口径助手
 （`_php_empty` / `_is_zero_text` / `_intval`）。
@@ -516,9 +636,15 @@ PHP 从 `double(13,6)` 读回来也是 `"100.000000"`，两边都会多写一次
   `0.047` / `4111.1`、成员流水两笔配平（`-100 @ 4.769` 与 `+1000 @ 0.4769`）
   + 预统计回填（`quantity=1000`、`record=3`）、`record = 0` 的成员跳过。
 
-全量：auto **1606** 绿、web **1033** 绿、`compileall` 干净。
+`StockOptionAmountTest`（11 个）盯会员级那一项：假库给会员 1（= 演示身份）与
+会员 2 各建一个「分组名 = 符号」的分组项，于是"只动自己那一行"是可断言的。
+覆盖：默认值 `100000`、写后回显、`'0'` 是值不是删除、非数字 / 空值拒绝、
+同值报"没有变化"、缺分组项 / 缺会员各自拒绝且一条写语句都没有、
+**换身份就写另一个会员那一行**、以及"非管理员也能 POST（会员级）"。
 
-## 十一、踩过的坑（写进 pitfalls 的）
+全量：auto **1606** 绿、web **1048** 绿、`compileall` 干净。
+
+## 十二、踩过的坑（写进 pitfalls 的）
 
 1. `WriteString` 一族在 `IntSql` 上，不在 `ValSql` 上；
 2. `ValSql` 的构造器接受表名，`CalibrationSql` **不接受** —— 后者多传的实参
@@ -546,12 +672,25 @@ PHP 从 `double(13,6)` 读回来也是 `"100.000000"`，两边都会多写一次
     `cal_sql` / `his_sql` / `net_sql` 三个属性，`GetId()` 才不空指针。
 12. **`CREATE TABLE` 可以在 `SqlDieByQuery()` 里拦掉**：`Create()` 只在表缺失时
     才建，本地表都在 → `sqlstocksymbol.php` / `sqlstockgroup.php` 能整份 require，
-    `Sql` 类与工厂函数就是真身。比逐句照抄方法体可靠得多（§九）。
+    `Sql` 类与工厂函数就是真身。比逐句照抄方法体可靠得多（§十）。
+13. **`WriteString` 没有删除分支**。`WriteVal($id, $val, true)` 只会
+    `Update` / `Insert`，所以金额表里 `'0'` 是**值**、空串则在 `is_numeric`
+    那一道就被挡掉了 —— "清空 = 删除"是 `_updateOptionDailySql` 的口径，
+    不属于这一族。
+14. **`SqlGetMyStockGroupItemId()` 要的分组名是符号本身**，而本地后台页
+    建分组时会因为与符号重名而加 `@` 前缀（`is_group_name_reserved`）——
+    两边各自都对，合起来的结果是"演示库里永远找不到那个分组"。
+    要试这一项，得靠 `dbtools/seed_stock_group_tables.py` 的 `DEMO_GROUPS["SPY"]`。
+15. **`subprocess` 看不到 `.env`**。`load_mysql_env()` 只改当前进程的
+    `os.environ`，子进程继承的是启动时的环境 —— PHP 侧会 `Access denied`，
+    而 Python 侧一切正常，特别容易误判成"PHP 没连上库"。
 
-## 十二、下一步
+## 十三、下一步
 
-* 剩 3 项：`editstockamount` 等账号体系（另外 2 项已有专门入口）；
+* **edit 族 16 项全部有去处**（14 项在本页写、2 项跳专门页），这一族收口；
 * `submit` 族还剩 3 个独立页：`submitdividend.php`（抓 SPDR 官方分红）、
   `submitnetvalue.php`（抓 Invesco / SPDR 官方净值）、`submithistory.php`
   （刷新 Yahoo 历史图表）；
-* `deletesymbol.php`（删标的，要连带清 8 张表）最后做，风险最高。
+* `deletesymbol.php`（删标的，要连带清 8 张表）最后做，风险最高；
+* 账号体系仍是整体暂缓的：`editstockamount` 只用到 `SqlGetIdByEmail` 一条查询，
+  接登录态时把 `current_admin_email()` 换成真实 session 即可。

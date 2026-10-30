@@ -8,13 +8,15 @@
 
 本文件验四件事：
 
-1. **分派**：16 项都在，11 项可写、5 项给出"未迁"的明确理由；
+1. **分派**：16 项都在 —— 14 项在本页可写（含会员级的"申购金额"），
+   2 项（季报 / 持仓）跳到各自的专门页；
 2. **默认值口径**：每项的日期与初始值照 ``_getStockOptionDate()`` /
    ``_getStockOptionVal()``；
 3. **写入语义**：日频表的"空值（含 ``'0'``）→ 删、否则 WriteDaily"、
    EMA 的"先清空再回填"、AH/HA 的**删除方向**、配对表的方向语义、
-   校准的"估算值 → 校准值"换算；
-4. **权限与错误**：非管理员 POST 403、不认识的选项 404、符号不在库时不摆表单。
+   校准的"估算值 → 校准值"换算、分红/拆股/申购金额的连带影响；
+4. **权限与错误**：非管理员 POST 403（会员级那一项除外）、不认识的选项 404、
+   符号不在库时不摆表单、专门页那一项一律 302。
 
 用内存 sqlite 假库（``tests/sqlitedb.py``）—— 理由写在那个模块的
 docstring 里：写方法都是"先查后写"，只有真数据库才分得清"写了"与"没写"。
@@ -33,13 +35,14 @@ for _path in (PYTHON_DIR, WEB_DIR):
         sys.path.insert(0, _path)
 
 from web.app import create_app  # noqa: E402
-from web.services.admin_auth import ENV_ADMIN_EMAIL  # noqa: E402
+from web.services.admin_auth import ADMIN_EMAIL, ENV_ADMIN_EMAIL  # noqa: E402
 from web.services.stock_option_service import (  # noqa: E402
     STOCK_OPTIONS,
     StockOptionService,
     _intval,
     _is_zero_text,
     _php_empty,
+    _php_is_numeric,
 )
 from web.tests.sqlitedb import FakeQuote, FakeSource, SqliteConnection  # noqa: E402
 
@@ -57,9 +60,18 @@ USCNY = 7
 SH510300 = 8
 SH518800 = 9
 
+#: 会员 1 = 演示登录身份；会员 2 = "别人"，用来验会员级写入口只动自己那一行。
+MEMBER_SELF = 1
+MEMBER_OTHER = 2
+#: 会员 1 名下"分组名 = 符号"的那个分组与组里这一行（``editstockamount`` 的靶子）。
+SELF_GROUP_ID = 7
+SELF_ITEM_ID = 7
+OTHER_GROUP_ID = 8
+OTHER_ITEM_ID = 8
+
 
 def build_connection() -> SqliteConnection:
-    """建一套够 11 个选项跑的假库。"""
+    """建一套够 14 个选项跑的假库。"""
     connection = SqliteConnection()
     connection.create_stock([
         (SZ161130, "SZ161130", "易方达纳斯达克100LOF"),
@@ -83,6 +95,28 @@ def build_connection() -> SqliteConnection:
     connection.create_daily("stockdividend")
     connection.create_daily("stocksplit")
     connection.create_group_tables()
+    connection.create_member([(MEMBER_SELF, ADMIN_EMAIL), (MEMBER_OTHER, "other@example.com")])
+    connection.create_val("groupitemamount", column="num", sql_type="INTEGER NOT NULL")
+    #: ``editstockamount`` 的靶子：会员 1 名下**分组名 = 符号**的那个分组
+    #: （PHP 的"我的自选"路径，``SqlGetMyStockGroupItemId``）。会员 2 也有一行
+    #: —— 用来验"只改自己名下那一行"。
+    connection.execute(
+        "INSERT INTO `stockgroup` (`id`, `member_id`, `groupname`) VALUES (?, ?, ?)",
+        (SELF_GROUP_ID, MEMBER_SELF, "SZ161130"),
+    )
+    connection.execute(
+        "INSERT INTO `stockgroup` (`id`, `member_id`, `groupname`) VALUES (?, ?, ?)",
+        (OTHER_GROUP_ID, MEMBER_OTHER, "SZ161130"),
+    )
+    #: ``record = 0``（没有成交过）—— 拆股流水那一支会跳过它们，见
+    #: ``_split_transaction_items`` 的 ``get_stock_id_array(True)``。
+    for group_id, item_id in ((SELF_GROUP_ID, SELF_ITEM_ID),
+                              (OTHER_GROUP_ID, OTHER_ITEM_ID)):
+        connection.execute(
+            "INSERT INTO `stockgroupitem` (`id`, `stockgroup_id`, `stock_id`, "
+            "`quantity`, `cost`, `record`) VALUES (?, ?, ?, ?, ?, ?)",
+            (item_id, group_id, SZ161130, 0, 0.0, 0),
+        )
     for table in ("ahpair", "adrpair", "fundpair"):
         connection.create_pair(table)
     connection.create_val("fundposition")
@@ -165,16 +199,26 @@ class StockOptionAppTest(unittest.TestCase):
         body = response.data.decode("utf-8")
         for spec in STOCK_OPTIONS:
             self.assertIn(spec.submit, body)
-        self.assertIn("已迁（13 项）", body)
-        self.assertIn("未迁（3 项）", body)
+        #: 14 项在本页可编辑 + 2 项有专门页（季报 / 持仓）= 16，没有"未迁"
+        self.assertIn("可在此页编辑（14 项）", body)
+        self.assertIn("另有专门页（2 项）", body)
+        self.assertNotIn("未迁（", body)
 
     def test_index_links_point_at_each_option(self):
         body = self.client.get("/stock/SZ161130/edit").data.decode("utf-8")
         self.assertIn("/stock/SZ161130/edit/editnetvalue", body)
         self.assertIn("/stock/SZ161130/edit/editcalibration", body)
         self.assertIn("/stock/SZ161130/edit/editstocksplit", body)
-        #: 未迁的项不给链接（避免点进去发现不能写）
-        self.assertNotIn('href="/stock/SZ161130/edit/editstockamount"', body)
+        #: 申购金额迁完之后也有链接了
+        self.assertIn("editstockamount", body)
+
+    def test_index_links_dedicated_pages(self):
+        """季报 / 持仓不给 ``<option>`` 链接，直接指专门页。"""
+        body = self.client.get("/stock/SZ161130/edit").data.decode("utf-8")
+        self.assertIn("/holdings/quarter/SZ161130", body)
+        self.assertIn("/holdings/exhaustive/SZ161130", body)
+        self.assertNotIn('href="/stock/SZ161130/edit/editquarterreport"', body)
+        self.assertNotIn('href="/stock/SZ161130/edit/editstockholdings"', body)
 
     # -- 未知选项 -----------------------------------------------------------
     def test_unknown_option_is_404(self):
@@ -187,22 +231,24 @@ class StockOptionAppTest(unittest.TestCase):
         self.assertIn("stock 表里没有符号 NOPE999", body)
         self.assertNotIn('<textarea', body)
 
-    # -- 未迁的项 -----------------------------------------------------------
-    def test_unmigrated_option_get_shows_reason_only(self):
-        body = self.client.get("/stock/SZ161130/edit/editstockamount").data.decode("utf-8")
-        self.assertIn("还没迁", body)
-        self.assertNotIn('<textarea', body)
+    # -- 有专门页的两项：一律跳转 -------------------------------------------
+    def test_dedicated_option_get_redirects(self):
+        for option, target in (
+            ("editquarterreport", "/holdings/quarter/SZ161130"),
+            ("editstockholdings", "/holdings/exhaustive/SZ161130"),
+        ):
+            response = self.client.get("/stock/SZ161130/edit/" + option)
+            self.assertEqual(response.status_code, 302, option)
+            self.assertTrue(response.headers["Location"].endswith(target), option)
 
-    def test_unmigrated_option_post_refuses_and_writes_nothing(self):
+    def test_dedicated_option_post_redirects_and_writes_nothing(self):
+        """POST 也弹到专门页：本页不接这一项的写（两处各写一份迟早跑偏）。"""
         before = len(self.connection.queries)
         response = self.client.post(
-            "/stock/SZ161130/edit/editstockamount",
-            data={"date": "2026-10-26", "value": "1000"},
+            "/stock/SZ161130/edit/editquarterreport",
+            data={"date": "2026-10-26", "value": "100"},
         )
-        self.assertEqual(response.status_code, 200)
-        body = response.data.decode("utf-8")
-        self.assertIn("还没迁", body)
-        #: 只有渲染期的 SELECT，一条写语句都没有
+        self.assertEqual(response.status_code, 302)
         writes = [
             sql for sql, _ in self.connection.queries[before:]
             if not sql.strip().upper().startswith("SELECT")
@@ -739,7 +785,7 @@ class StockOptionPermissionTest(unittest.TestCase):
     def test_non_admin_get_shows_readonly_form(self):
         os.environ[ENV_ADMIN_EMAIL] = "someone@example.com"
         body = self.client.get("/stock/SZ161130/edit/editnetvalue").data.decode("utf-8")
-        self.assertIn("只能查看不能写", body)
+        self.assertIn("没有这一项的写权限", body)
         self.assertIn("readonly", body)
         self.assertIn("disabled", body)
 
@@ -1061,7 +1107,7 @@ class StockOptionSplitTest(unittest.TestCase):
 
 
 class PhpSemanticsTest(unittest.TestCase):
-    """三个 PHP 口径助手各自的边界（写错会让删除/写入判断整体偏一位）。"""
+    """四个 PHP 口径助手各自的边界（写错会让删除/写入判断整体偏一位）。"""
 
     def test_php_empty(self):
         self.assertTrue(_php_empty(None))
@@ -1086,6 +1132,155 @@ class PhpSemanticsTest(unittest.TestCase):
         self.assertEqual(_intval("2"), 2)
         self.assertEqual(_intval("abc"), 0)
         self.assertEqual(_intval(None), 0)
+
+    def test_php_is_numeric(self):
+        """``is_numeric()``：十进制、可选正负号与指数，前后空白都允许。"""
+        for text in ("0", "100000", "-5", "+5", "1.5", ".5", "5.", " 12 ", "1e3", "1.2E-3"):
+            self.assertTrue(_php_is_numeric(text), text)
+        for text in ("", " ", "abc", "1e", "0x1A", "1,000", "1 2", None):
+            self.assertFalse(_php_is_numeric(text), text)
+
+
+class StockOptionAmountTest(unittest.TestCase):
+    """``editstockamount``：会员级写入口（``_updateFundPurchaseAmount``）。
+
+    PHP 原文（``_submitstockoptions.php:70``）::
+
+        $strMemberId = SqlGetIdByEmail($strEmail);
+        if ($strMemberId && $strStockId && is_numeric($strVal))
+        {   if ($strGroupItemId = SqlGetMyStockGroupItemId(...))
+                (new GroupItemAmountSql())->WriteString($strGroupItemId, $strVal);
+        }
+
+    三件事与其它 15 项不同：**不要求管理员**、**没有日期**、
+    **找不到分组项就什么都不做**（不是清空、不是报错）。这三条各有用例。
+    """
+
+    def setUp(self):
+        self.connection = build_connection()
+        self.service = build_service(self.connection, quote=None)
+        self._saved_env = os.environ.pop(ENV_ADMIN_EMAIL, None)
+
+    def tearDown(self):
+        os.environ.pop(ENV_ADMIN_EMAIL, None)
+        if self._saved_env is not None:
+            os.environ[ENV_ADMIN_EMAIL] = self._saved_env
+
+    def submit(self, value, symbol="SZ161130"):
+        return self.service.submit(symbol, "editstockamount", "", value)
+
+    def amount(self, item_id=SELF_ITEM_ID):
+        row = self.connection.single(
+            "SELECT num FROM `groupitemamount` WHERE id = ?", (item_id,))
+        return row["num"] if row else None
+
+    # -- 读 -----------------------------------------------------------------
+    def test_form_defaults_to_100000(self):
+        """``ReadAmount()`` 读不到回落 ``'100000'``（PHP 的默认申购金额）。"""
+        form = self.service.get_form("SZ161130", "editstockamount")
+        self.assertEqual(form["value"], "100000")
+        self.assertFalse(form["date_enabled"])
+        self.assertEqual(form["notice"], "")
+
+    def test_form_shows_existing_amount(self):
+        self.assertTrue(self.submit("50000")["ok"])
+        form = self.service.get_form("SZ161130", "editstockamount")
+        self.assertEqual(form["value"], "50000")
+
+    def test_form_notice_when_no_group_item(self):
+        """没有「分组名 = 符号」的分组项 → 空值 + 说明（PHP 填 ``出错了``）。"""
+        self.connection.execute("DELETE FROM `stockgroupitem`")
+        form = self.service.get_form("SZ161130", "editstockamount")
+        self.assertEqual(form["value"], "")
+        self.assertIn("分组名 = SZ161130", form["notice"])
+
+    def test_form_notice_when_member_missing(self):
+        self.connection.execute("DELETE FROM `member`")
+        form = self.service.get_form("SZ161130", "editstockamount")
+        self.assertIn("member 表里没有", form["notice"])
+        self.assertIn(ADMIN_EMAIL, form["notice"])
+
+    # -- 写 -----------------------------------------------------------------
+    def test_write_sets_amount(self):
+        result = self.submit("50000")
+        self.assertTrue(result["ok"], result["message"])
+        self.assertEqual(self.amount(), 50000)
+        #: 只动自己那一行 —— 另一个会员的分组项原样
+        self.assertIsNone(self.amount(OTHER_ITEM_ID))
+
+    def test_write_zero_is_a_value_not_a_delete(self):
+        """``'0'`` 在这一项是**合法值**（与日频表的 ``empty('0')`` 完全不同）。"""
+        self.assertTrue(self.submit("0")["ok"])
+        self.assertEqual(self.amount(), 0)
+        self.assertIsNotNone(
+            self.connection.single(
+                "SELECT num FROM `groupitemamount` WHERE id = ?", (SELF_ITEM_ID,)))
+
+    def test_write_non_numeric_is_refused(self):
+        before = len(self.connection.queries)
+        result = self.submit("abc")
+        self.assertFalse(result["ok"])
+        self.assertIn("数字", result["message"])
+        writes = [
+            sql for sql, _ in self.connection.queries[before:]
+            if not sql.strip().upper().startswith("SELECT")
+        ]
+        self.assertEqual(writes, [])
+
+    def test_write_empty_is_refused(self):
+        """``is_numeric('')`` 为假 —— 空值进不了门（因此也删不掉记录）。"""
+        result = self.submit("")
+        self.assertFalse(result["ok"])
+        self.assertIsNone(self.amount())
+
+    def test_write_same_value_reports_no_change(self):
+        """``WriteString`` 字符串比较：同值返回 False（不 UPDATE），页面要说清。"""
+        self.submit("50000")
+        again = self.submit("50000")
+        self.assertTrue(again["ok"])
+        self.assertIn("没有变化", again["message"])
+
+    def test_write_without_group_item_writes_nothing(self):
+        self.connection.execute("DELETE FROM `stockgroupitem`")
+        before = len(self.connection.queries)
+        result = self.submit("50000")
+        self.assertFalse(result["ok"])
+        self.assertIn("分组名 = SZ161130", result["message"])
+        writes = [
+            sql for sql, _ in self.connection.queries[before:]
+            if not sql.strip().upper().startswith("SELECT")
+        ]
+        self.assertEqual(writes, [])
+
+    def test_write_without_member_writes_nothing(self):
+        self.connection.execute("DELETE FROM `member`")
+        result = self.submit("50000")
+        self.assertFalse(result["ok"])
+        self.assertIn("member 表里没有", result["message"])
+        self.assertIsNone(self.amount())
+
+    def test_other_member_identity_touches_its_own_row(self):
+        """换身份 → 写的是**那个**会员名下那一行（PHP 用 ``$_POST['login']``）。"""
+        os.environ[ENV_ADMIN_EMAIL] = "other@example.com"
+        result = self.submit("70000")
+        self.assertTrue(result["ok"], result["message"])
+        self.assertEqual(self.amount(OTHER_ITEM_ID), 70000)
+        self.assertIsNone(self.amount(SELF_ITEM_ID))
+
+    def test_non_admin_can_write_this_option(self):
+        """会员级入口：非管理员也能提交（PHP 这一支没有 ``$bAdmin`` 判断）。"""
+        os.environ[ENV_ADMIN_EMAIL] = "other@example.com"
+        app = create_app(
+            {"TESTING": True, "SECRET_KEY": "test"},
+            stock_option_service_factory=lambda: self.service,
+        )
+        client = app.test_client()
+        response = client.post(
+            "/stock/SZ161130/edit/editstockamount",
+            data={"date": "", "value": "70000"},
+        )
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(self.amount(OTHER_ITEM_ID), 70000)
 
 
 if __name__ == "__main__":

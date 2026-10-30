@@ -37,11 +37,19 @@ Python 交付物：
 | ``SqlDeleteStockGroupItemByGroupId`` | ``sql_delete_stock_group_item_by_group_id`` |
 | ``SqlDeleteStockGroupByMemberId`` | ``sql_delete_stock_group_by_member_id`` |
 | ``SqlGetMyStockGroupItemId`` | ``sql_get_my_stock_group_item_id`` |
+| ``SqlGetIdByEmail``（sqlmember.php:76） | ``sql_get_id_by_email`` |
 | ``_getStockIdArray``（_submitgroup.php） | ``get_input_stock_id_array`` |
 | ``in_arrayAll`` | ``is_group_name_reserved`` |
 | ``'@'.前缀``（_submitgroup.php:72） | ``prefix_reserved_group_name`` |
 | ``SqlGetStockGroupItemSymbolArray`` | **未迁** | 要 A/H/US 三Bucket 分类，迁 symbols 后补 |
 | ``SqlDeleteStockGroupItemByStockId`` | **未迁** | 删股票前的引用检查，删股票功能未做 |
+
+``sql_get_my_stock_group_item_id`` 与 ``sql_get_id_by_email`` 现在**有调用方**了：
+编辑页的「基金申购金额」（`/stock/<symbol>/edit/editstockamount`）要靠它们把
+`email → member.id → 分组名 = 符号 → stockgroupitem.id` 一路换过去
+（PHP ``_updateFundPurchaseAmount()``）。注意分组名是**符号**本身，而本地后台页
+建分组时会因为重名加 ``@`` 前缀 —— 两边都对，见
+`README_stock_option_edit_migration.md` §八。
 
 ## 二、表结构（五张，``dbtools/seed_stock_group_tables.py`` 建）
 

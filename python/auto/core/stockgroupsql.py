@@ -10,7 +10,10 @@
   ``stock_id``，外加预统计的 ``quantity / cost / record`` 三列。
 * ``GroupItemAmountSql`` / ``GroupItemExtraSql``（``sqlint.php`` 的
   ``IntSql``）—— 分组成员的**金额**与**扩展记录**两张附表。
-  后台管理页用不到，本模块不迁方法，只在建表 DDL 里保持对称
+  金额那张的读写在 ``auto/sql/optionstore.py::GroupItemAmountStore``
+  （编辑页 ``editstockamount`` 用），本模块只保留"定位到哪一行"的自由函数
+  （:func:`sql_get_id_by_email` / :func:`sql_get_my_stock_group_item_id`）；
+  扩展记录那张仍然没人写，只在建表 DDL 里保持对称
   （见 ``dbtools/seed_stock_group_tables.py``）。
 
 ## 一、两张表在 PHP 里的建表语义
@@ -771,13 +774,47 @@ def sql_delete_stock_group_by_member_id(source: Any, member_id: Any) -> int:
     return deleted
 
 
+def sql_get_id_by_email(source: Any, email: str) -> str | None:
+    """对应 ``SqlGetIdByEmail($strEmail)``（``php/sql/sqlmember.php:76``）。
+
+    ``member`` 表只迁这一条查询 —— 账号体系（登录、密码、分组可见性）
+    整体暂缓，但"编辑页的基金申购金额"是**会员级**写入口
+    （``_updateFundPurchaseAmount`` 只用 email 换 member id），没有它就
+    定位不到 ``stockgroupitem`` 行。
+
+    PHP 版本是 ``SqlGetSingleTableData(TABLE_MEMBER, _SqlBuildWhere('email', ...))``
+    —— 精确匹配、区分不了大小写由库的 collation 决定（``utf8_unicode_ci``
+    不区分）。查不到返回 ``false``，本函数返回 ``None``。
+    """
+    connection = getattr(source, "connection", source)
+    cursor = connection.cursor()
+    try:
+        cursor.execute("SELECT id FROM member WHERE email = %s LIMIT 1", (email,))
+        row = cursor.fetchone()
+        if not row:
+            return None
+        if isinstance(row, dict):
+            return str(row["id"])
+        return str(row[0])
+    finally:
+        close = getattr(cursor, "close", None)
+        if close:
+            close()
+
+
 def sql_get_my_stock_group_item_id(source: Any, member_id: Any,
                                    stock_id: Any) -> str | None:
     """对应 ``SqlGetMyStockGroupItemId($strMemberId, $strStockId)``。
 
-    "我的自选"路径：分组名恰好等于股票符号（``SqlGetStockSymbol``），
-    在该会员下找到这个分组后再找成员。后台页用不到，保留只为对齐
-    PHP 的自由函数全集（README 有清单）。
+    "我的自选"路径：分组名恰好等于股票**符号**（``SqlGetStockSymbol``），
+    在该会员下找到这个分组后再找成员。生产端每个会员给每只关注的标的
+    建一个同名分组（``_submitgroup.php`` 灌进去的），所以 ``groupname``
+    存的是 ``'SZ161130'`` 这类符号，不是中文名 —— 演示库里的
+    ``演示分组A`` / ``标普500`` 这类分组**匹配不上**，这是数据问题，
+    不是查询写错了（见 ``web/services/stock_option_service.py`` 里
+    ``_write_stockamount`` 的提示语）。
+
+    ``editstockamount`` 用它把 ``stock_id`` 换成 ``groupitemamount.id``。
     """
     group_sql = StockGroupSql(source)
     symbol = _stock_symbol_of(source, stock_id)

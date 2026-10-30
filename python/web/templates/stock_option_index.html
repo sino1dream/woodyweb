@@ -27,7 +27,7 @@
     </p>
   {% endif %}
 
-  <h2>已迁（{{ migrated | length }} 项）</h2>
+  <h2>可在此页编辑（{{ migrated | length }} 项）</h2>
   <table class="data-table">
     <thead>
       <tr><th>动作</th><th>说明</th></tr>
@@ -46,20 +46,39 @@
     </tbody>
   </table>
 
-  <h2>未迁（{{ pending | length }} 项）</h2>
+  <h2>另有专门页（{{ dedicated | length }} 项）</h2>
   <table class="data-table">
     <thead>
-      <tr><th>动作</th><th>为什么没迁</th></tr>
+      <tr><th>动作</th><th>去哪儿</th></tr>
     </thead>
     <tbody>
-      {% for item in pending %}
+      {% for item in dedicated %}
         <tr>
-          <td>{{ item.submit }}</td>
+          <td>
+            <a href="{{ url_for(item.route, symbol=symbol) }}">{{ item.submit }}</a>
+          </td>
           <td>{{ item.note }}</td>
         </tr>
       {% endfor %}
     </tbody>
   </table>
+
+  {% if pending %}
+    <h2>未迁（{{ pending | length }} 项）</h2>
+    <table class="data-table">
+      <thead>
+        <tr><th>动作</th><th>为什么没迁</th></tr>
+      </thead>
+      <tbody>
+        {% for item in pending %}
+          <tr>
+            <td>{{ item.submit }}</td>
+            <td>{{ item.note }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% endif %}
 
   <p>
     <a href="{{ url_for('stock.stock_detail_page', symbol=symbol) }}">股票详情</a>

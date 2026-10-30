@@ -23,12 +23,14 @@ PHP 侧 ``php/sql/sqlstockgroup.php`` 涉及五张表：
 ``stockgroup``      ``KeyStringSql::Create()``                  是
 ``stockgroupitem``  ``SqlCreateStockGroupItemTable()`` 注释     是
 ``member``          ``sqlmember.php`` 的 FK 目标                是（FK 目标）
-``groupitemamount`` ``GroupItemAmountSql extends IntSql``      否
+``groupitemamount`` ``GroupItemAmountSql extends IntSql``      是（编辑页）
 ``groupitemextra``  ``GroupItemExtraSql extends IntSql``       否
 ==================  ==========================================  ==============
 
-后两张（分成员的金额与扩展记录）后台页用不到，但**照样建**：与 PHP
-保持表级对称，将来迁 ``stocktrans`` / 资金汇总段落时不用再补 DDL。
+``groupitemamount`` 现在有页面写了：``/stock/<symbol>/edit/editstockamount``
+（PHP ``_updateFundPurchaseAmount()``），一个会员一只基金一行。
+``groupitemextra`` 仍然没人写，但**照样建**：与 PHP 保持表级对称，
+将来迁 ``stocktrans`` / 资金汇总段落时不用再补 DDL。
 ``member`` 建最小集（``id + email + register + login + status +
 activity``）——PHP 的 ``MemberSql`` 管的是 ``member2`` 表（遗留命名），
 而 ``stockgroup`` 的 FK 指向 ``member``，登录体系未迁，我们只要 FK
@@ -83,6 +85,13 @@ from core.stockgroupsql import DEMO_MEMBER_ID  # noqa: E402
 DEMO_GROUPS = {
     "演示分组A": ("SZ161125", "SH513100", "SZ159501"),
     "演示分组B": ("QQQ", "SPY"),
+    #: **分组名 = 符号**这一条是生产端"我的自选"的形状：每个会员给每只关注的
+    #: 标的建一个同名分组，编辑页的"基金申购金额"靠它把 stock_id 换成
+    #: ``stockgroupitem.id``（``SqlGetMyStockGroupItemId``）。本地后台页
+    #: （``/admin/groups``）不允许建这种名字 —— 与符号重名会被加 ``@`` 前缀
+    #: （``is_group_name_reserved``），所以演示库只能由种子灌一份样例，
+    #: 否则那一项在演示环境里"永远没有可写的对象"。
+    "SPY": ("SPY",),
 }
 
 #: ``member`` 表演示行（PHP ``SqlInsertMember`` 的字段子集）。

@@ -17,22 +17,20 @@ PHP 那边 16 个页面 = 16 个 4 行壳子 + 1 张分派表 + 1 张表单 + 1 
 路由 ``/stock/<symbol>/edit/<option>`` 顶掉 16 个页面，把差异收进下面这张
 :data:`STOCK_OPTIONS` 表：**选项 = (中文动作名, 说明, 日期口径, 读函数, 写函数)**。
 
-## 为什么有些选项没迁
+## 16 项现在都有去处
 
-16 项里迁了 13 项。没迁的 3 项分两类，原因写在 ``note`` 里，页面上也照原样
-显示 —— **不装作能写**（半截的写入口比没有更危险）：
+* **14 项在本页可写** —— 其中 ``editstockamount``（基金申购金额）是**会员级**
+  入口：PHP 的 ``Process()`` 里只有这一支没有 ``$bAdmin`` 判断，改的是登录会员
+  自己名下那一行（``member`` → ``stockgroup`` → ``stockgroupitem`` →
+  ``groupitemamount``），本版同样只要求"有登录身份"；
+* **2 项跳到专门页** —— ``editquarterreport`` 去 ``/holdings/quarter/<symbol>``、
+  ``editstockholdings`` 去 ``/holdings/exhaustive/<symbol>``（它的「确认更新持仓」
+  走 ``POST /holdings/submit``）。这里**不重复实现**它们的写入口：季报那张表是
+  ``DailyStringSql``（口径与日频表不同），持仓要连带 ``fundposition``——
+  两处各写一份，迟早跑偏。
 
-1. **已有专门页**：``editquarterreport``（``/holdings/quarter/<symbol>``）、
-   ``editstockholdings``（穷举持仓页的「确认更新持仓」）；
-2. **依赖账号体系**：``editstockamount`` 要用 member id + 分组名
-   （``SqlGetMyStockGroupItemId``）才能找到 ``stockgroupitem`` 行。
-
-第三类"缺表 / 要连带重算"原本有 3 项，现在都落地了：``editsharesdiff`` 只是
-一天一个数字（``_updateOptionDailySql`` 一条路）；``editstockdividend`` /
-``editstocksplit`` 的连带重算（校准值 / 自身净值 / 复权序列 / 拆股交易流水）
-写在 :meth:`StockOptionService._write_stockdividend` 与
-:meth:`StockOptionService._write_stocksplit` 里 —— 它们是"写一行顺带改一片"，
-与 ``editcalibration`` 那种"一次换算"不同，所以单列一节说明。
+``StockOptionSpec.route`` 非空就是这个意思：索引页直接给专门页链接，
+``/stock/<symbol>/edit/<option>`` 收到这一项时 302 过去。
 
 ## 一处刻意偏离 PHP（会毁数据的那条）
 
@@ -51,6 +49,7 @@ PHP 那边 16 个页面 = 16 个 4 行壳子 + 1 张分派表 + 1 张表单 + 1 
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any, Optional
 
@@ -62,7 +61,12 @@ from calc.fundcalc import (
     qdii_jp_est_symbol,
     qdii_symbols_for_est,
 )
-from core.stockgroupsql import StockGroupItemSql, StockGroupSql
+from core.stockgroupsql import (
+    StockGroupItemSql,
+    StockGroupSql,
+    sql_get_id_by_email,
+    sql_get_my_stock_group_item_id,
+)
 from core.stocksymbol import (
     StockSymbol,
     in_array_china_future,
@@ -86,6 +90,7 @@ from sql.optionstore import (
     AhPairStore,
     FuturePremiumSql,
     FundPairStore,
+    GroupItemAmountStore,
     LastCalibrationStore,
     SharesDiffSql,
     StockDividendSql,
@@ -133,6 +138,12 @@ class StockOptionSpec:
     migrated: bool = False
     #: 未迁原因 / 该去哪儿用
     note: str = ""
+    #: 已有专门页时，Flask endpoint 名（``holdings.quarter_report_page`` 这类）。
+    #: 本页**不重复实现**它的写入口，GET/POST 都 302 过去。
+    route: str = ""
+    #: 会员级写入口（PHP 只要求登录、不要求管理员）。目前只有
+    #: ``editstockamount`` 一项 —— 它改的是登录会员**自己**名下那一行。
+    member_level: bool = False
 
 
 #: 16 项，**顺序与 ``GetStockOptionArray()`` 一致**（``php/stocklink.php:255``）。
@@ -176,8 +187,11 @@ STOCK_OPTIONS: tuple = (
         key="editquarterreport",
         submit="修改季报持仓",
         memo="清空输入删除对应日期季报数据。",
-        migrated=False,
-        note="已有专门页：/holdings/quarter/<symbol>（日期取季报最新一天）。",
+        note=(
+            "在专门页里改：/holdings/quarter/<symbol>"
+            "（QuarterReportSql(DailyStringSql)，填 0 = 删除，日期取季报最新一天）。"
+        ),
+        route="holdings.quarter_report_page",
     ),
     StockOptionSpec(
         key="editsharesdiff",
@@ -207,11 +221,14 @@ STOCK_OPTIONS: tuple = (
     StockOptionSpec(
         key="editstockamount",
         submit="基金申购金额",
-        memo="分组项里的申购金额。",
-        migrated=False,
+        memo="分组项里的申购金额（你的自选分组里这只标的那一行）。",
+        migrated=True,
+        member_level=True,
         note=(
-            "依赖账号体系：要先由 member 邮箱 + 分组名定位 stockgroupitem 行"
-            "（SqlGetMyStockGroupItemId），账号体系整体暂缓。"
+            "会员级写入口：按登录邮箱找 member，再按「分组名 = 符号」找"
+            " stockgroupitem 行，写 groupitemamount.num。"
+            "PHP 这一支不要求管理员（$_POST['submit'] == STOCK_OPTION_AMOUNT "
+            "那一段没有 $bAdmin 判断），本版同样只要求登录身份。"
         ),
     ),
     StockOptionSpec(
@@ -245,12 +262,12 @@ STOCK_OPTIONS: tuple = (
         key="editstockholdings",
         submit="修改持仓",
         memo="清空输入删除对应持仓。",
-        migrated=False,
         note=(
-            "已有入口：穷举持仓页 /holdings/exhaustive/<symbol> 的「确认更新持仓」"
+            "在专门页里改：/holdings/exhaustive/<symbol> 的「确认更新持仓」"
             "（POST /holdings/submit → process_admin_holdings）。"
             "SH/SZ ETF 支线在 PHP 里是抓交易所申赎清单文件，未迁。"
         ),
+        route="holdings.exhaustive_holdings_page",
     ),
     StockOptionSpec(
         key="editstocksplit",
@@ -309,6 +326,25 @@ def _is_zero_text(text: Any) -> bool:
         return float(text) == 0.0
     except (TypeError, ValueError):
         return str(text) == "0"
+
+
+#: ``is_numeric()`` 用的十进制数字串（见 :func:`_php_is_numeric`）。
+_NUMERIC_TEXT = re.compile(r"^\s*[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?\s*$")
+
+
+def _php_is_numeric(text: Any) -> bool:
+    """PHP 7+ ``is_numeric($str)`` 的字符串口径。
+
+    只接受十进制：可选**前后**空白（PHP 7.0 起两边都允许）、可选正负号、
+    数字带可选小数点、可选指数。``''`` / ``'abc'`` / ``'1e'`` / ``'0x1A'``
+    都不算数字（十六进制在 PHP 7 已经不算）。
+
+    ``_updateFundPurchaseAmount()`` 用它当唯一的输入闸门 —— 不是数字就
+    **整笔跳过**（连"写错了"都不报）。本版照抄判定，只把"跳过"换成一句话。
+    """
+    if text is None:
+        return False
+    return _NUMERIC_TEXT.match(str(text)) is not None
 
 
 def _intval(text: Any) -> int:
@@ -421,7 +457,11 @@ class StockOptionService:
 
     # -- 页面装配 -----------------------------------------------------------
     def list_options(self) -> list:
-        """索引页用：16 项 + 是否已迁。"""
+        """索引页用：16 项 + 是否已迁 + 是否有专门页。
+
+        ``route`` 非空的两项（季报 / 持仓）**不**在索引页给 ``<option>``
+        链接，直接指到专门页 —— 两边各写一份写入口，迟早会跑偏。
+        """
         return [
             {
                 "key": spec.key,
@@ -429,6 +469,8 @@ class StockOptionService:
                 "memo": spec.memo,
                 "migrated": spec.migrated,
                 "note": spec.note,
+                "route": spec.route,
+                "member_level": spec.member_level,
             }
             for spec in STOCK_OPTIONS
         ]
@@ -454,6 +496,8 @@ class StockOptionService:
                 "memo": spec.memo,
                 "migrated": spec.migrated,
                 "note": spec.note,
+                "route": spec.route,
+                "member_level": spec.member_level,
             },
             "date": "",
             "value": "",
@@ -470,7 +514,12 @@ class StockOptionService:
         date = _date_text(self._default_date(spec, symbol, stock_id))
         context["date"] = date
         context["value"] = self._read_value(spec, symbol, stock_id, date)
+        if spec.member_level:
+            #: 会员级的那一项读不到分组项时不摆表单 —— 空值写进去没有任何意义
+            #: （PHP 会往 textarea 里填一句 ``出错了``，照样让人提交）。
+            context["notice"] = self._member_notice(symbol, stock_id)
         return context
+
     def submit(self, symbol: str, key: str, date: Any, value: Any) -> dict:
         """执行写回。返回 ``{"ok": bool, "message": str}``。
 
@@ -604,6 +653,75 @@ class StockOptionService:
         看到什么就写什么。
         """
         return self.stock_sql.get_name(symbol) or ""
+
+    def _read_stockamount(self, symbol: str, stock_id: Any, date: str) -> str:
+        """``_getStockOptionAmount()``（``_editstockoptionform.php:82``）::
+
+            if ($strGroupItemId = SqlGetMyStockGroupItemId($strLoginId, $strStockId))
+            {   $amount_sql = new GroupItemAmountSql();
+                return $amount_sql->ReadAmount($strGroupItemId);
+            }
+            return '出错了';
+
+        读的是**当前登录会员**那一行：``member.email`` → ``member.id`` →
+        分组名恰好等于符号的那个 ``stockgroup`` → 组里这只标的的
+        ``stockgroupitem.id`` → ``groupitemamount.num``（读不到回落
+        ``'100000'``）。
+
+        与 PHP 的一处显示偏离：找不到分组项时 PHP 往输入框里填一句
+        ``出错了``，照样让人提交（提交再被静默丢掉）。本版给空值 + 一段
+        说明，并且**不摆表单** —— 见 :meth:`_member_notice`。
+        """
+        item_id = self._member_item_id(stock_id)
+        if not item_id:
+            return ""
+        return GroupItemAmountStore(self.connection).read_amount(item_id)
+
+    def _member_email(self) -> str:
+        """当前身份（登录邮箱）。
+
+        账号体系暂缓，身份来自 :func:`web.services.admin_auth.current_admin_email`
+        —— 与其它写入口**同一个来源**，接登录态时只改那一处。
+        """
+        try:
+            from web.services.admin_auth import current_admin_email
+
+            return current_admin_email() or ""
+        except Exception:  # pragma: no cover - 没有 flask 上下文之类
+            return ""
+
+    def _member_item_id(self, stock_id: Any) -> Any:
+        """``SqlGetMyStockGroupItemId(SqlGetIdByEmail($email), $stockId)``。"""
+        email = self._member_email()
+        if not email:
+            return None
+        member_id = sql_get_id_by_email(self.source, email)
+        if not member_id:
+            return None
+        return sql_get_my_stock_group_item_id(self.source, member_id, stock_id)
+
+    def _member_notice(self, symbol: str, stock_id: Any) -> str:
+        """会员级那一项为什么不能写 —— 三句话分开说，别混成一句"出错了"。"""
+        email = self._member_email()
+        if not email:
+            return (
+                "没有登录身份，不知道要改谁的申购金额。本地演示环境默认取"
+                "管理员邮箱（web/services/admin_auth.py）。"
+            )
+        if self._member_item_id(stock_id):
+            return ""
+        member_id = sql_get_id_by_email(self.source, email)
+        if not member_id:
+            return (
+                "member 表里没有 %s 这个邮箱，取不到会员 id。本地演示库的会员邮箱是"
+                " demo@palmmicro.com（dbtools/seed_stock_group_tables.py 灌的），"
+                "把 PALMMICRO_ADMIN_EMAIL 设成它就能试这一项。" % email
+            )
+        return (
+            "%s 名下没有「分组名 = %s」的分组，或者那个分组里没有这只标的 —— "
+            "申购金额挂在 stockgroupitem 那一行上，缺行就没有可写的对象"
+            "（PHP 在这种情况下静默什么都不做）。" % (email, symbol)
+        )
 
     def _read_stockclose(self, symbol: str, stock_id: Any, date: str) -> str:
         """``_getStockOptionVal`` 的 CLOSE 分支：``$ref->GetPrevPrice()``。"""
@@ -949,6 +1067,67 @@ class StockOptionService:
             }
         self.history_sql.update_close(record.get("id"), text)
         return {"ok": True, "message": "%s %s：收盘价与复权价已改为 %s。" % (symbol, date, text)}
+
+    def _write_stockamount(self, symbol: str, stock_id: Any, date: str, value: str) -> dict:
+        """``_updateFundPurchaseAmount()``（``_submitstockoptions.php:70``）::
+
+            $strMemberId = SqlGetIdByEmail($strEmail);
+            $strStockId = SqlGetStockId($strSymbol);
+            if ($strMemberId && $strStockId && is_numeric($strVal))
+            {   if ($strGroupItemId = SqlGetMyStockGroupItemId($strMemberId, $strStockId))
+                {   $amount_sql = new GroupItemAmountSql();
+                    $amount_sql->WriteString($strGroupItemId, $strVal);
+                }
+            }
+
+        ## 三处与其它 15 项不一样的地方
+
+        1. **不是管理员专属**。``Process()`` 的 switch 里只有这一支没有
+           ``if ($bAdmin)`` —— 它改的是登录会员**自己**名下那一行
+           （``stockgroupitem`` → ``groupitemamount``），越权不了别人。
+           权限闸门因此放行到"有登录身份"这一层（见路由里的 ``member_level``）；
+        2. **没有日期**（``DATE_NONE``），也没有"清空 = 删除"：``WriteVal``
+           在字符串模式下**不做删除**，而 ``is_numeric('')`` 是假，空值
+           在进门时就被挡掉了 —— 所以这一项**删不掉**记录，只能改数字；
+        3. **找不到分组项就什么都不做**（不是报错）。PHP 的返回值是
+           ``void``，页面看起来"提交成功了"，其实一个字节没写。本版把三种
+           原因分开说清楚（没身份 / member 表里没这个邮箱 / 没有同名分组项）。
+
+        ``'0'`` 是**合法值**（写 0），与日频表那套 ``empty('0')`` 为真的
+        语义**不同** —— 金额表走的是 ``WriteString``，不是 ``_updateOptionDailySql``。
+        """
+        email = self._member_email()
+        if not email:
+            return {"ok": False, "message": "没有登录身份，没有写入。"}
+        member_id = sql_get_id_by_email(self.source, email)
+        if not member_id:
+            return {"ok": False, "message": self._member_notice(symbol, stock_id)}
+        text = value.strip()
+        #: ``is_numeric()`` 的口径：可选前导空白、正负号、小数、指数都算数字，
+        #: 空串与 ``'abc'`` 不算。**不**接受十六进制（PHP 7+ 已废弃）。
+        if not _php_is_numeric(text):
+            return {
+                "ok": False,
+                "message": "申购金额要是一个数字（PHP 那边 is_numeric 为假就整笔跳过），"
+                           "没有写入。",
+            }
+        item_id = sql_get_my_stock_group_item_id(self.source, member_id, stock_id)
+        if not item_id:
+            return {"ok": False, "message": self._member_notice(symbol, stock_id)}
+        #: ``WriteString`` 是字符串比较：库里 ``'100000'`` 与提交的 ``'100000'``
+        #: 相同 → 返回 False（"没变"），不 UPDATE。``'0.0'`` 与 ``'0'`` 在
+        #: ``int`` 列上都是 0，但字符串比较会认为变了 → 照样 UPDATE 一次。
+        changed = GroupItemAmountStore(self.connection).write_string(item_id, text)
+        if not changed:
+            return {
+                "ok": True,
+                "message": "%s：申购金额已经就是 %s（分组项 %s），没有变化。"
+                           % (symbol, text, item_id),
+            }
+        return {
+            "ok": True,
+            "message": "%s：申购金额（分组项 %s）写成 %s。" % (symbol, item_id, text),
+        }
 
     def _write_stockdividend(self, symbol: str, stock_id: Any, date: str, value: str) -> dict:
         """``_updateStockOptionDividend()``（``_submitstockoptions.php:301``）。

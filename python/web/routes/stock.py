@@ -380,7 +380,11 @@ def stock_option_index(symbol: str):
     补这一页的理由：PHP 的 16 个 ``edit*.php`` 都不进任何导航
     （``GetStockMenuLinks()`` 与 ``EchoLinks()`` 都没有入口），本版把它们收成
     一个 ``<option>`` 参数以后，缺一个索引就更没法发现了。列表顺序与
-    ``GetStockOptionArray()`` 一致，已迁 / 未迁分开标。
+    ``GetStockOptionArray()`` 一致。
+
+    16 项分三组：**能在这页编辑的** / **另有专门页的**（季报、持仓 —— 直接
+    给专门页链接，不给 ``<option>`` 链接，免得点进来再被弹走）/ **还没迁的**
+    （现在是空的，留一段逻辑在那儿，加新选项时不必改模板）。
     """
     service = _get_stock_option_service()
     options = service.list_options()
@@ -388,8 +392,13 @@ def stock_option_index(symbol: str):
         "stock_option_index.html",
         symbol=symbol,
         options=options,
-        migrated=[item for item in options if item["migrated"]],
-        pending=[item for item in options if not item["migrated"]],
+        migrated=[
+            item for item in options if item["migrated"] and not item["route"]
+        ],
+        dedicated=[item for item in options if item["route"]],
+        pending=[
+            item for item in options if not item["migrated"] and not item["route"]
+        ],
         admin=is_admin(),
     )
 
@@ -416,6 +425,18 @@ def stock_option_edit(symbol: str, option: str):
     与其它写入口一致：``is_admin()`` 为假时 POST 直接 403，GET 只读展示
     （表单控件 disabled）。PHP 那边非管理员进来会看到 ``$strVal`` 只读 +
     按钮变"返回"，连 POST 都不会发；这里保留表单但挡住写，效果等价且更好懂。
+
+    **例外**：``member_level`` 的那一项（基金申购金额，PHP
+    ``STOCK_OPTION_AMOUNT`` 分支没有 ``$bAdmin`` 判断）只要求"有登录身份"，
+    因为它改的是登录会员**自己**名下那一行 —— 闸门仍在（没身份就写不了），
+    只是不要求管理员。
+
+    ## 已有专门页的两项
+
+    ``editquarterreport`` / ``editstockholdings`` 的写入口在
+    ``/holdings/quarter/<symbol>`` 与 ``/holdings/exhaustive/<symbol>``，
+    这里 **GET 与 POST 都 302 过去**，不重复实现一份 —— 两处各写一份写入口，
+    迟早会跑偏（季报那张表的 ``DailyStringSql`` 与日频表口径还不一样）。
     """
     from web.services.stock_option_service import get_stock_option
 
@@ -427,13 +448,23 @@ def stock_option_edit(symbol: str, option: str):
             status=404,
         ), 404
 
+    if spec.route:
+        if request.method == "POST":
+            flash(
+                "「%s」在专门页里提交，本页不接收 —— 已经把你带到那儿了。"
+                % spec.submit
+            )
+        return redirect(url_for(spec.route, symbol=symbol))
+
     service = _get_stock_option_service()
     admin = is_admin()
+    #: 能写 ≠ 是管理员（见 docstring 的"例外"）。模板用它决定要不要 disable。
+    editable = admin or spec.member_level
     error = ""
     form = service.get_form(symbol, option)
 
     if request.method == "POST":
-        if not admin:
+        if not editable:
             return render_template(
                 "error.html", message=denied_message(), status=403
             ), 403
@@ -461,6 +492,7 @@ def stock_option_edit(symbol: str, option: str):
         "stock_option_form.html",
         symbol=symbol,
         admin=admin,
+        editable=editable,
         error=error,
         form=form,
     )
