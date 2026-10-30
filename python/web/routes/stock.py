@@ -353,9 +353,10 @@ def stock_detail_page(symbol: str):
 # ---------------------------------------------------------------------------
 # 编辑页（PHP edit 族 16 个 edit*.php → 一个 <option> 参数）
 # ---------------------------------------------------------------------------
-#: ``GetStockEditDeleteLink()``（``php/stocklink.php:288``）把"修改"和"删除"
-#: 两个链接并排放在详情页；本地删标的（``deletesymbol.php``）还没迁，
-#: 所以只给"修改"这一半。
+#: ``GetStockEditDeleteLink()``（``php/stocklink.php:285``）把"修改"和"删除"
+#: 两个链接并排放在详情页。本地的"修改"那一半落在 ``/stock/<symbol>/edit``
+#: 索引页，所以"删除"也放在同一页的末尾（见 ``stock_option_index.html`` 的
+#: 危险操作段），入口与 PHP 一样只有一个。
 
 
 def _get_stock_option_service() -> Any:
@@ -401,6 +402,79 @@ def stock_option_index(symbol: str):
         ],
         admin=is_admin(),
     )
+
+
+@stock_bp.route("/stock/<symbol>/delete", methods=["GET", "POST"])
+def stock_delete(symbol: str):
+    """删标的（PHP ``woody/res/deletesymbol.php`` → ``php/deletestock.php``）。
+
+    ## PHP 那边是什么
+
+    一个 ``SymbolAccount`` 子类，只实现 ``AdminProcess()``，``AdminRun()``
+    跑完无条件 ``SwitchToSess()`` 跳回 —— 页面上什么都不显示，连"删了没有"
+    都看不出来。入口是 ``GetStockEditDeleteLink()`` 拼的带 ``confirm()`` 的
+    ``<a href>``（GET 副作用）。
+
+    ## 这里为什么拆成 GET 预览 + POST 执行
+
+    1. 写操作不走 GET（与 ``/submit``、``/holdings/submit`` 同一取舍）；
+    2. 这道操作**几乎总是被拦**：五道闸门里 ``stockgroupitem`` 在演示库里
+       绝大多数符号上都命中（标的都在某个分组里），PHP 拦下时静默跳回，
+       管理员只能猜。预览页把"被哪道闸门拦、还差什么"全列出来；
+    3. 要删的行数得先看见 —— ``confirm()`` 里一句"确认删除"不足以说明
+       "这会带走 814 行历史价格"。
+
+    ## 权限
+
+    PHP 的做法是 ``AdminRun()`` 里判 ``IsAdmin()``：非管理员连
+    ``AdminProcess()`` 都不进。这里同样：GET 只读预览（谁都能看，反正
+    页面上没有一个字是隐藏数据），POST 非管理员 403 且**一行都不写**。
+
+    ## 执行完去哪
+
+    删成功 → 回 ``/stock`` 列表（``/stock/<symbol>`` 已经不存在了）；
+    被拦住或符号不存在 → 留在预览页，flash 说明原因。
+    """
+    from web.services import delete_symbol_service
+
+    symbol = (symbol or "").strip().upper()
+    connection = _delete_connection()
+    admin = is_admin()
+
+    if request.method == "POST":
+        if not admin:
+            return render_template(
+                "error.html", message=denied_message(), status=403
+            ), 403
+        include_orphans = bool(request.form.get("include_orphans"))
+        outcome = delete_symbol_service.execute(
+            connection, symbol, include_orphans=include_orphans
+        )
+        flash(outcome["message"])
+        if outcome["ok"]:
+            return redirect(url_for("stock.stock_page"))
+        return redirect(url_for("stock.stock_delete", symbol=symbol))
+
+    return render_template(
+        "stock_delete.html",
+        preview=delete_symbol_service.preview(connection, symbol),
+        admin=admin,
+    )
+
+
+def _delete_connection() -> Any:
+    """删标的那条连接。
+
+    单独一个钩子而不是复用 ``_get_reference_service().source``：删表要的是
+    DB-API 连接（``cursor`` / ``rowcount``），参考对象那层只暴露查询方法。
+    测试注入 ``delete_connection_factory`` 就整个顶掉，不碰真库。
+    """
+    factory = current_app.extensions.get("delete_connection_factory")
+    if factory is not None:
+        return factory()
+    from web.db import get_db
+
+    return get_db()
 
 
 @stock_bp.route("/stock/<symbol>/edit/<option>", methods=["GET", "POST"])

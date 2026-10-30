@@ -1,7 +1,7 @@
 # 剩余未迁页面清单（"生产端未展示页面"及其它）
 
 > 复核日期：2026-10-30
-> 判定依据：`woody/res/*.php` 全量清点 + Flask `url_map` 44 条路由 + 真库/测试客户端实测
+> 判定依据：`woody/res/*.php` 全量清点 + Flask `url_map` 45 条路由 + 真库/测试客户端实测
 > 本文只记**现状与缺口**，已完成项的细节见各自的 `README_*_migration.md`
 
 ## 一、这一批指什么
@@ -20,9 +20,9 @@
 | 分类页 | 16 | `biotechcn.php` 一族 4 行壳子，**已全部迁掉**（一个注册表 + 一个视图），见 `README_category_pages_migration.md` |
 | 其它 | 34 | 分组页 / 历史页 / 账号页 / 工具页 |
 
-Flask 侧现有 **44 条路由**（`create_app().url_map`）。
+Flask 侧现有 **45 条路由**（`create_app().url_map`）。
 
-## 二、已迁的部分（9 个入口）
+## 二、已迁的部分（10 个入口）
 
 | PHP 页面 | Python | 备注 |
 |---|---|---|
@@ -35,6 +35,7 @@ Flask 侧现有 **44 条路由**（`create_app().url_map`）。
 | `submittransaction.php` | `POST /transactions/submit` | `core/submittransaction.py` 七动作 |
 | `submitstockoptions.php` | **只迁了 REPORT 分支** | 16 项里另 13 项的分派已在 `/stock/<symbol>/edit/<option>`，但**不是**走这个 POST 入口 |
 | `submitdividend.php` / `submitnetvalue.php` / `submithistory.php` | `GET /submit`（工具页）+ `POST /submit/<name>`（`dividend` / `netvalue` / `history`） | 三页在 PHP 里都零输出、且入口链接点不到，所以合成一张工具页；细节见 `README_submit_pages_migration.md` |
+| `deletesymbol.php` | `GET/POST /stock/<symbol>/delete` | 五道闸门 + 6 张表；**PHP 漏清 15 张残留表**，本版可显式级联；见 `README_deletesymbol_migration.md` |
 | **分类页 16 个** | `GET /category/<name>`，另有短路径 `GET /qdii` | 16 个 4 行壳子全部落到 `_mystockgroup.php`，所以做成一个注册表 + 一个视图；`_stocklink.php::GetCategoryArray()` 的数组与 `_getTitleStr()` / `_getMetaDescriptionStr()` 的文本都逐例对照过，见 `README_category_pages_migration.md` |
 
 ## 三、edit 族：16 项全部有去处（0 项未迁）
@@ -114,7 +115,7 @@ require('../../php/ui/_editcn.php');
 
 | 页面 | 干什么 | 状态 | 建议 |
 |---|---|---|---|
-| `deletesymbol.php` | 删标的（`php/deletestock.php`，先查 AB/AH 配对再连锁删） | 未迁 | 值得迁，但现在删数据靠 SQL |
+| `deletesymbol.php` | 删标的（`php/deletestock.php`，先查五道闸门再连锁删） | **已迁** | `GET/POST /stock/<symbol>/delete`（先预览再执行），见 `README_deletesymbol_migration.md` |
 | `uploadfile.php` | 上传 Yahoo 历史行情 CSV 到 `stockhistory` | 未迁 | 低优先（本地用 `dbtools/seed_*` 顶替） |
 | `debugcn.php` | 访问日志/恶意 IP 统计页（依赖 nginx 日志） | 未迁 | **不建议迁**，PHP 专属运维页 |
 
@@ -148,11 +149,16 @@ require('../../php/ui/_editcn.php');
    `GET /category/<name>` 一个视图，见 `README_category_pages_migration.md`；
    同日查出并修掉 3 个分类的数组落后生产端（`chinaindex` 27 / `qdiihk` 38 /
    `qdiimix` 15，见该文 §七）。现在 `_prod_category_check.py` 是 17/17 一致；
-6. **`deletesymbol.php` 仍排在最后**（要连带清 8 张表，风险最高）；
+6. ~~**`deletesymbol.php` 仍排在最后**（要连带清 8 张表，风险最高）~~ ——
+   **2026-10-30 已迁**（`GET/POST /stock/<symbol>/delete`，先预览再执行）。
+   查清了两件事：**实际是 6 张表不是 8 张**（`deletestock.php` 只做四件事加一个
+   副作用）；真正的风险不在"删哪几张"，而在"**PHP 漏了 15 张残留表**"，其中
+   `stockhistorydate` 那条水位线会让重新加回的符号永远补不进历史。这两点连同
+   三条刻意偏离见 `README_deletesymbol_migration.md`。
    ~~`submitdividend` / `submitnetvalue` / `submithistory` 三个抓外部 JSON/XLS 的页未动~~
-   —— **2026-10-30 已迁**（`GET /submit` + 三个 POST），对照 19 例、真库 smoke 见
-   `README_submit_pages_migration.md`。左侧真正的缺口只剩 `deletesymbol` 与
-   `uploadfile`（后者本地用 `dbtools/seed_*` 顶替，不建议迁）。
+   —— 同日已迁（`GET /submit` + 三个 POST），对照 19 例、真库 smoke 见
+   `README_submit_pages_migration.md`。**左侧真正的缺口只剩 `uploadfile`**
+   （上传历史 CSV，本地用 `dbtools/seed_*` 顶替，不建议迁）。
 
 ## 八、怎么自己复核一遍
 

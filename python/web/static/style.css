@@ -602,3 +602,32 @@ h2 {
 .submit-tools .hint {
   font-size: 12px;
 }
+
+/* 删标的页（/stock/<symbol>/delete）
+   闸门表里"命中"的行要一眼看出来：删不了这件事不能只靠一句话说。 */
+.gate-hit td {
+  background: #fff2f2;
+}
+
+.gate-hit td:nth-child(2) strong {
+  color: #cc0000;
+}
+
+/* 危险操作的按钮用红色描边，与"抓取工具"那种普通按钮区分开。
+   注意 .submit-form button 的既有样式在后，这里用更具体的选择器覆盖。 */
+.submit-form button.danger {
+  color: #fff;
+  background: #cc0000;
+  border-color: #a80000;
+  padding: 4px 12px;
+}
+
+.submit-form button.danger:hover:not(:disabled) {
+  background: #a80000;
+}
+
+.submit-form button.danger:disabled {
+  color: #aaa;
+  background: #f2f2f2;
+  border-color: #ccc;
+}

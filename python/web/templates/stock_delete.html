@@ -1,0 +1,166 @@
+{% extends "base.html" %}
+{# 删标的（PHP woody/res/deletesymbol.php）。
+
+   PHP 那一页零输出：AdminProcess() 跑完 AdminRun() 就 SwitchToSess() 跳回，
+   连"删了没有"都看不出来；拦路的闸门也是静默返回。所以这页的重点不是
+   "一个按钮"，而是**把判断过程摆出来**：五道闸门逐条给结论、要删的行数
+   逐表列清、PHP 会留下的残留也一并列出（默认不勾）。
+
+   页面结构对应 deletesymbol.plan() 的返回结构，模板里不做任何再判断。 #}
+{% block title %}删除 {{ preview.symbol }} - Palmmicro Python Web{% endblock %}
+{% block content %}
+  <h1>删除 {{ preview.symbol }}</h1>
+
+  <p class="hint">
+    对应 PHP <code>deletesymbol.php</code> → <code>php/deletestock.php</code>。
+    PHP 那边是一个 <code>confirm()</code> 链接、点下去直接删、删完跳回什么都不显示；
+    这里先看清单再执行。
+  </p>
+
+  {% if not preview.found %}
+    <p class="warning">
+      <code>stock</code> 表里没有 <code>{{ preview.symbol }}</code> 这个符号。
+      PHP 那边同样是静默跳回（<code>GetSymbolRef()</code> 取不到就不进
+      <code>_deleteStockSymbol()</code>）。
+    </p>
+    <p>
+      <a href="{{ url_for('stock.stock_page') }}">← 股票列表</a>
+      <a href="{{ url_for('stock.stock_option_index', symbol=preview.symbol) }}">可编辑项</a>
+    </p>
+  {% else %}
+
+    <p class="table-note">
+      <code>{{ preview.symbol }}</code> 的 <code>stock_id = {{ preview.stock_id }}</code>。
+      共 {{ preview.gates | length }} 道闸门，任意一道命中就删不了（PHP 是
+      <code>if / else if</code>，命中第一道就返回；这里五道全查，好让你一次看到全部原因）。
+    </p>
+
+    <table class="data-table">
+      <thead>
+        <tr><th style="width: 180px;">闸门</th><th style="width: 90px;">结论</th><th>说明</th></tr>
+      </thead>
+      <tbody>
+        {% for gate in preview.gates %}
+          <tr{% if gate.hit %} class="gate-hit"{% endif %}>
+            <td><code>{{ gate.table }}</code><br><span class="hint">{{ gate.label }}</span></td>
+            <td>
+              {% if gate.hit %}<strong>拦住</strong>{% else %}<span class="hint">通过</span>{% endif %}
+            </td>
+            <td>
+              {% if gate.hit %}
+                {{ gate.detail }}
+                {% if gate.table == 'stockgroupitem' %}
+                  <br><span class="hint">先把这些分组持仓拆掉（或换掉该标的）才能删。
+                  注意 <code>SqlDeleteStockGroupItemByStockId()</code> 名字带 Delete，
+                  实际只看不删 —— PHP 也一样。</span>
+                {% endif %}
+              {% else %}
+                <span class="hint">没有记录</span>
+              {% endif %}
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+
+    {% if preview.blocked %}
+      <p class="warning">
+        <strong>删不了</strong>：<code>{{ preview.blocked_by.table }}</code> 里还有它
+        （{{ preview.blocked_by.detail }}）。下面的行数只是"如果闸门放行会删掉什么"，
+        现在点下去一行都不会动。
+      </p>
+    {% endif %}
+
+    <h2>PHP 会删的 {{ preview.deletes | length }} 张表（共 {{ preview.deleted_rows }} 行）</h2>
+    <table class="data-table">
+      <thead>
+        <tr><th style="width: 220px;">表</th><th style="width: 110px;">匹配列</th>
+            <th style="width: 90px;">行数</th><th>内容</th></tr>
+      </thead>
+      <tbody>
+        {% for item in preview.deletes %}
+          <tr>
+            <td><code>{{ item.table }}</code></td>
+            <td><span class="hint">{{ item.column }}</span></td>
+            <td>{{ item.rows }}</td>
+            <td>{{ item.label }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <p class="hint">
+      <code>calibrationhistory</code> 在 PHP 里不是"删除清单"的一部分，而是
+      <code>_deleteHasCalibration()</code> 的副作用（函数名问"有没有"，实际"有就删"，
+      且恒返回 <code>false</code> 所以永远拦不住）。本版把它摆在这里，是因为它确实会没。
+    </p>
+
+    {% if preview.dirty_orphans %}
+      <h2>PHP 不删、会留下的 {{ preview.dirty_orphans | length }} 张表（共 {{ preview.orphan_rows }} 行）</h2>
+      <p class="hint">
+        这些表 <code>deletestock.php</code> 一行都不碰。留下的后果不是"占点空间"，
+        而是<strong>把同一符号再加回库里时会静默出错</strong>，逐条见下表。
+      </p>
+      <table class="data-table">
+        <thead>
+          <tr><th style="width: 220px;">表</th><th style="width: 90px;">行数</th><th>为什么该清</th></tr>
+        </thead>
+        <tbody>
+          {% for item in preview.dirty_orphans %}
+            <tr>
+              <td><code>{{ item.table }}</code><br><span class="hint">{{ item.label }}</span></td>
+              <td>{{ item.rows }}</td>
+              <td>{{ item.note }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% endif %}
+
+    <h2>操作</h2>
+    <form method="post" action="{{ url_for('stock.stock_delete', symbol=preview.symbol) }}"
+          class="submit-form"
+          onsubmit="return confirm('确认删除 {{ preview.symbol }}？这会永久删掉列表里的行，MyISAM 没有事务，删了就回不来。');">
+      {% if preview.dirty_orphans and preview.can_delete %}
+        <p>
+          <label>
+            <input type="checkbox" name="include_orphans" value="1">
+            同时清掉上表 {{ preview.orphan_rows }} 行残留
+          </label>
+          <span class="hint">
+            （本版增强，PHP 不清。清掉更干净；不清则"删了符号、数据留在库里"，
+            重加回同一符号时可能拿到旧水位线/旧校准值。）
+          </span>
+        </p>
+      {% endif %}
+      <p>
+        <button type="submit" class="danger"
+                {% if not preview.can_delete or not admin %}disabled{% endif %}>
+          删除 {{ preview.symbol }}
+        </button>
+        {% if not admin %}
+          <span class="hint">当前身份不是管理员，按钮已禁用（POST 也会 403）。</span>
+        {% elif not preview.can_delete %}
+          <span class="hint">上面有闸门命中，按钮已禁用。</span>
+        {% endif %}
+      </p>
+    </form>
+
+    <details>
+      <summary>与 PHP 的差异 / 明确不处理的表</summary>
+      <ul>
+        {% for note in preview.notes %}<li>{{ note }}</li>{% endfor %}
+      </ul>
+      <p class="hint">不处理的表与理由：</p>
+      <ul>
+        {% for item in preview.skipped %}
+          <li><code>{{ item.table }}</code> —— {{ item.note }}</li>
+        {% endfor %}
+      </ul>
+    </details>
+
+    <p>
+      <a href="{{ url_for('stock.stock_option_index', symbol=preview.symbol) }}">← 可编辑项</a>
+      <a href="{{ url_for('stock.stock_page') }}">股票列表</a>
+    </p>
+  {% endif %}
+{% endblock %}
