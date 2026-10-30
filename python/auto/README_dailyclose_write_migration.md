@@ -188,3 +188,8 @@ email/httplink/ui，CLI 下跑不起来）换成等价实现 —— **拼 SQL �
 * 先做能落在 `DailyCloseSql` 上的 7 项（收盘价 / EMA / 拆股 / 校准 / 净值 /
   份额 / 期货溢价），其余 8 项要么缺表（`sharesdiff`、`stockdividend` 演示库里
   根本没有）、要么要配 `ahpair` / `abpair` / `adrpair` 三张配对表。
+
+> **2026-10-30 已完成**：16 项迁了 10 项（收盘价 / EMA / 净值 / 升水 / 份额差 /
+> 股票说明 / ADR / AH / HA / 配对与仓位），见
+> `README_stock_option_edit_migration.md`。拆股与分红仍然未迁 —— 它们除了缺表，
+> 还要连带重算该日之后的复权序列，属于估值链路，不在编辑页的范围里。

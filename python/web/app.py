@@ -110,6 +110,10 @@ def create_app(
     #: 与 ``fundest_refs_builder`` / ``sma_refs_builder`` 同一套路 ——
     #: 让"持仓型 vs QDII 型"的分流能不连库验证。
     holdings_ref_builder: Any = None,
+    #: 通用股票编辑页（``/stock/<symbol>/edit/<option>``）的服务工厂。
+    #: 与 ``stock_detail_service_factory`` 一样"注入了才注册"：默认实现要连库，
+    #: 而单测只想验"16 项分派 / 权限闸门 / 未迁提示"，把装配整个顶掉最直接。
+    stock_option_service_factory: Any = None,
 ) -> Flask:
     """创建 Flask 应用，允许测试注入服务工厂。"""
     app = Flask(__name__)
@@ -169,6 +173,11 @@ def create_app(
     # 所以这里是"注入了才注册"，没注入时路由自己按默认方式装配。
     if stock_detail_service_factory is not None:
         app.extensions["stock_detail_service_factory"] = stock_detail_service_factory
+
+    # 通用股票编辑页（PHP edit 族 16 个 edit*.php）。同上：没有默认工厂，
+    # 路由按 ``reference_service`` 的数据源现场装配。
+    if stock_option_service_factory is not None:
+        app.extensions["stock_option_service_factory"] = stock_option_service_factory
 
     # 股票列表页（php/ui/stockparagraph.php）：从 stock 表分页取符号。
     app.extensions["stock_service_factory"] = (

@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{# 通用股票编辑页 —— 对应 PHP:
+
+     woody/res/edit*.php          （16 个 4 行壳子）
+   → woody/res/php/_editstockoption.php     （分派 + EchoAll）
+   → woody/res/php/_editstockoptionform.php （表单 + 三个 switch 表）
+   → woody/res/php/_submitstockoptions.php  （POST 目标 + 写函数）
+
+   与 PHP 的形态差异只有一处：那边表单里还有 login / symbol 两个**只读**框
+   （前者给"基金申购金额"那一项用，后者是页面参数），本地不写会员，
+   符号在 URL 里已经明确，所以只保留 日期 + 值 + 提交 三件套。
+   `date_enabled` 为假时日期框 disabled —— 与 PHP 的 HtmlElementDisabled() 同义
+   （ADR / AH / HA / 股票说明 / 配对仓位 这几项没有日期概念）。 #}
+{% block title %}{{ symbol }} {{ form.option.submit if form else '' }}{% endblock %}
+{% block content %}
+  {% if not form %}
+    <h1>{{ symbol }}</h1>
+    <p class="hint">取不到编辑项。</p>
+  {% else %}
+
+  <h1>{{ symbol }} · {{ form.option.submit }}</h1>
+
+  <p class="table-note">
+    <code>{{ form.option.memo }}</code>
+  </p>
+
+  {% if error %}
+    <ul class="flash"><li>{{ error }}</li></ul>
+  {% endif %}
+
+  {% if not admin %}
+    <p class="hint">
+      当前身份不是管理员，只能查看不能写。本地演示环境默认就是管理员身份
+      （<code>web/services/admin_auth.py</code>）；要把自己切成非管理员来验权限，
+      设环境变量 <code>PALMMICRO_ADMIN_EMAIL=someone@example.com</code> 即可。
+    </p>
+  {% endif %}
+
+  {% if form.notice %}
+    {# 符号不在库 / 该项未迁：只摆提示，不摆表单 —— 让人先填一遍再被拒没意义 #}
+    <p class="hint">{{ form.notice }}</p>
+  {% elif form.option.migrated %}
+    <form class="admin-form" method="post"
+          action="{{ url_for('stock.stock_option_edit', symbol=symbol, option=form.option.key) }}">
+      <p>
+        <label for="date">日期</label><br />
+        <input type="text" id="date" name="date" size="12" value="{{ form.date }}"
+               class="textfield"
+               {% if not form.date_enabled %}disabled{% elif not admin %}readonly{% endif %} />
+        {% if not form.date_enabled %}
+          <span class="table-note">这一项没有日期（整份替换）。</span>
+        {% endif %}
+      </p>
+      <p>
+        <label for="value">值</label><br />
+        <textarea id="value" name="value" rows="6" cols="75"
+                  {% if not admin %}readonly{% endif %}>{{ form.value }}</textarea>
+      </p>
+      <p>
+        <button type="submit" name="submit" value="{{ form.option.submit }}"
+                {% if not admin %}disabled{% endif %}>{{ form.option.submit }}</button>
+        <a href="{{ url_for('stock.stock_option_index', symbol=symbol) }}">全部可编辑项</a>
+      </p>
+    </form>
+  {% endif %}
+
+  <p>
+    <a href="{{ url_for('stock.stock_option_index', symbol=symbol) }}">全部可编辑项</a>
+    <a href="{{ url_for('stock.stock_detail_page', symbol=symbol) }}">股票详情</a>
+    <a href="{{ url_for('holdings.holdings_page', symbol=symbol) }}">基金持仓</a>
+  </p>
+
+  {% endif %}
+{% endblock %}

@@ -1,7 +1,7 @@
 # 剩余未迁页面清单（"生产端未展示页面"及其它）
 
 > 复核日期：2026-10-30
-> 判定依据：`woody/res/*.php` 全量清点 + Flask `url_map` 39 条路由 + 真库/测试客户端实测
+> 判定依据：`woody/res/*.php` 全量清点 + Flask `url_map` 41 条路由 + 真库/测试客户端实测
 > 本文只记**现状与缺口**，已完成项的细节见各自的 `README_*_migration.md`
 
 ## 一、这一批指什么
@@ -15,28 +15,29 @@
 | 类别 | 数量 | 说明 |
 |---|---|---|
 | 按符号生成的详情页 | 131 | `sh513100cn.php` 这类，靠 URL 参数生成，Python 用 `/fund/<symbol>`、`/stock/<symbol>` 一个路由覆盖 |
-| **edit 族** | 18 | 15 个是 `_editstockoption.php` 的 16 项分派表（去掉已迁的季报），另 3 个独立 |
-| **submit 族** | 7 | 表单 POST 目标 |
+| **edit 族** | 9 | 15 个是 `_editstockoption.php` 的 16 项分派表（去掉季报、再去掉本次迁的 10 项 = 6），另 3 个独立 |
+| **submit 族** | 4 | 表单 POST 目标（其中 `submitstockoptions` 的 10 个分支已由编辑页承接） |
 | 其它 | 50 | 分组页 / 历史页 / 账号页 / 工具页 |
 
-Flask 侧现有 **39 条路由**（`create_app().url_map`）。
+Flask 侧现有 **41 条路由**（`create_app().url_map`）。
 
-## 二、已迁的部分（6 个入口）
+## 二、已迁的部分（7 个入口）
 
 | PHP 页面 | Python | 备注 |
 |---|---|---|
 | `editquarterreportcn.php` | `GET/POST /holdings/quarter/<symbol>` | `QuarterReportSql(DailyStringSql)`，填 `0` = 删除 |
 | `editstockgroupcn.php` | `/admin/groups`、`/admin/group/<id>`、`POST /admin/group/submit` | 账号体系暂缓，固定演示成员 |
 | `editstocktransactioncn.php` | `GET /transactions/edit` | `core/edittransactionform.py` |
+| **edit 族 10 项** | `GET|POST /stock/<symbol>/edit/<option>` | 一个路由顶 10 个页面，**索引页** `GET /stock/<symbol>/edit`（PHP 没有），见 `README_stock_option_edit_migration.md` |
 | `submitgroup.php` | `POST /admin/group/submit` | |
 | `submitholdings.php` | `POST /holdings/submit` | 穷举页"确认更新持仓"按钮 |
 | `submittransaction.php` | `POST /transactions/submit` | `core/submittransaction.py` 七动作 |
-| `submitstockoptions.php` | **只迁了 REPORT 分支** | 其余 15 个选项的写回都没有 |
+| `submitstockoptions.php` | **只迁了 REPORT 分支** | 16 项里另 10 项的分派已在 `/stock/<symbol>/edit/<option>`，但**不是**走这个 POST 入口 |
 
-## 三、edit 族：还剩 15 项
+## 三、edit 族：还剩 6 项
 
-分派表 `GetStockOptionArray()`（`php/stocklink.php:255`）共 16 项，减去已迁的
-`editquarterreport` = **15 项未迁**。16 个页面文件都是 4 行壳子：
+分派表 `GetStockOptionArray()`（`php/stocklink.php:255`）共 16 项，
+减去季报那 1 项与本次迁的 10 项 = **6 项未迁**。16 个页面文件都是 4 行壳子：
 
 ```php
 <?php
@@ -47,38 +48,48 @@ require('../../php/ui/_editcn.php');
 真正的内容在 `_editstockoptionform.php`（407 行）与写入口
 `_submitstockoptions.php` 的 `_updateOptionDailySql()`。
 
-| 页面 | 动作（`STOCK_OPTION_*` 原文） | 落库表 | 数据层 | 状态 |
-|---|---|---|---|---|
-| `editcalibrationcn.php` | 手工校准值 | `calibrationhistory` | 缺写方法 | 未迁 |
-| `editfundcn.php` | 修改对应配对代码和仓位 | `fundpair` + `fundposition` | 缺 | 未迁 |
-| `editnetvaluecn.php` | 修改净值 | `netvaluehistory` | 缺写方法 | 未迁 |
-| `editpremiumcn.php` | 期货升水 | `futurepremium` | 缺 | 未迁 |
-| `editsharesdiffcn.php` | 场内新增(万) | `sharesdiff` + `shareshistory` | 缺（表在演示库都没有） | 未迁 |
-| `editstockcn.php` | 修改股票说明 | `stock.name` | 有（`StockSql`） | 未迁 |
-| `editstockadrcn.php` | 修改H股对应ADR代码 | `adrpair` | 缺 | 未迁 |
-| `editstockahcn.php` | 修改A股对应H股代码 | `ahpair` | 缺 | 未迁 |
-| `editstockamountcn.php` | 基金申购金额 | `groupitemamount` | 缺 | 未迁 |
-| `editstockclosecn.php` | 更新收盘价 | `stockhistory` | 底座已补（`write_history`） | 未迁 |
-| `editstockdividendcn.php` | 分红 | `stockdividend` | 缺（表在演示库都没有） | 未迁 |
-| `editstockemacn.php` | 修改200/50日EMA | `stockema200` / `stockema50` | 缺 | 未迁 |
-| `editstockhacn.php` | 修改H股对应A股代码 | `ahpair` | 缺 | 未迁 |
-| `editstockholdingscn.php` | 修改持仓 | `holdings` + `holdingsdate` + `fundposition` | 部分（`holdingsupdater` 有写） | 未迁 |
-| `editstocksplitcn.php` | 拆股或合股 | `stockhistory`（复权价） | 底座已补 | 未迁 |
+| 页面 | 动作（`STOCK_OPTION_*` 原文） | 落库表 | 状态 |
+|---|---|---|---|
+| `editcalibrationcn.php` | 手工校准值 | `calibrationhistory` + `lastcalibration` | 未迁（属估值链路） |
+| `editfundcn.php` | 修改对应配对代码和仓位 | `fundpair` + `fundposition` | **已迁** |
+| `editnetvaluecn.php` | 修改净值 | `netvaluehistory` | **已迁** |
+| `editpremiumcn.php` | 期货升水 | `futurepremium` | **已迁** |
+| `editsharesdiffcn.php` | 场内新增(万) | `sharesdiff` | **已迁**（建表种子已补） |
+| `editstockcn.php` | 修改股票说明 | `stock.name` | **已迁** |
+| `editstockadrcn.php` | 修改H股对应ADR代码 | `adrpair` + `fundposition` | **已迁** |
+| `editstockahcn.php` | 修改A股对应H股代码 | `ahpair` | **已迁** |
+| `editstockamountcn.php` | 基金申购金额 | `groupitemamount` | 未迁（账号体系） |
+| `editstockclosecn.php` | 更新收盘价 | `stockhistory` | **已迁**（只改已有行） |
+| `editstockdividendcn.php` | 分红 | `stockdividend` + 复权重算 | 未迁（要重算） |
+| `editstockemacn.php` | 修改200/50日EMA | `stockema200` / `stockema50` | **已迁** |
+| `editstockhacn.php` | 修改H股对应A股代码 | `ahpair` | **已迁** |
+| `editstockholdingscn.php` | 修改持仓 | `holdings` + `holdingsdate` + `fundposition` | 已有入口（穷举持仓页） |
+| `editstocksplitcn.php` | 拆股或合股 | `stocksplit` + `stockhistory` 全序列 | 未迁（要重算） |
 
-**共同底座已补齐（2026-10-30）**：`sql/historytable.py::DailyCloseSql` 原来只有读方法，
-`insert_daily/update_daily/delete_by_date/write_daily` 只长在 `DailyStringSql`
-（季报那条线）上。现已按 `php/sql/sqldailyclose.php` 补齐到基类，并连带补了
-`DailyTimeSql`（多 `time`）、`CalibrationSql`（`num` 重置/累加）、
-`StockHistorySql.write_history`（多 `volume`/`adjclose`，**不能用父类方法**）。
-注意 **MIN_FLOAT_VAL 比较**与 **INSERT 分支的周末闸门** —— 与 `DailyStringSql`
-的差异见 pitfalls #124。详见 `README_dailyclose_write_migration.md`
-（含 22 例真实 PHP 逐例对照）。
+**底座两个（均已补齐）**：
 
-## 四、submit 族：还剩 3 个页面 + 1 个页面的 15 个分支
+* `sql/historytable.py::DailyCloseSql` 原来的写方法只长在 `DailyStringSql`
+  （季报那条线）上，现已按 `php/sql/sqldailyclose.php` 补齐到基类，并连带补了
+  `DailyTimeSql`（多 `time`）、`CalibrationSql`（`num` 重置/累加）、
+  `StockHistorySql.write_history`（多 `volume`/`adjclose`）。注意
+  **MIN_FLOAT_VAL 比较**与 **INSERT 分支的周末闸门** —— 与 `DailyStringSql`
+  的差异见 pitfalls #124。详见 `README_dailyclose_write_migration.md`（22 例对照）。
+* `sql/optionstore.py`：`ValStore` / `IntStore`（字符串读写在**这层**）/
+  `PairStore` / `StockPairStore` + 六张日频小表。19 个操作与真 PHP 逐例一致，
+  见 `README_stock_option_edit_migration.md`。
+
+**未迁的 6 项按依赖分组**（理由也写在页面 `note` 里，不在代码里藏）：
+
+1. 已有专门页：`editquarterreport`、`editstockholdings`；
+2. 账号体系：`editstockamount`（要先换 `stockgroupitem.id`）；
+3. 要连带重算：`editstockdividend` / `editstocksplit` / `editcalibration` ——
+   写一行之后要重算该日之后的复权序列与校准值，属于估值链路。
+
+## 四、submit 族：还剩 3 个页面（+ `submitstockoptions` 的 6 个分支）
 
 | 页面 | 干什么 | 状态 |
 |---|---|---|
-| `submitstockoptions.php` | `_editstockoptionform` 的 POST 目标，按选项分派到 15 张表 | **只迁了季报一个分支** |
+| `submitstockoptions.php` | `_editstockoptionform` 的 POST 目标，按选项分派到 15 张表 | 16 项里 **10 项**已由 `/stock/<symbol>/edit/<option>` 的 POST 承接（走服务层分派，不复用这个文件）；剩 6 项随各自的页面一起做 |
 | `submitdividend.php` | 抓 SPDR 官方分红（`ssga.com` JSON）写 `stockdividend` | 未迁 |
 | `submitnetvalue.php` | 抓 Invesco / SPDR 官方净值写 `netvaluehistory` | 未迁 |
 | `submithistory.php` | 管理员刷新 Yahoo 历史图表（`UpdateYahooHistoryChart`） | 未迁 |
@@ -105,14 +116,18 @@ require('../../php/ui/_editcn.php');
 
 1. ~~**补 `DailyCloseSql` 写方法**~~ —— **2026-10-30 已完成**，见
    `README_dailyclose_write_migration.md`；
-2. **一个通用编辑页 `/stock/<symbol>/edit/<option>`**：按 `GetStockOptionArray()`
-   的表驱动，一套模板 + 一个 POST，比 15 个独立页面省事；`submitstockoptions.php`
-   的 `_updateOptionDailySql()` 语义（`empty()` → 删除）已有 `_php_empty()` 可复用；
-3. 非日频的四张表（`futurepremium` / `sharesdiff` / `stockdividend` / 配对三表 +
-   `groupitemamount`）各补一个小 Sql 类，**演示库里 `sharesdiff`、`stockdividend`
-   两张表根本没有**，要先加 DDL 种子；
-4. 行业分组页：`FUND_GROUPS` 加键即可复用现有 `/fund/<group>` 全套服务；
-5. `deletesymbol.php` 最后做（要连带清 8 张表，风险最高）。
+2. ~~**一个通用编辑页 `/stock/<symbol>/edit/<option>`**~~ —— **2026-10-30 已完成**
+   （16 项迁 10 项），见 `README_stock_option_edit_migration.md`；
+3. ~~**非日频四张表补 Sql 类 + 建缺表**~~ —— `sql/optionstore.py` 已收口
+   （`ValStore`/`IntStore`/`PairStore` + 六张日频小表），`sharesdiff`/
+   `stockdividend`/`stocksplit` 三张表的 DDL 由 `dbtools/seed_option_tables.py`
+   补上（演示库 30 → 33 张）。**表建好了但两页仍不写**，因为要连带重算；
+4. **剩 6 项按依赖推进**：`editcalibration` 跟 `fundestcalc` 的校准写入口一起；
+   `editstockdividend` / `editstocksplit` 先把"改一行 → 重算复权序列与校准值"
+   抽成独立链路（要动的东西：`_updateStockHistoryAdjCloseByDividend` /
+   `BySplit` / `_updateStockOptionSplitTransactions`）；`editstockamount` 等账号体系；
+5. 行业分组页：`FUND_GROUPS` 加键即可复用现有 `/fund/<group>` 全套服务；
+6. `deletesymbol.php` 最后做（要连带清 8 张表，风险最高）。
 
 ## 八、怎么自己复核一遍
 

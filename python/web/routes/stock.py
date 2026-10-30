@@ -25,7 +25,16 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from flask import Blueprint, current_app, jsonify, render_template, request, url_for
+from flask import (
+    Blueprint,
+    current_app,
+    flash,
+    jsonify,
+    redirect,
+    render_template,
+    request,
+    url_for,
+)
 
 from web.bootstrap import install_paths
 
@@ -34,6 +43,7 @@ install_paths()
 from calc.fundgroups import get_symbol_group  # noqa: E402
 from ref.externallink import get_xueqiu_url  # noqa: E402
 from sql.historytable import TABLE_COMMON_DISPLAY  # noqa: E402
+from web.services.admin_auth import denied_message, is_admin  # noqa: E402
 from web.services.stock_detail_service import StockDetailService  # noqa: E402
 from web.services.stock_service import (  # noqa: E402
     StockService,
@@ -338,3 +348,119 @@ def stock_detail_page(symbol: str):
         trading_service=_get_trading_service(),
     )
     return render_template("stock_detail.html", detail=detail, symbol=symbol)
+
+
+# ---------------------------------------------------------------------------
+# 编辑页（PHP edit 族 16 个 edit*.php → 一个 <option> 参数）
+# ---------------------------------------------------------------------------
+#: ``GetStockEditDeleteLink()``（``php/stocklink.php:288``）把"修改"和"删除"
+#: 两个链接并排放在详情页；本地删标的（``deletesymbol.php``）还没迁，
+#: 所以只给"修改"这一半。
+
+
+def _get_stock_option_service() -> Any:
+    """编辑页服务；注入了就用注入的（测试里整个顶掉）。
+
+    与 ``_get_detail_service`` 同一套路子：默认实现要连库，单测只想验
+    "分派对不对、权限挡没挡住、未迁的怎么提示"，把装配顶掉最直接。
+    """
+    factory = current_app.extensions.get("stock_option_service_factory")
+    if factory is not None:
+        return factory()
+    from web.services.stock_option_service import StockOptionService
+
+    reference_service = _get_reference_service()
+    return StockOptionService(source=getattr(reference_service, "source", None))
+
+
+@stock_bp.route("/stock/<symbol>/edit")
+def stock_option_index(symbol: str):
+    """某个符号的"可编辑项"索引 —— PHP 没有这一页，16 个页面只能手敲 URL。
+
+    补这一页的理由：PHP 的 16 个 ``edit*.php`` 都不进任何导航
+    （``GetStockMenuLinks()`` 与 ``EchoLinks()`` 都没有入口），本版把它们收成
+    一个 ``<option>`` 参数以后，缺一个索引就更没法发现了。列表顺序与
+    ``GetStockOptionArray()`` 一致，已迁 / 未迁分开标。
+    """
+    service = _get_stock_option_service()
+    options = service.list_options()
+    return render_template(
+        "stock_option_index.html",
+        symbol=symbol,
+        options=options,
+        migrated=[item for item in options if item["migrated"]],
+        pending=[item for item in options if not item["migrated"]],
+        admin=is_admin(),
+    )
+
+
+@stock_bp.route("/stock/<symbol>/edit/<option>", methods=["GET", "POST"])
+def stock_option_edit(symbol: str, option: str):
+    """通用编辑页（PHP ``edit<option>cn.php`` → ``_editstockoption.php``）。
+
+    ## 一个路由顶 16 个页面
+
+    PHP 的 16 个页面文件都是同一段 4 行壳子，差别只有 URL 里的页面名 ——
+    它决定 ``_getEditStockOptionSubmit()`` 把哪一项交给表单。本版把页面名变成
+    路径参数，读写分派全在
+    :class:`web.services.stock_option_service.StockOptionService` 里。
+
+    ## 写入语义
+
+    与 ``_SubmitOptionsAccount::Process()`` 一致：按选项分派，**各自实现**。
+    共同的那一半（日频表）走 ``_updateOptionDailySql`` —— 空值（含 ``'0'``）
+    按日期删、否则 ``WriteDaily``。
+
+    ## 权限
+
+    与其它写入口一致：``is_admin()`` 为假时 POST 直接 403，GET 只读展示
+    （表单控件 disabled）。PHP 那边非管理员进来会看到 ``$strVal`` 只读 +
+    按钮变"返回"，连 POST 都不会发；这里保留表单但挡住写，效果等价且更好懂。
+    """
+    from web.services.stock_option_service import get_stock_option
+
+    spec = get_stock_option(option)
+    if spec is None:
+        return render_template(
+            "error.html",
+            message="没有「%s」这个编辑项。可选项见 /stock/%s/edit。" % (option, symbol),
+            status=404,
+        ), 404
+
+    service = _get_stock_option_service()
+    admin = is_admin()
+    error = ""
+    form = service.get_form(symbol, option)
+
+    if request.method == "POST":
+        if not admin:
+            return render_template(
+                "error.html", message=denied_message(), status=403
+            ), 403
+        result = service.submit(
+            symbol,
+            option,
+            request.form.get("date"),
+            request.form.get("value"),
+        )
+        if result.get("ok"):
+            flash("%s %s：%s" % (symbol, spec.submit, result.get("message")))
+        else:
+            error = result.get("message") or "没有写入。"
+        #: POST-Redirect-GET 只在成功时做：失败要把人留在页面上看错误，
+        #: 顺便把刚才提交的值原样填回去（否则辛苦填的一长串就没了）。
+        if result.get("ok"):
+            return redirect(
+                url_for("stock.stock_option_edit", symbol=symbol, option=option)
+            )
+        form = dict(form or {})
+        form["date"] = request.form.get("date") or form.get("date", "")
+        form["value"] = request.form.get("value") or form.get("value", "")
+
+    return render_template(
+        "stock_option_form.html",
+        symbol=symbol,
+        admin=admin,
+        error=error,
+        form=form,
+    )

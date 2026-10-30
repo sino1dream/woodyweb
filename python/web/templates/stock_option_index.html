@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{# 单个符号的"可编辑项"索引 —— PHP **没有**这一页。
+
+   PHP 的 16 个 edit*.php（editcalibrationcn.php / editstockcn.php / …）都是
+   同一段 4 行壳子，全都**不进任何导航**（GetStockMenuLinks() 与
+   EchoLinks() 都没有入口），只能手敲 URL。本版把它们收成一个
+   <option> 参数之后，没有索引页就更没法发现了，所以补这一页。
+
+   列表顺序与 GetStockOptionArray()（php/stocklink.php:255）一致 ——
+   保持原序是为了能逐行对照 PHP 源码。 #}
+{% block title %}{{ symbol }} 可编辑项{% endblock %}
+{% block content %}
+  <h1>{{ symbol }} 可编辑项</h1>
+
+  <p class="table-note">
+    对应 PHP 的 <code>edit*.php</code> 一族：16 个页面共用同一张表单
+    （<code>_editstockoptionform.php</code>）与同一个 POST 目标
+    （<code>submitstockoptions.php</code>），靠 URL 里的页面名分派。
+    本版收成一个路由 <code>/stock/&lt;symbol&gt;/edit/&lt;option&gt;</code>。
+  </p>
+
+  {% if not admin %}
+    <p class="hint">
+      当前身份不是管理员，编辑页只能看不能写。本地演示环境默认就是管理员身份
+      （<code>web/services/admin_auth.py</code>）；要把自己切成非管理员来验权限，
+      设环境变量 <code>PALMMICRO_ADMIN_EMAIL=someone@example.com</code> 即可。
+    </p>
+  {% endif %}
+
+  <h2>已迁（{{ migrated | length }} 项）</h2>
+  <table class="data-table">
+    <thead>
+      <tr><th>动作</th><th>说明</th></tr>
+    </thead>
+    <tbody>
+      {% for item in migrated %}
+        <tr>
+          <td>
+            <a href="{{ url_for('stock.stock_option_edit', symbol=symbol, option=item.key) }}">
+              {{ item.submit }}
+            </a>
+          </td>
+          <td>{{ item.memo }}</td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <h2>未迁（{{ pending | length }} 项）</h2>
+  <table class="data-table">
+    <thead>
+      <tr><th>动作</th><th>为什么没迁</th></tr>
+    </thead>
+    <tbody>
+      {% for item in pending %}
+        <tr>
+          <td>{{ item.submit }}</td>
+          <td>{{ item.note }}</td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <p>
+    <a href="{{ url_for('stock.stock_detail_page', symbol=symbol) }}">股票详情</a>
+    <a href="{{ url_for('holdings.exhaustive_holdings_page', symbol=symbol) }}">穷举持仓比例</a>
+  </p>
+{% endblock %}
