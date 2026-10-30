@@ -762,5 +762,335 @@ class DailyStringSqlTest(unittest.TestCase):
         self.assertEqual(QuarterReportSql(FakeConnection()).table, "quarterreport")
 
 
+class DailyCloseSqlWriteTest(unittest.TestCase):
+    """``DailyCloseSql`` 的写方法 —— ``php/sql/sqldailyclose.php:143-213``。
+
+    这一层是全站的历史/净值/校准/份额写入口的共同底座，四条口径最容易写错：
+
+    1. ``write_daily`` 是"**值变了就覆盖**"，不是"已有就不动"；
+    2. 周末闸门**只在 INSERT 分支**（有行时照改）；
+    3. ``InsertDaily`` 不是 upsert —— 已有同日行直接返回 ``False``；
+    4. ``update_daily`` 按**主键 id** 改（``LIMIT 1``），不是按 (stock_id, date)。
+    """
+
+    def _sql_of(self, connection, prefix):
+        return [sql for sql, _ in connection.queries if sql.strip().upper().startswith(prefix)]
+
+    def test_insert_writes_three_columns(self):
+        connection = FakeConnection()
+        self.assertTrue(NetValueHistorySql(connection).insert_daily(59, "2026-09-30", "1.234"))
+        sql, params = connection.queries[-1]
+        self.assertIn("INSERT INTO `netvaluehistory`", sql)
+        self.assertIn("`stock_id`, `date`, `close`", sql)
+        self.assertEqual(params, (59, "2026-09-30", "1.234"))
+        self.assertEqual(connection.commits, 1)
+
+    def test_insert_none_close_becomes_zero(self):
+        """``None`` 落库为 0，不依赖服务器的 ``sql_mode``（PHP 拼空串由 MySQL 转 0）。"""
+        connection = FakeConnection()
+        NetValueHistorySql(connection).insert_daily(59, "2026-09-30", None)
+        self.assertEqual(connection.queries[-1][1], (59, "2026-09-30", 0.0))
+
+    def test_insert_rejects_existing_row(self):
+        """不是 upsert：已有同日行直接返回 False，不发 INSERT。"""
+        connection = FakeConnection({"netvaluehistory": [
+            {"id": 7, "stock_id": 59, "date": "2026-09-30", "close": "1.234"},
+        ]})
+        self.assertFalse(NetValueHistorySql(connection).insert_daily(59, "2026-09-30", "9.9"))
+        self.assertEqual(self._sql_of(connection, "INSERT"), [])
+
+    def test_update_targets_primary_key_with_limit_one(self):
+        connection = FakeConnection()
+        self.assertTrue(NetValueHistorySql(connection).update_daily(7, "2.345"))
+        sql, params = connection.queries[-1]
+        self.assertIn("UPDATE `netvaluehistory`", sql)
+        self.assertIn("WHERE id = %s LIMIT 1", sql)
+        self.assertEqual(params, ("2.345", 7))
+
+    def test_update_rejects_blank_id(self):
+        """``UpdateById`` 的 ``_SqlBuildWhere_id`` 拿不到 id 就不发语句。"""
+        connection = FakeConnection()
+        self.assertFalse(NetValueHistorySql(connection).update_daily(None, "2.345"))
+        self.assertEqual(self._sql_of(connection, "UPDATE"), [])
+
+    def test_write_daily_updates_when_value_changed(self):
+        """核心口径：**值变了要覆盖**（校准值写错时靠这一支刷回来）。"""
+        connection = FakeConnection({"netvaluehistory": [
+            {"id": 7, "stock_id": 59, "date": "2026-09-30", "close": "1.234"},
+        ]})
+        self.assertTrue(NetValueHistorySql(connection).write_daily(59, "2026-09-30", "2.345"))
+        self.assertEqual(len(self._sql_of(connection, "UPDATE")), 1)
+        self.assertEqual(self._sql_of(connection, "INSERT"), [])
+
+    def test_write_daily_skips_when_value_within_tolerance(self):
+        """差值 ≤ ``MIN_FLOAT_VAL`` 视为没变，一句语句都不发。"""
+        connection = FakeConnection({"netvaluehistory": [
+            {"id": 7, "stock_id": 59, "date": "2026-09-30", "close": "1.2340001"},
+        ]})
+        self.assertFalse(
+            NetValueHistorySql(connection).write_daily(59, "2026-09-30", "1.234")
+        )
+        self.assertEqual(self._sql_of(connection, "UPDATE"), [])
+        self.assertEqual(self._sql_of(connection, "INSERT"), [])
+
+    def test_write_daily_blocks_weekend_insert(self):
+        """新行 + 周末 → 不写（新浪偶尔给周末的假净值）。"""
+        connection = FakeConnection()
+        self.assertFalse(NetValueHistorySql(connection).write_daily(59, "2026-09-27", "1.234"))
+        self.assertEqual(self._sql_of(connection, "INSERT"), [])
+
+    def test_write_daily_weekend_row_still_updates(self):
+        """**周末闸门只在 INSERT 分支** —— 库里已有的周末行照样能改。"""
+        connection = FakeConnection({"netvaluehistory": [
+            {"id": 7, "stock_id": 59, "date": "2026-09-27", "close": "1.0"},
+        ]})
+        self.assertTrue(NetValueHistorySql(connection).write_daily(59, "2026-09-27", "1.234"))
+        self.assertEqual(len(self._sql_of(connection, "UPDATE")), 1)
+
+    def test_write_daily_inserts_on_weekday(self):
+        connection = FakeConnection()
+        self.assertTrue(NetValueHistorySql(connection).write_daily(59, "2026-09-30", "1.234"))
+        self.assertEqual(len(self._sql_of(connection, "INSERT")), 1)
+
+    def test_write_daily_array_counts_only_real_writes(self):
+        """批量写返回真正落库的条数：值没变 / 周末新行都不计。"""
+        connection = FakeConnection({"netvaluehistory": [
+            {"id": 7, "stock_id": 59, "date": "2026-09-30", "close": "1.234"},
+        ]})
+        written = NetValueHistorySql(connection).write_daily_array(
+            59, {"2026-09-30": "1.234", "2026-10-01": "1.5", "2026-10-03": "1.6"}
+        )
+        self.assertEqual(written, 1)
+
+    def test_delete_by_date_returns_rowcount(self):
+        connection = FakeConnection()
+        self.assertEqual(NetValueHistorySql(connection).delete_by_date(59, "2026-09-30"), 1)
+        sql, params = connection.queries[-1]
+        self.assertIn("DELETE FROM `netvaluehistory`", sql)
+        self.assertEqual(params, (59, "2026-09-30"))
+
+    def test_delete_close_is_dry_run_by_default(self):
+        """全表 DELETE 默认只报数、不动数据。"""
+        connection = FakeConnection(
+            {"netvaluehistory": [{"id": 1, "stock_id": 59, "date": "2026-09-30", "close": "0"}]},
+            counts={"netvaluehistory": {"0.000000": 3}},
+        )
+        self.assertEqual(NetValueHistorySql(connection).delete_close(), 3)
+        self.assertEqual(self._sql_of(connection, "DELETE"), [])
+
+    def test_delete_close_applies_when_asked(self):
+        connection = FakeConnection(
+            {"netvaluehistory": [{"id": 1, "stock_id": 59, "date": "2026-09-30", "close": "0"}]},
+            counts={"netvaluehistory": {"0.000000": 2}},
+        )
+        self.assertEqual(NetValueHistorySql(connection).delete_close(dry_run=False), 2)
+        self.assertEqual(len(self._sql_of(connection, "DELETE")), 1)
+
+
+class InvalidDateTest(unittest.TestCase):
+    """``IsInvalidDate()`` / ``DeleteInvalidDate()`` —— ``sqldailyclose.php:189-199``。
+
+    判据三条：早于 ``OldestYMD``（2014-01-01）、周末、未来。
+    """
+
+    def test_too_old(self):
+        self.assertTrue(NetValueHistorySql(FakeConnection()).is_invalid_date({"date": "2013-12-31"}))
+
+    def test_oldest_boundary_is_valid(self):
+        """2014-01-01 是周三，正好在界内 —— 不等于 "too old"。"""
+        self.assertFalse(
+            NetValueHistorySql(FakeConnection()).is_invalid_date(
+                {"date": "2014-01-01"}, today=datetime.date(2026, 10, 30)
+            )
+        )
+
+    def test_weekend(self):
+        self.assertTrue(NetValueHistorySql(FakeConnection()).is_invalid_date({"date": "2026-09-27"}))
+
+    def test_future(self):
+        self.assertTrue(
+            NetValueHistorySql(FakeConnection()).is_invalid_date(
+                {"date": "2026-11-02"}, today=datetime.date(2026, 10, 30)
+            )
+        )
+
+    def test_plain_weekday_is_valid(self):
+        self.assertFalse(
+            NetValueHistorySql(FakeConnection()).is_invalid_date(
+                {"date": "2026-09-30"}, today=datetime.date(2026, 10, 30)
+            )
+        )
+
+    def test_unparsable_date_is_reported(self):
+        """刻意偏离：解析不出的日期判 invalid（PHP 会当"今天"放过去）。"""
+        self.assertTrue(NetValueHistorySql(FakeConnection()).is_invalid_date({"date": "bad"}))
+
+    def test_delete_invalid_dates_dry_run_lists_only(self):
+        connection = FakeConnection({"netvaluehistory": [
+            {"id": 1, "stock_id": 59, "date": "2026-09-26"},   # 周六
+            {"id": 2, "stock_id": 59, "date": "2026-09-30"},   # 周三
+        ]})
+        self.assertEqual(NetValueHistorySql(connection).delete_invalid_dates(), 1)
+        self.assertEqual(
+            [sql for sql, _ in connection.queries if sql.strip().upper().startswith("DELETE")], []
+        )
+
+    def test_delete_invalid_dates_applies(self):
+        connection = FakeConnection({"netvaluehistory": [
+            {"id": 1, "stock_id": 59, "date": "2026-09-26"},
+        ]})
+        self.assertEqual(NetValueHistorySql(connection).delete_invalid_dates(dry_run=False), 1)
+        sql, params = connection.queries[-1]
+        self.assertIn("DELETE FROM `netvaluehistory` WHERE id = %s LIMIT 1", sql)
+        self.assertEqual(params, (1,))
+
+
+class TimeTableWriteTest(unittest.TestCase):
+    """``DailyTimeSql`` / ``CalibrationSql`` 的覆写 —— ``php/sql/sqldailytime.php``。
+
+    ``time`` / ``num`` 都是 ``NOT NULL`` 且无默认值，漏带就是 ``1364``；
+    而 ``num`` 的语义分两条路：``UpdateDaily`` **重置为 1**，
+    ``WriteDailyAverage`` 才 **累加平均**。
+    """
+
+    def _sql_of(self, connection, prefix):
+        return [sql for sql, _ in connection.queries if sql.strip().upper().startswith(prefix)]
+
+    def test_insert_carries_time(self):
+        connection = FakeConnection()
+        self.assertTrue(FundEstSql(connection).insert_daily(59, "2026-09-30", "1.234"))
+        sql, params = connection.queries[-1]
+        self.assertIn("`time`", sql)
+        self.assertEqual(len(params), 4)
+        self.assertEqual(params[:3], (59, "2026-09-30", "1.234"))
+        self.assertRegex(params[3], r"^\d{2}:\d{2}:\d{2}$")
+
+    def test_update_carries_time(self):
+        connection = FakeConnection()
+        self.assertTrue(FundEstSql(connection).update_daily(7, "1.234"))
+        sql, params = connection.queries[-1]
+        self.assertIn("`close` = %s, `time` = %s", sql)
+        self.assertEqual(params[0], "1.234")
+        self.assertEqual(params[-1], 7)
+
+    def test_now_time_is_shanghai(self):
+        """``DebugGetTime()`` 按 ``Asia/Shanghai``（``php/debug.php:4``）取。"""
+        utc = datetime.datetime.utcnow() + datetime.timedelta(hours=8)
+        text = FundEstSql.now_time()
+        self.assertRegex(text, r"^\d{2}:\d{2}:\d{2}$")
+        #: 允许跨零点（23 是"退一小时"）与跨秒（0/1）
+        self.assertIn((int(text[:2]) - utc.hour) % 24, (0, 1, 23))
+
+    def test_calibration_insert_sets_num_one(self):
+        connection = FakeConnection()
+        CalibrationSql(connection).insert_daily(59, "2026-09-30", "16517.232")
+        sql, params = connection.queries[-1]
+        self.assertIn("`num`", sql)
+        self.assertEqual(params[4], 1)
+
+    def test_calibration_update_resets_num_to_one(self):
+        """``UpdateDaily`` → ``UpdateDailyAverage($id, $close)``，``num`` 重置为 1
+        （默认参数就是 1，不是累加）。"""
+        connection = FakeConnection()
+        CalibrationSql(connection).update_daily(7, "16517.232")
+        sql, params = connection.queries[-1]
+        self.assertIn("`num` = %s", sql)
+        self.assertEqual(params[2], 1)
+
+    def test_write_daily_average_accumulates(self):
+        """``(num*old + new) / (num+1)``，``num`` 加一。"""
+        connection = FakeConnection({"calibrationhistory": [
+            {"id": 7, "stock_id": 59, "date": "2026-09-30", "close": 100.0, "time": "10:00:00", "num": 2},
+        ]})
+        self.assertTrue(
+            CalibrationSql(connection).write_daily_average(59, "2026-09-30", "106")
+        )
+        sql, params = connection.queries[-1]
+        self.assertEqual(params[0], 102.0)   # (2*100 + 106) / 3
+        self.assertEqual(params[2], 3)
+
+    def test_write_daily_average_skips_unchanged(self):
+        connection = FakeConnection({"calibrationhistory": [
+            {"id": 7, "stock_id": 59, "date": "2026-09-30", "close": 100.0, "time": "10:00:00", "num": 2},
+        ]})
+        self.assertFalse(CalibrationSql(connection).write_daily_average(59, "2026-09-30", "100"))
+        self.assertEqual(self._sql_of(connection, "UPDATE"), [])
+        self.assertEqual(self._sql_of(connection, "INSERT"), [])
+
+    def test_write_daily_average_inserts_on_weekend(self):
+        """累加平均那条路**没有**周末闸门（PHP 因 hf_CHA50CFD 的"周日"注释掉了）。"""
+        connection = FakeConnection()
+        self.assertTrue(CalibrationSql(connection).write_daily_average(59, "2026-09-27", "1.0"))
+        self.assertEqual(len(self._sql_of(connection, "INSERT")), 1)
+
+
+class StockHistoryWriteTest(unittest.TestCase):
+    """``StockHistorySql::WriteHistory()`` —— ``php/sql/sqlstocksymbol.php:27``。
+
+    ``stockhistory`` 比日频表多 ``volume`` / ``adjclose`` 两列（都 NOT NULL），
+    所以它不能走父类的 ``write_daily``；三列各有自己的判据。
+    """
+
+    def _sql_of(self, connection, prefix):
+        return [sql for sql, _ in connection.queries if sql.strip().upper().startswith(prefix)]
+
+    def test_insert_writes_all_columns(self):
+        connection = FakeConnection()
+        self.assertTrue(
+            StockHistorySql(connection).write_history(59, "2026-09-30", "2.399", "1500", "2.4")
+        )
+        sql, params = connection.queries[-1]
+        self.assertIn("`close`, `volume`, `adjclose`", sql)
+        self.assertEqual(params, (59, "2026-09-30", "2.399", "1500", "2.4"))
+
+    def test_adjclose_defaults_to_close(self):
+        """``if ($strAdjClose == false) $strAdjClose = $strClose;``"""
+        connection = FakeConnection()
+        StockHistorySql(connection).write_history(59, "2026-09-30", "2.399", "1500")
+        self.assertEqual(connection.queries[-1][1][4], "2.399")
+
+    def test_close_tolerance_is_hardcoded_0005(self):
+        """``close`` 列是 double(10,3)：差 0.0004 不写，差 0.0006 才写。"""
+        connection = FakeConnection({"stockhistory": [
+            {"id": 7, "stock_id": 59, "date": "2026-09-30", "close": 2.399,
+             "volume": "1500", "adjclose": 2.4},
+        ]})
+        self.assertFalse(
+            StockHistorySql(connection).write_history(59, "2026-09-30", "2.3994", "1500", "2.4")
+        )
+        self.assertTrue(
+            StockHistorySql(connection).write_history(59, "2026-09-30", "2.3996", "1500", "2.4")
+        )
+
+    def test_volume_change_updates_only_volume(self):
+        connection = FakeConnection({"stockhistory": [
+            {"id": 7, "stock_id": 59, "date": "2026-09-30", "close": 2.399,
+             "volume": "1500", "adjclose": 2.4},
+        ]})
+        self.assertTrue(
+            StockHistorySql(connection).write_history(59, "2026-09-30", "2.399", "1600", "2.4")
+        )
+        sql, params = connection.queries[-1]
+        self.assertIn("SET `volume` = %s WHERE id = %s", sql)
+        self.assertEqual(params, ("1600", 7))
+
+    def test_blank_volume_lands_as_zero(self):
+        """``$strVolume = ''`` 默认值：列 NOT NULL unsigned，空串必须落 0。"""
+        connection = FakeConnection()
+        StockHistorySql(connection).write_history(59, "2026-09-30", "2.399")
+        self.assertEqual(connection.queries[-1][1][3], 0)
+
+    def test_all_columns_unchanged_writes_nothing(self):
+        connection = FakeConnection({"stockhistory": [
+            {"id": 7, "stock_id": 59, "date": "2026-09-30", "close": 2.399,
+             "volume": "1500", "adjclose": 2.4},
+        ]})
+        self.assertFalse(
+            StockHistorySql(connection).write_history(59, "2026-09-30", "2.399", "1500", "2.4")
+        )
+        self.assertEqual(self._sql_of(connection, "UPDATE"), [])
+        self.assertEqual(self._sql_of(connection, "INSERT"), [])
+
+
 if __name__ == "__main__":
     unittest.main()

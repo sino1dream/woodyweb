@@ -24,12 +24,15 @@
 
 from __future__ import annotations
 
+import datetime
 import re
 from dataclasses import dataclass, field
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Any, Sequence
 
-from sql.quotestore import stock_get_percentage
+# ``_is_weekend`` 是 ``WriteDaily()`` 周末闸门的口径实现（``sql/quotestore.py``
+# 里那份），这里复用而不是再抄一遍：闸门只有一处实现，改的时候不会漏。
+from sql.quotestore import _is_weekend, stock_get_percentage
 from core.stockdata import rtrim0
 # ``sql`` → ``ref`` 是允许的依赖方向（见 ``sql/__init__.py`` 的依赖方向说明）。
 # 这两个下划线函数是 PHP ``floatval`` / ``strval`` 的口径实现，持仓测算表的
@@ -46,6 +49,31 @@ MIN_FLOAT_VAL = 0.0000005
 
 #: ``php/debug.php:12`` 的 ``FLOAT_PRECISION``，``mysql_round`` 的默认精度。
 FLOAT_PRECISION = 6
+
+#: ``OldestYMD`` 的构造日期（``php/class/year_month_day.php:160``）：
+#: 早于这一天的记录算"太老"，由 ``DailyCloseSql.delete_invalid_dates()`` 清理。
+OLDEST_VALID_DATE = datetime.date(2014, 1, 1)
+
+
+def _parse_ymd(value: Any) -> datetime.date:
+    """把 ``date`` 列的值解析成 :class:`datetime.date`；解析不出返回 ``None``。
+
+    容忍 ``datetime`` / ``date`` / ``"YYYY-MM-DD"`` / ``"YYYY-MM-DD HH:MM:SS"``
+    四种形态（MySQL 直连给 ``date``，假桩和 JSON 给字符串）。
+    """
+    if value is None:
+        return None
+    if isinstance(value, datetime.datetime):
+        return value.date()
+    if isinstance(value, datetime.date):
+        return value
+    text = str(value).strip().replace("/", "-")
+    if len(text) < 10:
+        return None
+    try:
+        return datetime.datetime.strptime(text[:10], "%Y-%m-%d").date()
+    except ValueError:
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -704,6 +732,214 @@ class DailyCloseSql:
             return None
         return float(value) / previous
 
+    # -- 写（对应 PHP sqldailyclose.php:143-213）----------------------------
+    def _execute(self, sql: str, params: tuple = ()) -> Any:
+        """执行一条写语句并提交，返回受影响行数。
+
+        **这里没有事务可用**：本项目所有日频历史表都是 MyISAM
+        （``stockhistory`` / ``netvaluehistory`` / ``calibrationhistory`` /
+        ``fundest`` / ``shareshistory`` / ``futurepremium``），MyISAM 不支持
+        事务，``commit()`` 只是空操作 —— 写完就落盘，写坏了回滚不回来。
+
+        所以本类的写方法一律"先查后写"，不靠回滚兜底；批量改历史数据前
+        先跑 ``dbtools/backup_db.py``。
+        """
+        cursor = self.connection.cursor()
+        try:
+            cursor.execute(sql, params)
+            commit = getattr(self.connection, "commit", None)
+            if commit is not None:
+                commit()
+            return cursor.rowcount
+        finally:
+            cursor.close()
+
+    def _prepare_close(self, close: Any) -> Any:
+        """把 ``close`` 规整成要绑定的参数（给子类覆写的钩子）。
+
+        父类写的是 ``double`` 列，``None`` 给 ``0.0``：PHP 是把值直接拼进
+        SQL（``sqltable.php:130`` 的 ``"'$strVal'"``），``null`` 会变成空串，
+        MySQL 在非 strict 模式下把空串转成 ``0``。这里显式给 0，
+        **不依赖服务器的 sql_mode**。``close`` 列是 VARCHAR 的表见
+        :class:`DailyStringSql`。
+        """
+        if close is None:
+            return 0.0
+        return close
+
+    def make_field_array(self, stock_id: Any, date: Any, close: Any) -> dict:
+        """对应 PHP ``MakeFieldArray()``（``sqldailyclose.php:143``）：三列。
+
+        单拎出来是因为 ``DailyTimeSql`` 那一路要在这三列上再加 ``time``
+        （``sqldailytime.php:18``），子类覆写这一个方法比各写一遍可靠。
+        """
+        return {"stock_id": stock_id, "date": date, "close": self._prepare_close(close)}
+
+    def insert_daily(self, stock_id: Any, date: Any, close: Any) -> bool:
+        """``InsertDaily()``（``sqldailyclose.php:148``）。
+
+        两道前置闸照抄：**日期为空不写**；**已有同日行不写**
+        （``if ($this->GetRecord(...)) return false;``）—— 不是 upsert，
+        重复插入交给 ``UNIQUE (date, stock_id)`` 抛异常，所以先查。
+
+        PHP 的 ``InsertArray`` 会给没有 ``id`` 的数组补一列 ``id = '0'``
+        （``sqltable.php:114-125``），对 AUTO_INCREMENT 主键来说等价于"让
+        数据库分配"。这里不写 ``id``，效果相同。
+        """
+        if date is None or str(date) == "":
+            return False
+        if self.get_record(stock_id, date):
+            return False
+        fields = self.make_field_array(stock_id, date, close)
+        names = ", ".join("`%s`" % name for name in fields)
+        marks = ", ".join(["%s"] * len(fields))
+        sql = "INSERT INTO `%s` (%s) VALUES (%s)" % (self.table, names, marks)
+        return bool(self._execute(sql, tuple(fields.values())))
+
+    def _update_by_id(self, record_id: Any, fields: dict) -> bool:
+        """对应 PHP ``UpdateById($ar, $strId)``（``sqltable.php:165``）。
+
+        按主键 id 改，``LIMIT 1`` 照抄（``UpdateArray($ar, $strWhere, '1')``）。
+        ``fields`` 用 dict 传，是因为 ``DailyTimeSql`` / ``CalibrationSql``
+        要在 ``close`` 之外再带 ``time`` / ``num``（``sqldailytime.php:48``）。
+        """
+        if record_id is None or str(record_id) == "":
+            return False
+        assignments = ", ".join("`%s` = %%s" % name for name in fields)
+        sql = "UPDATE `%s` SET %s WHERE id = %%s LIMIT 1" % (self.table, assignments)
+        return bool(self._execute(sql, tuple(fields.values()) + (record_id,)))
+
+    def update_daily(self, record_id: Any, close: Any) -> bool:
+        """``UpdateDaily($strId, $strClose)``（``sqldailyclose.php:156``）。
+
+        只改 ``close`` 一列。带 ``time`` 的表（``calibrationhistory`` /
+        ``fundest``）覆写本方法，见 :class:`DailyTimeSql`。
+        """
+        return self._update_by_id(record_id, {"close": self._prepare_close(close)})
+
+    def delete_by_date(self, stock_id: Any, date: Any) -> int:
+        """``DeleteByDate()``（``sqldailyclose.php:201``）：返回删除行数。
+
+        PHP 返回 ``DeleteData()`` 的**行数**（它先 ``CountData`` 再删，
+        ``sqltable.php:232``），不是布尔值 —— 这里同样给行数，路由的 flash
+        文案要用。``WHERE`` 键是 ``(stock_id, date)``，靠 UNIQUE 保证最多一行。
+        """
+        return self._execute(
+            "DELETE FROM `%s` WHERE stock_id = %%s AND `date` = %%s" % self.table,
+            (stock_id, date),
+        )
+
+    def write_daily(self, stock_id: Any, date: Any, close: Any) -> bool:
+        """``WriteDaily()``（``sqldailyclose.php:161``）：有行比数值，无行插入。
+
+        分支顺序与判据都照抄：
+
+        * **有行**：``abs(floatval(old) - floatval(new)) > MIN_FLOAT_VAL`` 才
+          UPDATE。值没变返回 ``False``。注意这不是"已有就不动"—— 值变了要
+          覆盖（校准值写错时靠这一支刷回来，见 pitfalls #95）；
+        * **无行**：先过**周末闸门** ``if ($ymd->IsWeekend()) return false;``
+          （源码注释写明是防新浪偶尔送来的周末假数据），再 ``InsertDaily``。
+
+        返回 ``True`` 表示真的写了库。PHP 无返回值，这是为路由/CLI 的
+        "写了几条"加的口径。``DailyStringSql`` 会覆写本方法
+        （字符串比较 + **没有**周末闸门）。
+        """
+        record = self.get_record(stock_id, date)
+        if record:
+            diff = abs(_to_float(record.get("close")) - _to_float(close))
+            if diff > MIN_FLOAT_VAL:
+                return self.update_daily(record.get("id"), close)
+            return False
+        if _is_weekend(date):
+            return False
+        return self.insert_daily(stock_id, date, close)
+
+    def write_daily_array(self, stock_id: Any, values: dict) -> int:
+        """``WriteDailyArray()``（``sqldailyclose.php:181``）：逐日写一批。
+
+        PHP 是 ``foreach ($ar as $strDate => $strClose) $this->WriteDaily(...)``，
+        无返回值。这里返回**真正写进库的条数**（值未变/被周末闸门拦下的不算），
+        便于回填脚本报"补了几天"。
+        """
+        written = 0
+        for date, close in values.items():
+            if self.write_daily(stock_id, date, close):
+                written += 1
+        return written
+
+    def delete_close(self, close: Any = "0.000000", *, dry_run: bool = True) -> int:
+        """``DeleteClose()``（``sqldailyclose.php:210``）：删掉 ``close`` 等于
+        该值的所有行，返回行数。
+
+        **默认 dry-run**：这是一条**不带 stock_id 的全表 DELETE**，PHP 侧唯一
+        的调用点是调试脚本 ``php/test.php:129``（同一个文件第 132 行还自己写着
+        ``DeleteInvalidDate()`` "can be very slow"）。真删要显式
+        ``dry_run=False`` —— MyISAM 删了没有回滚。
+        """
+        params = (self._prepare_close(close),)
+        row = self._fetchone(
+            "SELECT COUNT(*) AS n FROM `%s` WHERE `close` = %%s" % self.table, params
+        )
+        count = int(row["n"]) if row else 0
+        if dry_run or count == 0:
+            return count
+        self._execute("DELETE FROM `%s` WHERE `close` = %%s" % self.table, params)
+        return count
+
+    def is_invalid_date(self, record: Any, today: Any = None) -> bool:
+        """``IsInvalidDate()``（``sqldailyclose.php:189``）：这行日期该不该清掉。
+
+        PHP 原文是两个判定取或：
+
+        * ``OldestYMD::IsTooOld()`` —— 早于 **2014-01-01**（``OldestYMD``
+          的构造参数，``php/class/year_month_day.php:160``）；
+        * ``OldestYMD::IsInvalid()`` —— 周末，或者**未来**日期。
+
+        ``record`` 收 dict（取 ``record["date"]``）或直接的日期串。
+
+        **一处刻意偏离**：日期解析不出来时判 ``True``（当作脏行报出来）。
+        PHP 那边 ``StringYMD`` 遇到 ``explode('-')`` 不是三段会退回 ``time()``
+        —— 即"当作今天"，于是非法串反而**不算** invalid。真实表里 ``date`` 是
+        ``date`` 列，存不进畸形值，所以这只影响调用方手搓的输入；清理场景下
+        宁可报出来也别悄悄放过。
+        """
+        value = record.get("date") if isinstance(record, dict) else record
+        moment = _parse_ymd(value)
+        if moment is None:
+            return True
+        reference = today or datetime.date.today()
+        if moment < OLDEST_VALID_DATE:
+            return True
+        if moment.weekday() >= 5:
+            return True
+        return moment > reference
+
+    def find_invalid_records(self, today: Any = None) -> list:
+        """全表扫一遍，返回 ``[{"id": ..., "date": ...}]``（对应 ``DeleteInvalid``
+        里那段 ``GetAll()`` + 回调过滤，``sqltable.php:248``）。
+
+        PHP 的 ``GetAll()`` 不带 ``stock_id`` 就是全表；这里同样全表，**只读**。
+        """
+        rows = self._fetchall("SELECT id, `date` FROM `%s`" % self.table)
+        return [row for row in rows if self.is_invalid_date(row, today)]
+
+    def delete_invalid_dates(self, *, dry_run: bool = True) -> int:
+        """``DeleteInvalidDate()``（``sqldailyclose.php:196``）：清掉脏日期行。
+
+        **默认 dry-run**，返回命中的条数、不动数据。原因同
+        :meth:`delete_close`：全表扫描 + 逐行删，PHP 侧只在 ``php/test.php``
+        里用到，而且 MyISAM 删了回不来。先
+        ``find_invalid_records()`` 看看命中什么再决定。
+        """
+        records = self.find_invalid_records()
+        if dry_run or not records:
+            return len(records)
+        for record in records:
+            self._execute(
+                "DELETE FROM `%s` WHERE id = %%s LIMIT 1" % self.table, (record["id"],)
+            )
+        return len(records)
+
 
 class StockHistorySql(DailyCloseSql):
     """``stockhistory`` 表，对应 PHP ``StockHistorySql``。
@@ -736,12 +972,65 @@ class StockHistorySql(DailyCloseSql):
             row = self.get_record_prev(stock_id, date)
         return row["adjclose"] if row else None
 
+    def write_history(
+        self, stock_id: Any, date: Any, close: Any, volume: Any = "", adjclose: Any = False
+    ) -> bool:
+        """``WriteHistory()``（``php/sql/sqlstocksymbol.php:27``）：行情三列一起写。
+
+        **``stockhistory`` 不能用父类的 ``insert_daily`` / ``write_daily``**：
+        它比日频表多 ``volume`` 与 ``adjclose``，两列都 ``NOT NULL`` 且无默认值，
+        只给 ``(stock_id, date, close)`` 会撞 ``1364 Field doesn't have a default``。
+        PHP 那边同样是另起一个方法（不覆写 ``WriteDaily``），这里保持一致。
+
+        三个判据都与父类不同，照抄不动：
+
+        * ``close`` 的容差是**硬编码 0.0005**，不是 ``MIN_FLOAT_VAL`` ——
+          ``close`` 列是 ``double(10,3)``，第三位以外的抖动无意义；
+        * ``volume`` 用 ``==`` 宽松比较（PHP 8 的两个数字串按数值比），
+          由 :func:`php_text_equal` 复刻；
+        * **没有周末闸门**（历史行情抓回来就是权威数据，不再二次过滤）。
+
+        返回 ``True`` 表示真的发了写语句；三列都没变返回 ``False``
+        （PHP 里 ``count($ar) > 0`` 不成立，直接 ``return false``）。
+        """
+        #: PHP ``if ($strAdjClose == false) $strAdjClose = $strClose;``
+        #: —— ``''`` 与 ``0`` 在 PHP 里都 `== false`，所以用 falsy 判断。
+        if not adjclose:
+            adjclose = close
+        record = self.get_record(stock_id, date)
+        if record:
+            fields: dict = {}
+            if abs(_to_float(record.get("close")) - _to_float(close)) >= 0.0005:
+                fields["close"] = close
+            if not php_text_equal(record.get("volume"), volume):
+                fields["volume"] = 0 if volume is None or volume == "" else volume
+            if abs(_to_float(record.get("adjclose")) - _to_float(adjclose)) >= MIN_FLOAT_VAL:
+                fields["adjclose"] = adjclose
+            if not fields:
+                return False
+            return self._update_by_id(record.get("id"), fields)
+        return bool(
+            self._execute(
+                "INSERT INTO `stockhistory` (stock_id, `date`, `close`, `volume`, `adjclose`) "
+                "VALUES (%s, %s, %s, %s, %s)",
+                (
+                    stock_id,
+                    date,
+                    self._prepare_close(close),
+                    0 if volume is None or volume == "" else volume,
+                    adjclose,
+                ),
+            )
+        )
+
 
 class DailyTimeSql(DailyCloseSql):
     """带 ``time`` 列的日频表（``calibrationhistory`` / ``fundest``）。
 
-    对应 PHP ``DailyTimeSql``（``php/sql/sqldailytime.php``）。
-    ``calibrationhistory`` 还多一个 ``num`` 列（当日取样次数）。
+    对应 PHP ``DailyTimeSql``（``php/sql/sqldailytime.php:4``）。写方法和父类的
+    差别只有一处：INSERT 的字段和 UPDATE 的 SET 子句都要多带一个 ``time``
+    （``DebugGetTime()``）。``calibrationhistory`` 还多一个 ``num`` 列
+    （当日取样次数），见 :class:`CalibrationSql`。
     """
 
     def __init__(self, connection: Any, table: str, extra: Sequence[str] = ()):
@@ -751,12 +1040,91 @@ class DailyTimeSql(DailyCloseSql):
     def count(self, stock_id: Any) -> int:
         return super().count(stock_id)
 
+    @staticmethod
+    def now_time() -> str:
+        """``DebugGetTime()``（``php/debug.php:107``）：``Asia/Shanghai`` 的 ``H:i:s``。
+
+        必须显式按上海时区算，不能用 ``datetime.now()``：数据库里的 ``time``
+        列按 **``DEBUG_TIME_ZONE`` = Asia/Shanghai** 记录（``php/debug.php:4``），
+        换台机器（或 CI 的 UTC 容器）就会写出差 8 小时的 ``time``。
+        3.7 没有 ``zoneinfo``，用固定 +8 偏移 —— 上海没有夏令时，等价。
+        """
+        utc_now = datetime.datetime.utcnow()
+        return (utc_now + datetime.timedelta(hours=8)).strftime("%H:%M:%S")
+
+    def make_field_array(self, stock_id: Any, date: Any, close: Any) -> dict:
+        """``MakeFieldArray()`` + ``time``（``sqldailytime.php:18-21``）。"""
+        fields = super().make_field_array(stock_id, date, close)
+        fields["time"] = self.now_time()
+        return fields
+
+    def update_daily(self, record_id: Any, close: Any) -> bool:
+        """``UpdateDaily()`` 覆写（``sqldailytime.php:24-28``）：``close`` + ``time``。"""
+        return self._update_by_id(
+            record_id, {"close": self._prepare_close(close), "time": self.now_time()}
+        )
+
 
 class CalibrationSql(DailyTimeSql):
-    """``calibrationhistory`` 表（含 ``num`` 列）。"""
+    """``calibrationhistory`` 表（含 ``num`` 列）。
+
+    对应 PHP ``CalibrationSql``（``php/sql/sqldailytime.php:31``）。除了 ``time``，
+    写方法还要管 ``num``（当日取样次数）：
+
+    * ``InsertDaily`` 把 ``num`` 置 ``1``；
+    * ``UpdateDaily`` 转到 ``UpdateDailyAverage($id, $close)``，即 **``num`` 重置
+      为 1**（不是累加 —— 默认参数就是 1，见 ``sqldailytime.php:51``）；
+    * ``WriteDailyAverage`` 才是**累加平均**：``close' = (num*old + new) / (num+1)``，
+      ``num' = num + 1``。
+    """
 
     def __init__(self, connection: Any):
         super().__init__(connection, "calibrationhistory", extra=("num",))
+
+    def make_field_array(self, stock_id: Any, date: Any, close: Any) -> dict:
+        """``MakeFieldArray()`` + ``time`` + ``num = 1``（``sqldailytime.php:40-46``）。"""
+        fields = super().make_field_array(stock_id, date, close)
+        fields["num"] = 1
+        return fields
+
+    def update_daily(self, record_id: Any, close: Any) -> bool:
+        """``UpdateDaily()`` → ``UpdateDailyAverage($id, $close)``，即 ``num = 1``。"""
+        return self.update_daily_average(record_id, close, 1)
+
+    def update_daily_average(self, record_id: Any, close: Any, num: Any = 1) -> bool:
+        """``UpdateDailyAverage($strId, $strClose, $iNum = 1)``
+        （``sqldailytime.php:56``）：``close`` + ``time`` + ``num``。"""
+        return self._update_by_id(
+            record_id,
+            {
+                "close": self._prepare_close(close),
+                "time": self.now_time(),
+                "num": 1 if num is None else int(_to_float(num)),
+            },
+        )
+
+    def write_daily_average(self, stock_id: Any, date: Any, close: Any) -> bool:
+        """``WriteDailyAverage()``（``sqldailytime.php:65``）：按样本数累加平均。
+
+        与 :meth:`write_daily` 的两处差别，都照抄：
+
+        * 有行且值有变时算 ``(num*old + new) / (num+1)`` 并把 ``num`` 加一 ——
+          这样多跑几次校准不会把同一个样本重复计数，而是取平均；
+        * 无行时**没有周末闸门**。PHP 那三行是被注释掉的，注释写着
+          "hf_CHA50CFD calibration may in Sunday, which is Monday for SH000300"
+          —— 期货的"周日"在这边可能是标的的"周一"，挡掉就漏了。
+        """
+        record = self.get_record(stock_id, date)
+        if record:
+            old_avg = _to_float(record.get("close"))
+            value = _to_float(close)
+            if abs(old_avg - value) > MIN_FLOAT_VAL:
+                num = int(_to_float(record.get("num")))
+                total = num * old_avg + value
+                num += 1
+                return self.update_daily_average(record.get("id"), total / num, num)
+            return False
+        return self.insert_daily(stock_id, date, close)
 
 
 class FundEstSql(DailyTimeSql):
@@ -821,75 +1189,33 @@ class DailyStringSql(DailyCloseSql):
     """``close`` 列存**字符串**的日频表。对应 PHP ``DailyStringSql``
     （``php/sql/sqldailystring.php:4``）。
 
-    与父类唯一的区别就是 :meth:`write_daily` 的**比较方式**：父类的
-    ``WriteDaily``（PHP ``sqldailyclose.php:161``）是
+    与父类的差异只有两处，都是**照抄不动**：
 
-    .. code-block:: php
+    * :meth:`write_daily` 的**比较方式**。父类（PHP ``sqldailyclose.php:161``）是
 
-        if (abs(floatval($record['close']) - floatval($strClose)) > MIN_FLOAT_VAL)
+      .. code-block:: php
 
-    而 String 版是（``sqldailystring.php:16``）::
+          if (abs(floatval($record['close']) - floatval($strClose)) > MIN_FLOAT_VAL)
 
-        if ($record['close'] != $strClose)
+      而 String 版（``sqldailystring.php:16``）是 ::
 
-    两处副带差异，都是**照抄不动**：
+          if ($record['close'] != $strClose)
 
+      ``'100.00'`` 与 ``'100'`` 在 PHP 8 里是数值相等的数字串 → 视为相同、
+      不写库；``'{"GLD":100}'`` 与 ``'{"GLD":100.01}'`` 不是数字串 → 按字节
+      比较。这个双轨语义由 :func:`php_text_equal` 复刻。
     * **没有周末闸门**。父类在 INSERT 分支有
       ``if ($ymd->IsWeekend()) return false;``（新浪偶尔给周末的假数据），
-      String 版没有 —— 季报日期本来就可能是任意一天（季末），不能挡；
-    * String 版**不比较容差**。``'100.00'`` 与 ``'100'`` 在 PHP 8 里是
-      数值相等的数字串 → 视为相同、不写库；``'{"GLD":100}'`` 与
-      ``'{"GLD":100.01}'`` 不是数字串 → 按字节比较。这个双轨语义由
-      :func:`php_text_equal` 复刻。
+      String 版没有 —— 季报日期本来就可能是任意一天（季末），不能挡。
+
+    ``close`` 是 VARCHAR，所以 :meth:`_prepare_close` 把值字符串化，
+    ``insert_daily`` / ``update_daily`` / ``delete_by_date`` 全部沿用父类。
     """
 
     # -- 写 ---------------------------------------------------------------
-    def _execute(self, sql: str, params: tuple = ()) -> Any:
-        """执行一条写语句并提交（与 ``auto`` 其它表模块的写法一致）。"""
-        cursor = self.connection.cursor()
-        try:
-            cursor.execute(sql, params)
-            self.connection.commit()
-            return cursor.rowcount
-        finally:
-            cursor.close()
-
-    def insert_daily(self, stock_id: Any, date: Any, close: Any) -> bool:
-        """``InsertDaily()``（``sqldailyclose.php:148``）。
-
-        两道前置闸照抄：**日期为空不写**；**已有同日行不写**
-        （``if ($this->GetRecord(...)) return false;``）—— 不是 upsert，
-        重复插入交给 ``UNIQUE (date, stock_id)`` 兜底会抛异常，所以先查。
-        """
-        if date is None or str(date) == "":
-            return False
-        if self.get_record(stock_id, date):
-            return False
-        rowcount = self._execute(
-            "INSERT INTO `%s` (stock_id, `date`, `close`) VALUES (%%s, %%s, %%s)" % self.table,
-            (stock_id, date, "" if close is None else str(close)),
-        )
-        return bool(rowcount)
-
-    def update_daily(self, record_id: Any, close: Any) -> bool:
-        """``UpdateDaily($strId, $strClose)``（``sqldailyclose.php:156``）。"""
-        rowcount = self._execute(
-            "UPDATE `%s` SET `close` = %%s WHERE id = %%s" % self.table,
-            ("" if close is None else str(close), record_id),
-        )
-        return bool(rowcount)
-
-    def delete_by_date(self, stock_id: Any, date: Any) -> int:
-        """``DeleteByDate()``（``sqldailyclose.php:201``）：返回删除行数。
-
-        PHP 返回 ``DeleteData()`` 的布尔值；这里给行数是为了让调用方能报
-        "删掉了几条"（路由的 flash 文案要用）。PHP 那边 ``WHERE`` 键是
-        ``(stock_id, date)``，靠 UNIQUE 保证最多删一行。
-        """
-        return self._execute(
-            "DELETE FROM `%s` WHERE stock_id = %%s AND `date` = %%s" % self.table,
-            (stock_id, date),
-        )
+    def _prepare_close(self, close: Any) -> Any:
+        """``close`` 是 VARCHAR：``None`` 写空串（PHP ``null`` → ``''``）。"""
+        return "" if close is None else str(close)
 
     def write_daily(self, stock_id: Any, date: Any, close: Any) -> bool:
         """``WriteDaily()``（``sqldailystring.php:16``）：有行比字符串，无行插入。

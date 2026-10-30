@@ -1,0 +1,114 @@
+{
+  "daily": [
+    {
+      "op": "insert_daily",
+      "date": "2026-09-30",
+      "close": "1.234"
+    },
+    {
+      "op": "insert_daily",
+      "date": "2026-09-30",
+      "close": "9.9"
+    },
+    {
+      "op": "insert_daily",
+      "date": "",
+      "close": "1.0"
+    },
+    {
+      "op": "insert_daily",
+      "date": "2026-10-03",
+      "close": "3.0"
+    },
+    {
+      "op": "write_daily",
+      "date": "2026-10-03",
+      "close": "3.5"
+    },
+    {
+      "op": "write_daily",
+      "date": "2026-10-01",
+      "close": "2.0"
+    },
+    {
+      "op": "write_daily",
+      "date": "2026-10-01",
+      "close": "2.0000001"
+    },
+    {
+      "op": "write_daily",
+      "date": "2026-10-01",
+      "close": "2.5"
+    },
+    {
+      "op": "write_daily",
+      "date": "2026-10-04",
+      "close": "4.0"
+    },
+    {
+      "op": "write_daily",
+      "date": "2026-09-27",
+      "close": "4.0"
+    },
+    {
+      "op": "delete_by_date",
+      "date": "2026-10-01"
+    },
+    {
+      "op": "delete_by_date",
+      "date": "2026-10-01"
+    },
+    {
+      "op": "update_daily",
+      "id": 1,
+      "close": "1.111"
+    },
+    {
+      "op": "write_daily",
+      "date": "2026-09-30",
+      "close": "1.111"
+    },
+    {
+      "op": "insert_daily",
+      "date": "2026-10-05",
+      "close": null
+    }
+  ],
+  "calibration": [
+    {
+      "op": "insert_daily",
+      "date": "2026-09-30",
+      "close": "100"
+    },
+    {
+      "op": "write_daily_average",
+      "date": "2026-09-30",
+      "close": "106"
+    },
+    {
+      "op": "write_daily_average",
+      "date": "2026-09-30",
+      "close": "103"
+    },
+    {
+      "op": "write_daily",
+      "date": "2026-09-30",
+      "close": "200"
+    },
+    {
+      "op": "write_daily_average",
+      "date": "2026-09-29",
+      "close": "50"
+    },
+    {
+      "op": "write_daily_average",
+      "date": "2026-09-27",
+      "close": "60"
+    },
+    {
+      "op": "update_daily",
+      "id": 1,
+      "close": "9"
+    }
+  ]
+}
