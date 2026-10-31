@@ -45,6 +45,11 @@ from ref.externallink import get_xueqiu_url  # noqa: E402
 from sql.historytable import TABLE_COMMON_DISPLAY  # noqa: E402
 from web.services.admin_auth import denied_message, is_admin  # noqa: E402
 from web.services.etf_dividend_service import build_etf_dividend  # noqa: E402
+from web.services.rotation_service import (  # noqa: E402
+    build_rotation_page,
+    rotation_peers,
+    rotation_symbol_array,
+)
 from web.services.stock_detail_service import StockDetailService  # noqa: E402
 from web.services.stock_service import (  # noqa: E402
     StockService,
@@ -87,9 +92,19 @@ def _get_history_service():
 
 
 def _get_trading_service():
-    """五档交易表服务；``/fund`` 与 ``/stock`` 共用同一个工厂。"""
+    """五档交易表服务；``/fund`` 与 ``/stock`` 共用同一个工厂。
+
+    拿到之后补一个"轮动交易页"链接构造器：生 URL 要 ``url_for``，服务层不该
+    依赖请求上下文（见 ``trading_service.make_rotation_link_builder``）。
+    注入了自带构造器的替身时不覆盖。
+    """
     factory = current_app.extensions.get("trading_service_factory")
-    return None if factory is None else factory()
+    service = None if factory is None else factory()
+    if service is not None and getattr(service, "link_builder", None) is None:
+        from web.services.trading_service import make_rotation_link_builder
+
+        service.link_builder = make_rotation_link_builder(url_for)
+    return service
 
 
 def _wants_live_refresh() -> bool:
@@ -381,6 +396,98 @@ def stock_etf_dividend_page(symbol: str):
         ref=refs[0] if refs else None,
     )
     return render_template("stock_etf_dividend.html", page=page, symbol=symbol)
+
+
+# ---------------------------------------------------------------------------
+# 轮动交易页（PHP woody/res/rotationtradingcn.php）
+# ---------------------------------------------------------------------------
+def _build_rotation_refs(symbols: list, source: Any) -> list:
+    """按符号建 ``QdiiReference``；建不出来的位置留 ``None``。
+
+    **必须保持长度与顺序**：行序就是候选顺序，中间少一个不能把后面的挪上来 —
+    服务层对 ``None`` 直接跳过（PHP 那边建对象不会失败，这里是防御）。
+
+    用 ``build_qdii_reference`` 而不是 ``_get_reference_refs``：本页要的是
+    ``GetEstNetValue()``（溢价列）与 ``GetEstRef()``（XOP/XBI 两族的表头符号），
+    只有 QDII 那一层引用才有。与 ``routes/fund.py::_build_qdii_refs`` 同源。
+    """
+    if source is None:
+        return [None for _ in symbols]
+
+    from ref.refobj import build_qdii_reference
+
+    refs = []
+    for item in symbols:
+        try:
+            refs.append(build_qdii_reference(item, source=source))
+        except Exception:
+            refs.append(None)
+    return refs
+
+
+def _rotation_input() -> Any:
+    """``GetEditInput()``（``php/ui/editinputform.php:5``）。
+
+    **顺序有意义**：先看 ``clear``，再看 ``submit`` + ``input``。GET 请求返回
+    ``None``（PHP 那边同样是 ``false``），由服务层回落到 -1000000 的占位值。
+    """
+    if request.method != "POST":
+        return None
+    if "clear" in request.form:
+        return ""
+    if "submit" in request.form:
+        return request.form.get("input")
+    return None
+
+
+@stock_bp.route("/stock/<symbol>/rotationtrading", methods=["GET", "POST"])
+def stock_rotation_trading_page(symbol: str):
+    """轮动交易页（PHP ``woody/res/rotationtradingcn.php``，150 行）。
+
+    与 ``/stock/<symbol>/etfdividend`` 同一类子页面。GET 打开表单、POST 只是
+    **用新数量重算一遍**（PHP 也 POST 回自己），不下单、不写库。
+
+    ## 四族之外不 404
+
+    PHP 那边 ``EchoAll()`` 的 ``if`` 为假时整块跳过、页面只剩标题 —— 那仍然
+    是一个 200 的页面。这里同样 200 + 空态说明，不把"这个符号不能轮动"说成
+    "页面不存在"。
+
+    ## 引用对象
+
+    本基金与候选都走 ``_build_rotation_refs``。测试注入
+    ``reference_refs_builder`` 时整段顶掉（连数据源都不用给），与
+    ``stock_etf_dividend_page`` 同一套路。
+    """
+    symbols = rotation_symbol_array(symbol)
+    service = _get_reference_service()
+    source = getattr(service, "source", None)
+
+    builder = current_app.extensions.get("reference_refs_builder")
+    fund_ref = None
+    peers: list = []
+    if builder is not None:
+        refs = builder([symbol])
+        fund_ref = refs[0] if refs else None
+        if symbols is not None:
+            peers = builder(rotation_peers(symbol, symbols))
+    elif symbols is not None:
+        built = _build_rotation_refs([symbol], source)
+        fund_ref = built[0]
+        peers = _build_rotation_refs(rotation_peers(symbol, symbols), source)
+
+    page = build_rotation_page(
+        symbol,
+        rotation_symbols=symbols,
+        fund_ref=fund_ref,
+        source=source,
+        rotation_refs=peers,
+        input_text=_rotation_input(),
+        link_builder=lambda peer: url_for(
+            "stock.stock_rotation_trading_page", symbol=peer
+        ),
+    )
+    return render_template("stock_rotation_trading.html", page=page, symbol=symbol)
 
 
 # ---------------------------------------------------------------------------

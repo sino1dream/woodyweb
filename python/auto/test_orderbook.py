@@ -28,7 +28,7 @@ from sql.quotestore import (
     encode_orderbook,
     orderbook_from_lists,
 )
-from ref.refquote import apply_order_book
+from ref.refquote import apply_order_book, apply_snapshot
 
 
 def make_book_line(sina_symbol="sz161130", name="纳指LOF", price="4.796", prev="4.727",
@@ -335,6 +335,55 @@ class ApplyOrderBookTest(unittest.TestCase):
         ref = Plain()
         self.assertFalse(apply_order_book(ref, {"bid_price": ["4.790"]}))
         self.assertFalse(hasattr(ref, "bid_prices"))
+
+
+class ApplySnapshotTest(unittest.TestCase):
+    """``refquote.apply_snapshot``：价格与盘口是**两条通路**。
+
+    2026-10-31 实测踩到：演示库 ``SH513100`` 的快照是 ``price='0'`` 但盘口
+    完整，原来的实现看到价格为 0 就整份丢弃，盘口跟着陪葬，轮动交易页因此
+    显示"没有可卖的挂单"，而生产端有数据。
+    """
+
+    class Ref(ApplyOrderBookTest.Ref):
+        """在四个盘口数组之外补上 ``apply_snapshot`` 会写的价格字段。"""
+
+        def __init__(self):
+            super().__init__()
+            self.str_price = ""
+            self.str_prev_price = ""
+            self.str_date = None
+            self.str_time = None
+            self.str_name = ""
+            self.has_data = False
+
+        def set_has_data(self, value):
+            self.has_data = value
+
+    def _quote(self, price):
+        return RecentQuote(
+            symbol="SH513100", sina_symbol="sh513100", price=price, prev_price="2.290",
+            date="2026-10-30", time="10:20:27", name="纳指ETF国泰",
+            orderbook=orderbook_from_lists(["2.289"], ["2615400"], ["2.290"], ["8104"]),
+        )
+
+    def test_zero_price_still_fills_the_order_book(self):
+        ref = self.Ref()
+        self.assertFalse(apply_snapshot(ref, self._quote("0")))
+        # 价格没装上（返回值 False 仍然表达这件事）
+        self.assertEqual(ref.str_price, "")
+        self.assertFalse(ref.has_data)
+        # 但盘口装上了 —— PHP 的 _onSinaDataCN 也是先填五档再处理零价
+        self.assertEqual(ref.bid_prices, ["2.289"])
+        self.assertEqual(ref.bid_quantities, ["2615400"])
+        self.assertEqual(ref.ask_quantities, ["8104"])
+
+    def test_normal_price_fills_both(self):
+        ref = self.Ref()
+        self.assertTrue(apply_snapshot(ref, self._quote("2.291")))
+        self.assertEqual(ref.str_price, "2.291")
+        self.assertTrue(ref.has_data)
+        self.assertEqual(ref.bid_prices, ["2.289"])
 
 
 if __name__ == "__main__":

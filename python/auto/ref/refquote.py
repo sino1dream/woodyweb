@@ -135,11 +135,27 @@ def apply_snapshot(ref: Any, quote: Any) -> bool:
     ``price`` / ``prev_price`` / ``date`` / ``time`` / ``name``）。
     ``price`` 为空或 0 时**不算装填成功** —— 引用对象的
     ``is_zero_string()`` 判定同样把 ``'0'`` 当"没有行情"，这里保持一致。
+
+    ## 价格为零时仍然装填盘口（2026-10-31 修）
+
+    盘口与价格是**两条独立的通路**：PHP ``_onSinaDataCN()`` 先把
+    ``arBidQuantity`` / ``arAskPrice`` 等五档数组填满，之后才用
+    ``IsZeroString($strPrice)`` 把"价格为零"换成昨收 —— **盘口从来不会因为
+    价格是零而消失**。
+
+    本函数原先在价格判零的分支直接 ``return False``，把同一份快照里的
+    ``orderbook`` 一起丢了。实测：演示库 ``SH513100`` 的快照是
+    ``price='0'`` 但盘口完整（买一 2.289 × 2615400），于是轮动交易页显示
+    "没有可卖的挂单"，而生产端是有数据的。
+
+    所以判零分支里补一次 :func:`apply_order_book` 再返回 —— 返回值语义不变
+    （仍然表示"价格没装上"），只是盘口不再陪葬。
     """
     if quote is None:
         return False
     price = getattr(quote, "price", None)
     if price in (None, "") or str(price).strip() in ("0", "0.0", "0.00"):
+        apply_order_book(ref, getattr(quote, "orderbook", None))
         return False
 
     ref.str_price = price

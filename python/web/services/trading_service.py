@@ -643,13 +643,34 @@ def _invoke(ref: Any, snake: str, camel: str, *args: Any) -> Any:
         return None
 
 
+def make_rotation_link_builder(url_for_func: Callable[..., Any]) -> Callable[..., Any]:
+    """造一个"轮动交易页"链接构造器（``(符号, 页面名) -> URL``）。
+
+    **为什么不写在 :func:`default_trading_service_factory` 里**：生 URL 需要
+    ``url_for`` 与请求上下文，而服务层要能在没有请求的地方跑（脚本导出、单测）。
+    所以由路由层在拿到服务之后补上这一层，与 ``routes/stock.py::_table_link``
+    同一个分工。
+
+    ``kind`` 不为 ``rotationtrading`` 时返回 ``None`` —— 本构造器只服务那一处。
+    """
+    def build(symbol: str, kind: str) -> Any:
+        if kind != "rotationtrading" or not symbol:
+            return None
+        try:
+            return url_for_func("stock.stock_rotation_trading_page", symbol=symbol)
+        except Exception:
+            return None
+
+    return build
+
+
 def default_trading_service_factory() -> TradingService:
     """创建一个不带链接构造器的服务。
 
-    **``link_builder`` 缺省是 ``None``**，于是 :func:`_rotation_link` 恒返回
-    ``None`` —— 不是忘了接，是本站点还没有 ``rotationtrading`` 页面
-    （PHP 那边是 ``woody/res/rotationtradingcn.php``，属于 🔴 membership 域）。
-    等那一页迁完，在这补一个用 ``url_for`` 的构造器即可，本模块不需要改。
+    ``link_builder`` 留空，于是 :func:`_rotation_link` 恒返回 ``None``。这不是
+    忘了接 —— URL 要用 ``url_for``，只有请求上下文里才算得出来。路由层拿到
+    服务后会用 :func:`make_rotation_link_builder` 补上（见
+    ``routes/stock.py::_get_trading_service``）。
     """
     return TradingService()
 

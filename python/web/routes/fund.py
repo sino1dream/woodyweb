@@ -490,8 +490,18 @@ def _get_calibration_service():
 
 
 def _get_trading_service():
+    """五档交易表服务；与 ``routes/stock.py`` 的同名函数同一份逻辑。
+
+    拿到之后补"轮动交易页"的链接构造器 —— ``url_for`` 只有路由层算得出来
+    （见 ``trading_service.make_rotation_link_builder``）。
+    """
     factory = current_app.extensions.get("trading_service_factory")
-    return None if factory is None else factory()
+    service = None if factory is None else factory()
+    if service is not None and getattr(service, "link_builder", None) is None:
+        from web.services.trading_service import make_rotation_link_builder
+
+        service.link_builder = make_rotation_link_builder(url_for)
+    return service
 
 
 def _get_trading_refs(symbol: str) -> list:

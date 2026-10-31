@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% from "_data_table.html" import data_table %}
+{% block title %}{{ page.title }} - 基金估值{% endblock %}
+{% block content %}
+  {# 轮动交易（woody/res/rotationtradingcn.php?symbol=X）。
+
+     回答"把手上这只基金换成同一指数另一只，该挂多少、能不能成交"。
+     四族之外整页只有标题（PHP 的 EchoAll 里那个 if 为假时什么都不输出）；
+     本基金当前档位没有挂单时，说明行与表都不出。两种空态分开处理。 #}
+  <h1>{{ page.title }}</h1>
+
+  {% if not page.available %}
+    <p class="empty">
+      这只标的不在轮动分组里。轮动交易只对四族有意义：
+      油气（XOP）、生物科技（XBI）、纳指 100 匹配、标普 500 匹配 ——
+      同一指数的多只 QDII 基金之间才有价差可换。
+    </p>
+  {% elif not page.summary %}
+    <p class="empty">
+      本基金当前没有可{{ page.direction.op }}的挂单（一档无量），算不出轮动数量。
+      盘口来自 <code>realtimequote</code> 的快照，收盘后或刚开盘时可能是空的。
+    </p>
+  {% else %}
+    {# EchoEditInputForm()：说明文字 + 输入框 + 提交/清除 同一个表单。
+       提交回本页（POST），只是重新算一遍，不下单。 #}
+    <form method="post" class="rotation-form">
+      <p class="table-links">
+        {% if page.summary.link %}
+          <a href="{{ page.summary.link.url }}" target="_blank" rel="noopener">{{ page.summary.link.text }}</a>
+        {% endif %}
+        目前可{{ page.direction.op }}价格{{ page.summary.price }}{% if page.summary.premium %}、<span class="col-orange">溢价</span>{{ page.summary.premium }}{% endif %}、可{{ page.direction.op }}数量{{ page.summary.quantity }}，轮动数量：
+        <input name="input" value="{{ page.input }}" type="text" size="12" class="textfield" id="input" />
+        <button type="submit" name="submit" value="1">提交</button>
+        <button type="submit" name="clear" value="1">清除</button>
+      </p>
+    </form>
+
+    {% if page.summary.error %}
+      <p class="empty">{{ page.summary.error }}</p>
+    {% else %}
+      {{ data_table(page.table, "rotation-table") }}
+      <p class="table-note">
+        负数是"卖本基金、买候选"，正数反过来；提交后表头会跟着变成"可卖"。
+        没填时按 -1000000 这个必然超量的占位值算一版，方便估量级。
+        「对冲值」是把候选换成对冲标的（QQQ / SPY）的换算比，取自
+        <code>calibrationhistory</code> 上两边同日都有校准值的那一天；
+        「建议数量」= 对冲值 × 对冲标的数量，凑整到 100 股。
+        建议数量**显示为红色**表示超过该档挂单量 —— 这一行一次做不完。
+      </p>
+    {% endif %}
+  {% endif %}
+
+  <p>
+    <a href="{{ url_for('stock.stock_detail_page', symbol=page.symbol) }}">股票详情</a>
+    <a href="{{ url_for('stock.stock_page') }}">返回股票列表</a>
+    <a href="{{ url_for('main.index') }}">返回首页</a>
+  </p>
+{% endblock %}
