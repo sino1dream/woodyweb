@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% from "_data_table.html" import data_table %}
+{% block title %}{{ symbol }}分红数据 - 基金估值{% endblock %}
+{% block content %}
+  {# 分红数据（woody/res/etfdividendcn.php?symbol=X）。
+
+       PHP 整页只有一张表：日期 / 分红 / 价格 / 比例(%)。「分红」是每 1 股
+       （份）的除息金额，「比例(%)」= 分红 ÷ 当天收盘价 × 100，用来估算美股
+       ETF 除息日给对应 QDII 基金造出的假折价幅度。
+
+       两道闸门都在服务层：ref 建不出来 → page 为 None；没有净值记录 →
+       page.table 为 None。后者在 PHP 里是 EchoTableParagraphBegin 之前就
+       return，所以连表头都不该出现 —— 下面两个分支分别对应，别合并。 #}
+  <h1>{{ symbol }}分红数据</h1>
+
+  {% if page is none %}
+    {# 闸门 1：EchoStockGroup() 拿不到引用对象。 #}
+    <p class="empty">
+      没有这个符号的参考数据 —— PHP 在该符号建不出引用对象时同样连表都不摆，
+      整页只剩标题。
+    </p>
+  {% else %}
+    <p>
+      {# GetFundLinks() 那串历史页链接（php/stocklink.php:197）。 #}
+      <a href="{{ url_for('history.history_page', kind='stockhistory', symbol=symbol) }}">历史价格</a>
+      <a href="{{ url_for('history.history_page', kind='fundhistory', symbol=symbol) }}">基金溢价记录</a>
+      <a href="{{ url_for('history.history_page', kind='netvaluehistory', symbol=symbol) }}">净值记录</a>
+      <a href="{{ url_for('history.history_page', kind='netvalueclose', symbol=symbol) }}">净值价格比较</a>
+      <a href="{{ url_for('history.history_page', kind='shareshistory', symbol=symbol) }}">基金场内份额</a>
+      {% if page.dividend_link %}
+        {# GetStockDividendLink()：A 股走新浪"A 股分红配股"、H 股走新浪港股
+           "分红派息"。Yahoo 那一支已去掉（该域名对大陆返回服务停止公告）。 #}
+        <a href="{{ page.dividend_link.url }}" target="_blank" rel="noopener">{{ page.dividend_link.text }}</a>
+      {% endif %}
+    </p>
+
+    {% if page.table %}
+      {# 通过闸门但没有行时，表头照出 —— 与 PHP 一致（EchoTableParagraphBegin
+         已经打过表头，_echoEtfDividendData 查不到行就只剩表头）。 #}
+      {{ data_table(page.table, "etf-dividend-table") }}
+      {% if not page.table.rows %}
+        <p class="hint">这只标的分红表里没有记录，或者对应的历史收盘价还没有入库。</p>
+      {% endif %}
+      <p class="table-note">
+        「分红」是每 1 股（份）的除息金额，「比例(%)」= 分红 ÷ 当天收盘价 × 100。
+        这一列用来估算美股 ETF 除息日给对应 QDII 基金造成的假折价幅度：ETF 除息
+        当天价格跌掉分红，而基金拿到的是现金分红、净值不跌，实时估值端于是显示
+        一段并不存在的折价。数据源是各 ETF 发行商官网（SPDR / Proshares），
+        不走 Yahoo。
+      </p>
+    {% else %}
+      {# 闸门 2：CountNetValue() == 0。PHP 在这之前就 return 了，所以表头也没有。 #}
+      <p class="empty">
+        这只标的没有净值记录，本页不显示分红表 —— PHP 在
+        <code>CountNetValue() == 0</code> 时直接返回，连表头都不输出。
+        分红数据页只对"有净值的 ETF / 基金"有意义，A 股个股、指数、外汇都是空的。
+      </p>
+    {% endif %}
+  {% endif %}
+
+  <p>
+    <a href="{{ url_for('stock.stock_detail_page', symbol=symbol) }}">股票详情</a>
+    <a href="{{ url_for('stock.stock_page') }}">返回股票列表</a>
+    <a href="{{ url_for('main.index') }}">返回首页</a>
+  </p>
+{% endblock %}

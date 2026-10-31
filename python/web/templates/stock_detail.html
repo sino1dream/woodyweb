@@ -194,6 +194,11 @@
   {% endif %}
 
   <p>
+    {# 分红数据页（woody/res/etfdividendcn.php）。PHP 的入口在
+       GetFundLinks() 的 else 分支 —— 只给非中国基金标的；本版对所有符号都放，
+       基金点进去会看到"没有净值记录"的说明（闸门 2），无害。
+       放在这里是因为详情页是唯一"每个符号都能到"的页面。 #}
+    <a href="{{ url_for('stock.stock_etf_dividend_page', symbol=symbol) }}">分红数据</a>
     <a href="{{ url_for('stock.stock_page') }}">返回股票列表</a>
     <a href="{{ url_for('main.index') }}">返回首页</a>
   </p>

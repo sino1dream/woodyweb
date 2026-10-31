@@ -44,6 +44,7 @@ from calc.fundgroups import get_symbol_group  # noqa: E402
 from ref.externallink import get_xueqiu_url  # noqa: E402
 from sql.historytable import TABLE_COMMON_DISPLAY  # noqa: E402
 from web.services.admin_auth import denied_message, is_admin  # noqa: E402
+from web.services.etf_dividend_service import build_etf_dividend  # noqa: E402
 from web.services.stock_detail_service import StockDetailService  # noqa: E402
 from web.services.stock_service import (  # noqa: E402
     StockService,
@@ -348,6 +349,38 @@ def stock_detail_page(symbol: str):
         trading_service=_get_trading_service(),
     )
     return render_template("stock_detail.html", detail=detail, symbol=symbol)
+
+
+@stock_bp.route("/stock/<symbol>/etfdividend")
+def stock_etf_dividend_page(symbol: str):
+    """分红数据页（PHP ``woody/res/etfdividendcn.php``，73 行）。
+
+    与 ``/stock/<symbol>/edit``、``/stock/<symbol>/delete`` 同一类：都是
+    "某个符号的一个子页面"，所以挂在 ``/stock/<symbol>/`` 下面，而不是
+    另开 ``/etfdividend/<symbol>``。
+
+    ## 引用对象由路由层建
+
+    照 ``stock_detail_page`` 的做法走 ``_get_reference_refs``：这样测试注入
+    ``reference_refs_builder`` 就能整个顶掉，不必连库。**建不出来不 404** ——
+    PHP 那边 ``EchoStockGroup()`` 拿不到 ref 时页面照样出标题和链接，只是没有
+    表；这里同样返回 200 让模板出空态（理由与 ``stock_detail_page`` 一致：
+    旧链接里的符号可能只是暂时没行情，404 会让外链全废）。
+
+    ## 数据源
+
+    表格要读 ``stockdividend`` 与 ``stockhistory`` 两张表，连接从
+    ``reference_service.source`` 借 —— 与 ``routes/compare.py`` 同一个出处。
+    借不到（测试里的假服务）时页面只剩标题与链接，不炸。
+    """
+    refs = _get_reference_refs([symbol])
+    reference_service = _get_reference_service()
+    page = build_etf_dividend(
+        symbol,
+        source=getattr(reference_service, "source", None),
+        ref=refs[0] if refs else None,
+    )
+    return render_template("stock_etf_dividend.html", page=page, symbol=symbol)
 
 
 # ---------------------------------------------------------------------------

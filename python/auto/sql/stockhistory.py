@@ -609,6 +609,29 @@ class StockHistorySql:
         )
         return None if not row else row.get("close")
 
+    def get_close_text(self, stock_id: Any, date: Any) -> Any:
+        """取 ``close`` 的**字符串**，形态与 mysqli 返回的一致。
+
+        为什么要单独开一个方法（2026-10-31 踩到）：``close`` 列是
+        ``double(10,3)``。mysqli 把 DOUBLE 当字符串交出来，而且是**按列定义
+        补零**的 ``'741.470'``；驱动层却把它转成 Python ``float``
+        （``741.47``）。凡是"把价格原样 echo 出去"的页面（``etfdividend`` 的
+        价格列就是），直接 ``str(close)`` 会少一位尾零。
+
+        解决办法是让**数据库自己**转字符串 —— ``CAST(close AS CHAR)`` 得到的
+        就是 ``'741.470'``。不硬编码 3 位小数：哪天列定义从 ``(10,3)`` 改成
+        ``(10,4)``，这里自动跟着走。
+
+        参与计算的调用方继续用 :meth:`get_close`（要 ``float``）；
+        这个方法只给"展示原样"的页面用。
+        """
+        row = self._fetchone(
+            "SELECT CAST(`close` AS CHAR) AS `close_text` FROM `%s` "
+            "WHERE stock_id = %%s AND `date` = %%s LIMIT 1" % self.table,
+            (stock_id, str(date)),
+        )
+        return None if not row else row.get("close_text")
+
     def _fetchone(self, sql: str, params: tuple = ()) -> Any:
         cursor = self.connection.cursor()
         try:

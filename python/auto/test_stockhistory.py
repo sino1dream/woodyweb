@@ -476,6 +476,13 @@ class _FakeCursor:
             return []
         table = match.group(1)
         values = self.connection.tables.get(table, {})
+        #: ``get_close_text()`` 走 ``CAST(`close` AS CHAR) AS `close_text```
+        #: —— 必须先判这一支，否则会被下面 ``SELECT `close``` 那条吞掉。
+        if "AS `close_text`" in sql and "date` = %s" in sql:
+            date = str(params[1]) if len(params) > 1 else None
+            if date in values:
+                return [{"close_text": values[date]}]
+            return []
         if "`close`" in sql and "date` = %s" in sql:
             date = str(params[1]) if len(params) > 1 else None
             if date in values:
@@ -585,6 +592,32 @@ class IgnoreCurrentTradingDataTest(unittest.TestCase):
             datetime.datetime(2026, 10, 9, 15, 0)))
         self.assertTrue(sh.is_stock_trading_hour_end(
             datetime.datetime(2026, 10, 9, 18, 0)))
+
+
+class GetCloseTextTest(unittest.TestCase):
+    """``StockHistorySql.get_close_text()`` —— 与 mysqli 同形态的字符串。
+
+    ``close`` 列是 ``double(10,3)``：mysqli 交出来的是 ``'741.470'``，
+    pymysql 交出来的是 ``float`` ``741.47``。分红数据页要"原样显示价格"，
+    所以走 ``CAST(... AS CHAR)`` 让数据库自己补零 —— 这里的用例钉住
+    "取到的是三位字符串"，最后一条钉住"SQL 里确实有 CAST"。
+    """
+
+    def _sql(self, values):
+        return sh.StockHistorySql(_FakeConnection({"stockhistory": values}))
+
+    def test_returns_three_decimals(self):
+        sql = self._sql({"2026-09-21": "741.470"})
+        self.assertEqual(sql.get_close_text(4, "2026-09-21"), "741.470")
+
+    def test_missing_date_returns_none(self):
+        self.assertIsNone(self._sql({}).get_close_text(4, "2020-01-01"))
+
+    def test_query_casts_to_char(self):
+        """护栏：有人把 ``CAST`` 去掉就退化成 float，尾零会丢。"""
+        connection = _FakeConnection({"stockhistory": {"2026-09-21": "741.470"}})
+        sh.StockHistorySql(connection).get_close_text(4, "2026-09-21")
+        self.assertIn("CAST(`close` AS CHAR)", connection.queries[-1][0])
 
 
 class CalcStartDateTest(unittest.TestCase):
