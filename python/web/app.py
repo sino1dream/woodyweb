@@ -117,6 +117,10 @@ def create_app(
     #: 与 ``stock_detail_service_factory`` 一样"注入了才注册"：默认实现要连库，
     #: 而单测只想验"16 项分派 / 权限闸门 / 未迁提示"，把装配整个顶掉最直接。
     stock_option_service_factory: Any = None,
+    #: 义工群对冲计算器（``/overnightcnh``，PHP ``overnightcnhcn.php``）的
+    #: 引用对象构造器。这一页一次要建 **23 个**引用对象（还带三档估值），
+    #: 单测不可能连库 —— 注入一个"符号 → 假对象"的回调即可整段顶掉。
+    overnight_refs_builder: Any = None,
 ) -> Flask:
     """创建 Flask 应用，允许测试注入服务工厂。"""
     app = Flask(__name__)
@@ -227,6 +231,12 @@ def create_app(
     # （见 routes/fund.py::_build_holdings_ref）。
     if holdings_ref_builder is not None:
         app.extensions["holdings_ref_builder"] = holdings_ref_builder
+
+    # 义工群对冲计算器（web/routes/overnight.py）的引用对象构造器。
+    # 与 ``reference_refs_builder`` 同一套路：默认实现按符号连库建
+    # QDII / 持仓型 / 配对型三种引用对象，测试注入假的即可不连库。
+    if overnight_refs_builder is not None:
+        app.extensions["overnight_refs_builder"] = overnight_refs_builder
 
     init_app(app)
     register_blueprints(app)

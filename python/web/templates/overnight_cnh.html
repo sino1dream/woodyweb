@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% from "_data_table.html" import data_table %}
+{% block title %}{{ page.title }} - 基金估值{% endblock %}
+{% block content %}
+  {# 义工群对冲计算器（woody/res/overnightcnhcn.php?overnightcnh=95000）。
+
+     一笔"要平衡的离岸人民币"折成 23 只 QDII 各自的买卖股数，并换算成对冲标的。
+     输入串末几位决定口径：F = 基金申购、MCL/MGC = 原油/黄金期货、无后缀 = 纯金额；
+     首字符 '-' = 卖（表头前缀跟着变"可卖"）。
+
+     没有分族闸门 —— 符号表是写死的。只有"算不出"这一类行会缺建议数量。 #}
+  <h1>{{ page.title }}</h1>
+
+  {# EchoEditInputForm()：说明文字 + 输入框 + 提交/清除，同一个表单。
+     那三个预设链接对应 PHP 的 CopyPhpLink（MCL对冲 / MGC对冲 / 基金申购）。 #}
+  <form method="post" class="overnight-cnh-form">
+    <p class="table-links">
+      需要平衡的离岸人民币CNH
+      {% for preset in presets %}
+        <a href="{{ url_for('overnight.overnight_cnh_page', overnightcnh=preset.value) }}">{{ preset.text }}</a>
+      {% endfor %}
+      <br />
+      <input name="input" value="{{ page.input }}" type="text" size="40" maxlength="1024" class="textfield" id="input" />
+      <br />
+      <button type="submit" name="submit" value="1">提交</button>
+      <button type="submit" name="clear" value="1">清除</button>
+    </p>
+  </form>
+
+  {% if page.table %}
+    {{ data_table(page.table, "overnight-cnh-table") }}
+
+    <p class="table-note">
+      表头前缀「{{ page.direction.prefix }}」由输入串的首字符决定：负数买（本页是"卖掉这笔钱"），
+      正数卖（"买入这么多"）。同一格里既有价格又有数量时，价格取的是<strong>可成交的那一档</strong>
+      （{{ page.direction.op }}出看买一、买入看卖一）。<br />
+      输入串末几位决定口径：<code>F</code> = 基金申购（金额 ÷(1+申购费) × 溢价 × 仓位）、
+      <code>MCL</code> / <code>MGC</code> = 原油 / 黄金期货（期货价 × 中间价 × 溢价修正 × 合约乘数）、
+      无后缀 = 纯金额。建议数量凑整到 100 股，<span class="cell-red">红色</span>表示超过该档挂单量。<br />
+      「对冲值」把本基金换成对冲标的的换算比（取自 <code>calibrationhistory</code>
+      上两边同日都有校准值的那一天）；「建议对冲操作」是折成对冲标的股数，或持仓型基金的
+      季报成分股股数。
+    </p>
+  {% endif %}
+
+  {% if page.missing %}
+    <p class="table-note">
+      以下 {{ page.missing|length }} 只算不出建议数量（{{ page.missing[0].reason }}）：
+      {% for item in page.missing %}<code>{{ item.symbol }}</code>{% if not loop.last %}、{% endif %}{% endfor %}。<br />
+      数量要靠「官方净值 × 仓位 × 价格」三样一起算，缺一项就出不来数。
+      本页<strong>不因此整页报错</strong> —— PHP 那几行会直接除零。
+    </p>
+  {% endif %}
+
+  <p>
+    <a href="{{ url_for('main.index') }}">返回首页</a>
+    <a href="{{ url_for('stock.stock_page') }}">返回股票列表</a>
+    <a href="{{ url_for('submit.index') }}">数据工具</a>
+  </p>
+{% endblock %}

@@ -12,6 +12,7 @@ from web.routes.health import health_bp
 from web.routes.history import history_bp
 from web.routes.holdings import holdings_bp
 from web.routes.main import main_bp
+from web.routes.overnight import overnight_bp
 from web.routes.portfolio import portfolio_bp
 from web.routes.quote import quote_bp
 from web.routes.status import status_bp
@@ -50,3 +51,6 @@ def register_blueprints(app: Flask) -> None:
     # 三个"抓外部数据写库"的后台动作（woody/res/submitdividend.php 一族）——
     # 一张工具页 + 三个 POST 端点。见 auto/README_submit_pages_migration.md
     app.register_blueprint(submit_bp)
+    # 义工群对冲计算器（woody/res/overnightcnhcn.php）—— 独立工具页，
+    # 没有符号参数，靠 ?overnightcnh= 预填金额。见 web/routes/overnight.py
+    app.register_blueprint(overnight_bp)
