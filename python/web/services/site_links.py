@@ -28,8 +28,11 @@
 
 ## 五段顺序照抄，目标地址按"本地有就本地、没有就生产端"映射
 
-PHP 那串链接大多指向 ``/woody/res/`` 下**本地还没有路由**的页面
-（``lof.php`` / ``overnight.php`` / ``ahcompare.php`` / 十个行业分类 …）。
+PHP 那串链接里，**工具页那一段**（``lof.php`` / ``overnight.php`` /
+``overnightcnh.php`` / ``ahcompare.php`` / ``autotractor.php``）2026-11-01 起
+**全部有本地页**了，整段挪进了 :func:`local_links`；剩下的（账号工具、开发记录、
+七个股票菜单、十个行业分类）仍然只有生产端有页面。
+
 照本项目一贯的取舍：**不给死链，也不假装它存在**。所以每条链接都带一个
 ``external`` 标记：
 
@@ -38,19 +41,17 @@ PHP 那串链接大多指向 ``/woody/res/`` 下**本地还没有路由**的页�
   新窗口打开、文本后面带 ``↗``。这些地址全部真实可访问，是"生产端参照"
   这条既定原则的一部分（迁移判断以它为准）。
 
-## 与 PHP 的四处差异（都是"本地没有对应的东西"）
+## 与 PHP 的三处差异（都是"本地没有对应的东西"）
 
-1. **`GetAllLofLink()` 的 ``lof.php``（全部 LOF 基金）** 本地没有全量 LOF 页，
-   落到 ``/fund/qdiilof``（QDII-LOF 列表，本站点最接近的入口）；
-2. **个人分组的 ``_getPersonalLinks()``** 需要登录态 + ``stockgroup`` 表，
+1. **个人分组的 ``_getPersonalLinks()``** 需要登录态 + ``stockgroup`` 表，
    账号体系暂缓 —— 本地只给 ``/group`` 与 ``/portfolio`` 两个演示页；
-3. **管理员那段 debug 链接**（``stockpage('debug')`` / ``GetDebugFileLink()`` /
+2. **管理员那段 debug 链接**（``stockpage('debug')`` / ``GetDebugFileLink()`` /
    ``php/test.php``）本地没有对应页面，只保留 ``/admin/groups``；
-4. **``GetStockCategoryLinks($strSymbol)`` 的十个行业分类**（biotech /
-   commodity / qqqfund …）本地没有分类数据，换成两个 QDII 分组
-   （``calc.fundgroups``），语义仍是"这一类还有哪些同类页"。
+3. **``GetStockCategoryLinks($strSymbol)`` 的十个行业分类**（biotech /
+   commodity / qqqfund …）本地换成了分类页注册表（``/category/<name>``，
+   2026-10-30 起 19 个页面全在本地），语义仍是"这一类还有哪些同类页"。
 
-第 4 条另有一个细节：PHP 会把**该符号所属的那一类去掉**（``unset($ar[$strItem])``），
+第 3 条另有一个细节：PHP 会把**该符号所属的那一类去掉**（``unset($ar[$strItem])``），
 因为它就是当前页；本地同样不给当前分组自己挂链接。
 """
 
@@ -92,19 +93,18 @@ STOCK_CATEGORY = (
     ("spyfund", "标普500"),
 )
 
-#: ``EchoLinks()`` 开头那串"工具页"：``(页面, 查询串, 显示文本)``。
-#: ``overnightcnh`` 的查询串是 ``overnightcnh=95000``（PHP 默认金额），
-#: "键就是页面名本身"这一点照抄 —— 换掉它页面读不到参数。
+#: ``EchoLinks()`` 开头那串"工具页"里**仍然只能指向生产端**的部分。
 #:
-#: **``ahcompare`` 已从这里移除**：2026-10-30 它迁成了本地页 ``/ahcompare``
-#: （``woody/res/ahcomparecn.php``），迁完再指向生产端就是自己给自己留死链。
-#: 本地入口在 :func:`local_links` 里，别两处都挂。
-UTILITY_LINKS = (
-    ("lof.php", "", "LOF基金"),
-    ("overnight.php", "", "义工群对比"),
-    ("overnightcnh.php", "overnightcnh=95000", "义工群对冲计算器"),
-    ("autotractor.php", "", "拖拉机自动化"),
-)
+#: 2026-11-01 清空：最后四个（``lof`` / ``overnight`` / ``overnightcnh`` /
+#: ``autotractor``）都迁到本地了 —— ``lofcn.php`` 与 ``overnightcn.php`` 进了
+#: 分类页注册表（``/category/lof`` / ``/category/overnight``），另两页各有自己的
+#: 路由。**迁完还留在这里就是自己给自己留死链**（``ahcompare`` 那次的教训，
+#: 见下），所以本地入口一律挪去 :func:`local_links`。
+#:
+#: 保留这个空元组是为了让"工具页 → 账号工具 → 开发记录 → 菜单 → 分类"这条
+#: 分段顺序在代码与测试里仍然显式可见；将来再有新页面回到这里时不用改结构。
+UTILITY_LINKS: tuple = ()
+
 
 #: ``GetAccountToolLink('simpletest')``（``/account/simpletest.php``）。
 ACCOUNT_TOOL_LINK = (PATH_ACCOUNT + "simpletest.php", "账号工具")
@@ -123,7 +123,8 @@ def production_links() -> list:
     """``EchoLinks()`` 里"本地还没有页面"的那一串，全指向生产端。
 
     返回 ``[{"text", "url", "external": True}, ...]``，顺序 = PHP 顺序：
-    工具页（5 个）→ 账号工具 → 开发记录 → 七个股票菜单 → 十个行业分类。
+    工具页（本地已全迁，见 ``UTILITY_LINKS``，当前为空）→ 账号工具 →
+    开发记录 → 七个股票菜单 → 十个行业分类。
     """
     links = []
     for page, query, text in UTILITY_LINKS:
@@ -168,10 +169,23 @@ def local_links(url_for: Callable[..., str], symbol: Optional[str] = None,
                       "url": url_for("fund.fund_group_page", group=name),
                       "external": False})
 
-    #: PHP 那串"工具页"里**唯一已迁到本地**的一页：``ahcomparecn.php``
-    #: （``/ahcompare``）。另外两个对比页（``abcompare`` / ``adrhcompare``）
-    #: 生产端本来就不进页脚，本地也从对比页自己的页尾导航进。
+    #: ``EchoLinks()`` 开头那串"工具页"，2026-11-01 起**全部在本地**。
+    #: 顺序照 PHP：``GetAllLofLink()`` → ``GetOvernightLink()`` →
+    #: ``GetOvernightCnhLink()`` → ``GetAutoTractorLink()``（``ahcompare`` 在
+    #: 2026-10-30 就迁了，位置在它原本的位置上）。
+    #:
+    #: **``/overnightcnh`` 不带 ``?overnightcnh=95000``**：那个查询串是 PHP 页面的
+    #: 缺省金额（本地缺省 100000，见 ``overnight_cnh_service.DEFAULT_INPUT``），
+    #: 页面上有预设按钮可改，链接里钉死一个数反而会盖掉用户上次填的值。
+    links.append({"text": "LOF基金", "url": url_for("category.category_page",
+                                                    name="lof"), "external": False})
+    links.append({"text": "义工群对比", "url": url_for("category.category_page",
+                                                      name="overnight"), "external": False})
+    links.append({"text": "义工群对冲计算器", "url": url_for("overnight.overnight_cnh_page"),
+                  "external": False})
     links.append({"text": "A股和H股对比", "url": url_for("compare.ahcompare_page"),
+                  "external": False})
+    links.append({"text": "拖拉机自动化", "url": url_for("autotractor.autotractor_page"),
                   "external": False})
 
     links.append({"text": "股票列表", "url": url_for("stock.stock_page"), "external": False})

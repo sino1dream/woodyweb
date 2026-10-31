@@ -1,10 +1,10 @@
-"""分类页的测试（16 个 ``woody/res/*cn.php`` → ``category_page_service.py``）。
+"""分类页的测试（19 个 ``woody/res/*cn.php`` → ``category_page_service.py``）。
 
 **全部离线**：引用对象是内存假实现，不联网、不连 MySQL。
 
 这一批页面的"逻辑"只有三样东西，所以测试也围绕这三样：
 
-1. **注册表**（``CATEGORY_PAGES``）—— 17 个键、各自的标题/说明/PHP 源文件，
+1. **注册表**（``CATEGORY_PAGES``）—— 19 个键、各自的标题/说明/PHP 源文件，
    以及符号数组的**形状**（全是 A 股场内基金、无重复）；
 2. **装配**（``build_category_page``）—— 两张表用谁的数据、缺服务时不炸；
 3. **路由**（``/category/<name>`` 与 ``/qdii``）—— 200/404、排序参数、
@@ -33,6 +33,7 @@ from web.bootstrap import install_paths  # noqa: E402
 install_paths()
 
 from web.services import category_page_service  # noqa: E402
+from core.stocksymbol import StockSymbol, get_all_symbol_array  # noqa: E402
 from web.services.category_page_service import (  # noqa: E402
     CATEGORY_PAGES,
     CategoryNotFoundError,
@@ -53,7 +54,10 @@ from web.tests.test_qdii_page import (  # noqa: E402
 )
 
 
-#: 16 个"基金分类页"（qdiicn.php 也在其中，它在 PHP 里与另外 15 个同构）
+#: 19 个"分类页"（`qdiicn.php` 也在其中，它在 PHP 里与其它 18 个同构）。
+#: 顺序 = ``_stocklink.php::GetCategoryArray()`` 的 switch 顺序（也是导航顺序）。
+#: 2026-11-01 补上 ``lof`` / ``overnight`` 两个 —— 它们一直是同一套壳子
+#: （``lofcn.php`` / ``overnightcn.php``），2026-10-30 那批漏在清单外。
 FUND_CATEGORIES = [
     "biotech",
     "chinafuture",
@@ -63,8 +67,10 @@ FUND_CATEGORIES = [
     "hangseng",
     "hshares",
     "hstech",
+    "lof",
     "mscius50",
     "oilfund",
+    "overnight",
     "qdii",
     "qdiieu",
     "qdiihk",
@@ -73,6 +79,12 @@ FUND_CATEGORIES = [
     "qqqfund",
     "spyfund",
 ]
+
+#: 标题**不带**"基金净值计算工具"后缀的两个分类：PHP ``_getTitleStr()`` 里
+#: 写的就是 ``'lof' => LOF_ALL_DISPLAY`` / ``'overnight' => OVERNIGHT_DISPLAY``，
+#: 不像 biotech 那批拼了 ``$strTool``。照抄，别为了"看起来整齐"补上后缀。
+TITLE_WITHOUT_TOOL_SUFFIX = {"lof", "overnight"}
+
 
 #: A 股场内基金代码：SH/SZ + 6 位数字。分类页的数组必须全是这个形状 ——
 #: 一旦混进美股/指数（``^NDX``、``ASHR``），PHP 那边就会去建 AB/AH/ADR
@@ -83,8 +95,8 @@ A_SHARE_FUND = re.compile(r"^(SH|SZ)\d{6}$")
 class CategoryRegistryTest(unittest.TestCase):
     """注册表本身：键、标题、说明、PHP 源文件、符号数组。"""
 
-    def test_registry_covers_all_sixteen_pages(self):
-        """17 个键（16 个分类 + qdii 已在其中），顺序与 PHP 分派表同序。"""
+    def test_registry_covers_all_pages(self):
+        """19 个键，顺序与 PHP 分派表同序。"""
         self.assertEqual(FUND_CATEGORIES, get_category_names())
 
     def test_every_entry_has_the_five_fields(self):
@@ -97,12 +109,20 @@ class CategoryRegistryTest(unittest.TestCase):
                 self.assertTrue(callable(definition["symbols"]))
 
     def test_titles_are_unique_and_match_the_php_pattern(self):
-        """PHP ``_getTitleStr()`` = 分组显示名 + '基金净值计算工具'。"""
+        """PHP ``_getTitleStr()``：多数 = 分组显示名 + '基金净值计算工具'。
+
+        ``lof`` / ``overnight`` 是例外（只有显示名，没有后缀），见
+        :data:`TITLE_WITHOUT_TOOL_SUFFIX` —— 两条分支都要钉住，
+        否则"统一补后缀"会把它们改成 PHP 里不存在的标题。
+        """
         titles = [item["title"] for item in CATEGORY_PAGES.values()]
         self.assertEqual(len(titles), len(set(titles)))
         for name, definition in CATEGORY_PAGES.items():
             with self.subTest(category=name):
-                self.assertTrue(definition["title"].endswith("基金净值计算工具"))
+                if name in TITLE_WITHOUT_TOOL_SUFFIX:
+                    self.assertEqual(definition["display"], definition["title"])
+                else:
+                    self.assertTrue(definition["title"].endswith("基金净值计算工具"))
                 self.assertTrue(definition["title"].startswith(definition["display"]))
 
     def test_php_page_files_exist(self):
@@ -157,6 +177,39 @@ class CategoryRegistryTest(unittest.TestCase):
             ["SZ160216", "SZ164701", "SZ160719", "SZ161116", "SZ165513", "SZ161815"],
             commodity[6:],
         )
+
+    def test_overnight_gold_order_follows_production(self):
+        """``overnight`` 的金块顺序也按生产端（2026-11-01 抓取）。
+
+        与 :meth:`test_commodity_gold_order_follows_production` 是同一个坑：
+        内嵌的 ``GetQdiiGoldSymbolArray()`` 在本地快照里的排列与生产端不同。
+        这里只钉"黄金 6 只是不是按生产端序、且仍然连在一起"，别的位置不动
+        —— 前后两段（XOP/原油与那 9 只 LOF）本来就一致。
+        """
+        symbols = get_category("overnight")["symbols"]()
+        self.assertEqual(23, len(symbols))
+        start = symbols.index("SZ160216")
+        self.assertEqual(
+            ["SZ160216", "SZ164701", "SZ160719", "SZ161116", "SZ165513", "SZ161815"],
+            symbols[start:start + 6],
+        )
+
+    def test_lof_is_the_filtered_a_share_subset(self):
+        """``lof`` 是**过滤**出来的（``IsLofA()``），不是某个现成数组。
+
+        PHP 是 ``foreach (GetAllSymbolArray()) { if ($sym->IsLofA()) ... }``，
+        所以它必须是 ``get_all_symbol_array()`` 的**保序子序列** —— 一旦有人
+        改成排序或换成别的源，行序就和生产端（也是 ALL 的原序）对不上了。
+        """
+        lof = get_category("lof")["symbols"]()
+        self.assertEqual(53, len(lof))
+        self.assertEqual(
+            [s for s in get_all_symbol_array() if s in set(lof)],
+            lof,
+        )
+        for symbol in lof:
+            with self.subTest(symbol=symbol):
+                self.assertTrue(StockSymbol(symbol).is_lof_a())
 
     def test_unknown_category_raises(self):
         for name in ("", "nope", "hstechcn", "QDII"):

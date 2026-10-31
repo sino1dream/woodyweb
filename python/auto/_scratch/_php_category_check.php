@@ -16,10 +16,13 @@
 require_once('../../../php/stock/stocksymbol.php');
 require_once('../../../woody/res/php/_stocklink.php');
 
+// 前 17 个是 2026-10-30 迁的那批；后 2 个（lof / overnight）与它们同一套壳子
+// （`lofcn.php` / `overnightcn.php`），当初漏在清单外，2026-11-01 补上。
 $arCategory = array('biotech', 'chinafuture', 'chinaindex', 'chinainternet', 'commodity',
                     'hangseng', 'hshares', 'hstech', 'mscius50', 'oilfund',
                     'qdii', 'qdiieu', 'qdiihk', 'qdiijp', 'qdiimix',
-                    'qqqfund', 'spyfund');
+                    'qqqfund', 'spyfund',
+                    'lof', 'overnight');
 
 $result = array();
 foreach ($arCategory as $strCategory)

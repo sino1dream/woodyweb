@@ -631,3 +631,32 @@ h2 {
   background: #f2f2f2;
   border-color: #ccc;
 }
+
+/* ---------------------------------------------------------------------------
+   内容页（拖拉机自动化 /autotractor）
+   ---------------------------------------------------------------------------
+   PHP 那边是 <font color=green|blue|red|gray>，这里是同样四种颜色的语义类。
+   配色沿用表里已有的 .col-green / .col-blue（#087c25 / #1a4fa0），
+   免得同一个站点出现两套绿。
+   注意：.data-table 下那几个 .col-* 是"表格单元格"专用，不能复用到这里。 */
+.remark {
+  color: #087c25;
+  font-weight: bold;
+}
+
+.info {
+  color: #1a4fa0;
+}
+
+.alert {
+  color: #cc0000;
+}
+
+.quote {
+  color: #777;
+}
+
+.autotractor-list li {
+  margin: 6px 0;
+  line-height: 1.7;
+}

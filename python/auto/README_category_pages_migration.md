@@ -1,5 +1,11 @@
 # 分类页迁移（16 个 `woody/res/*cn.php` → 一个视图）
 
+> **2026-11-01 补丁**：注册表后来补了 `lofcn.php` / `overnightcn.php` 两条
+> （17 → 19），它们与这 16 个同构、本来就在 `GetCategoryArray()` 的 switch 里，
+> 只是当初漏在清单外。两条的标题**不带**"基金净值计算工具"后缀，`overnight`
+> 的黄金段顺序也与生产端不同。细节见 `README_autotractor_migration.md` §二 / §三，
+> 下面这份正文（16 个、17 条键）保留 2026-10-30 的原貌。
+>
 > 日期：2026-10-30
 > 涉及文件：`web/routes/category.py`（新）、`web/services/category_page_service.py`（新）、
 > `web/services/qdii_page_service.py`（改成薄包装）、`web/templates/category_page.html`（新，

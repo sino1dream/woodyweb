@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block title %}{{ page.title }}{% endblock %}
+{% block content %}
+  {# 拖拉机自动化说明页（woody/res/autotractorcn.php → woody/res/php/_autotractor.php）。
+
+     整页是图文说明，没有表格也没有数字。PHP 那边 EchoAll() 按固定顺序 echo 了
+     9 个东西（4 段说明 + 3 个列表 + 已知问题），这里由 page.blocks 的顺序决定，
+     模板只按 type 分派 —— 这样"漏一段"会体现在服务层的对照测试里，
+     而不是藏进模板的 if 里。
+
+     **用 b['items'] 而不是 b.items**：Jinja 对 dict 取属性时优先 attribute，
+     b.items 会拿到 dict 的 items 方法（"builtin_function_or_method is not
+     iterable"）。下标写法没有这个歧义。
+
+     paragraph 块里的 html 是服务层拼好的行内标记（小标题/按钮名/外链），
+     与 PHP 的 GetRemarkElement() / GetExternalLink() 逐字对应，所以 |safe。 #}
+  <h1>{{ page.title }}</h1>
+
+  {% for b in page.blocks %}
+    {% if b['type'] == 'paragraph' %}
+      <p>{{ b['html'] | safe }}</p>
+    {% elif b['type'] == 'list' %}
+      {% if b['ordered'] %}<ol class="autotractor-list">{% else %}<ul class="autotractor-list">{% endif %}
+        {% for item in b['items'] %}
+          <li>{{ item | safe }}</li>
+        {% endfor %}
+      {% if b['ordered'] %}</ol>{% else %}</ul>{% endif %}
+    {% elif b['type'] == 'bugs' %}
+      {# PHP GetKnownBugs() = GetHeadElement('已知问题') + GetListElement($arBug) #}
+      <h3>{{ b['heading'] }}</h3>
+      <ol class="autotractor-list">
+        {% for item in b['items'] %}
+          <li>{{ item | safe }}</li>
+        {% endfor %}
+      </ol>
+    {% endif %}
+  {% endfor %}
+
+  <p class="table-note">
+    本版不渲染 PHP 那两张界面截图（那边用 GD 现场生成缩放图），
+    也不渲染页脚——页脚由本站统一提供。
+  </p>
+
+  <p><a href="{{ url_for('main.index') }}">返回首页</a></p>
+{% endblock %}

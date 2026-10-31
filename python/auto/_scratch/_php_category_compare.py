@@ -63,7 +63,14 @@ QDII_EXTRA = [
 #: 集合相同、只有**排列**按生产端排的分类。本地 PHP 快照与生产端的行序不同，
 #: 而页面行序是人工比对对象，所以 Python 跟生产端走（见
 #: ``category_page_service.GOLD_DISPLAY_ORDER``）。集合必须一致，只放行顺序。
-ORDER_BY_PRODUCTION = {"commodity"}
+#:
+#: ``overnight`` 是 2026-11-01 加注册表时发现的同一个坑：它内嵌的
+#: ``GetQdiiGoldSymbolArray()`` 那一段的排列与生产端不同，处理方式照抄
+#: ``commodity``。
+#:
+#: ``lof`` 也是这一条：``GetAllSymbolArray()`` 在本地快照里还是旧的合并顺序
+#: （成员 53 只一致），生产端 ``lofcn.php`` 的顺序与 Python 完全一致。
+ORDER_BY_PRODUCTION = {"commodity", "overnight", "lof"}
 
 #: chinaindex 里刻意多出来的 4 只科创 50（生产端有、本地 PHP 仓库没有）。
 #: 来源见 ``core/stocksymbol.py::china_index_get_star_array()``。

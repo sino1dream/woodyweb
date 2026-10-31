@@ -4,6 +4,7 @@ from flask import Flask
 
 from web.routes.account import account_bp
 from web.routes.admin import admin_bp
+from web.routes.autotractor import autotractor_bp
 from web.routes.category import category_bp
 from web.routes.compare import compare_bp
 from web.routes.fund import fund_bp
@@ -54,3 +55,6 @@ def register_blueprints(app: Flask) -> None:
     # 义工群对冲计算器（woody/res/overnightcnhcn.php）—— 独立工具页，
     # 没有符号参数，靠 ?overnightcnh= 预填金额。见 web/routes/overnight.py
     app.register_blueprint(overnight_bp)
+    # 拖拉机自动化说明页（woody/res/autotractorcn.php）—— 纯图文内容页，
+    # 没有符号也没有参数。见 web/routes/autotractor.py
+    app.register_blueprint(autotractor_bp)

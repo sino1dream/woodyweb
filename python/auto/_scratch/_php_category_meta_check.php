@@ -82,10 +82,14 @@ $arMeta = eval('return '.$strMeta.';');
 $strTool = '基金净值计算工具';		// _getTitleStr() 里的 $strTool
 $arTitle = eval('return '.$strTitle.';');
 
+// 前 17 个是 2026-10-30 迁的那批；后 2 个（lof / overnight）同样是
+// `_mystockgroup.php` 的壳子（`lofcn.php` / `overnightcn.php`），当初漏在
+// 清单外，2026-11-01 补上。
 $arCategory = array('biotech', 'chinafuture', 'chinaindex', 'chinainternet', 'commodity',
                     'hangseng', 'hshares', 'hstech', 'mscius50', 'oilfund',
                     'qdii', 'qdiieu', 'qdiihk', 'qdiijp', 'qdiimix',
-                    'qqqfund', 'spyfund');
+                    'qqqfund', 'spyfund',
+                    'lof', 'overnight');
 
 $result = array();
 foreach ($arCategory as $strCategory)

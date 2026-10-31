@@ -1,7 +1,7 @@
 # 剩余未迁页面清单（"生产端未展示页面"及其它）
 
-> 复核日期：2026-10-31
-> 判定依据：`woody/res/*.php` 全量清点 + Flask `url_map` 52 条路由 + 真库/测试客户端实测
+> 复核日期：2026-11-01
+> 判定依据：`woody/res/*.php` 全量清点 + Flask `url_map` 53 条路由 + 真库/测试客户端实测
 > 本文只记**现状与缺口**，已完成项的细节见各自的 `README_*_migration.md`
 
 ## 一、这一批指什么
@@ -17,12 +17,12 @@
 | 按符号生成的详情页 | 131 | `sh513100cn.php` 这类，靠 URL 参数生成，Python 用 `/fund/<symbol>`、`/stock/<symbol>` 一个路由覆盖 |
 | **edit 族** | 3 | `_editstockoption.php` 的 16 项分派表**全部有去处**（14 项由同一个路由承担、2 项跳专门页），另 3 个独立页 |
 | **submit 族** | 4 | 表单 POST 目标：3 个抓外部数据的页已迁（`POST /submit/xxx`），`submitstockoptions` 的分支由编辑页承接 |
-| 分类页 | 16 | `biotechcn.php` 一族 4 行壳子，**已全部迁掉**（一个注册表 + 一个视图），见 `README_category_pages_migration.md` |
+| 分类页 | 16 | `biotechcn.php` 一族 4 行壳子，**已全部迁掉**（一个注册表 + 一个视图），见 `README_category_pages_migration.md`；2026-11-01 又补上 `lofcn.php` / `overnightcn.php` 两个同构页（注册表 17 → 19） |
 | 其它 | 34 | 分组页 / 历史页 / 账号页 / 工具页 |
 
-Flask 侧现有 **52 条路由**（`create_app().url_map`）。
+Flask 侧现有 **53 条路由**（`create_app().url_map`，含 `/static/<path>` 一条）。
 
-## 二、已迁的部分（14 个入口）
+## 二、已迁的部分（15 个入口）
 
 | PHP 页面 | Python | 备注 |
 |---|---|---|
@@ -36,11 +36,12 @@ Flask 侧现有 **52 条路由**（`create_app().url_map`）。
 | `submitstockoptions.php` | **只迁了 REPORT 分支** | 16 项里另 13 项的分派已在 `/stock/<symbol>/edit/<option>`，但**不是**走这个 POST 入口 |
 | `submitdividend.php` / `submitnetvalue.php` / `submithistory.php` | `GET /submit`（工具页）+ `POST /submit/<name>`（`dividend` / `netvalue` / `history`） | 三页在 PHP 里都零输出、且入口链接点不到，所以合成一张工具页；细节见 `README_submit_pages_migration.md` |
 | `deletesymbol.php` | `GET/POST /stock/<symbol>/delete` | 五道闸门 + 6 张表；**PHP 漏清 15 张残留表**，本版可显式级联；见 `README_deletesymbol_migration.md` |
-| **分类页 16 个** | `GET /category/<name>`，另有短路径 `GET /qdii` | 16 个 4 行壳子全部落到 `_mystockgroup.php`，所以做成一个注册表 + 一个视图；`_stocklink.php::GetCategoryArray()` 的数组与 `_getTitleStr()` / `_getMetaDescriptionStr()` 的文本都逐例对照过，见 `README_category_pages_migration.md` |
+| **分类页 19 个** | `GET /category/<name>`，另有短路径 `GET /qdii` | 19 个 4 行壳子全部落到 `_mystockgroup.php`，所以做成一个注册表 + 一个视图；`_stocklink.php::GetCategoryArray()` 的数组与 `_getTitleStr()` / `_getMetaDescriptionStr()` 的文本都逐例对照过，见 `README_category_pages_migration.md`。2026-11-01 补上 `lofcn.php` / `overnightcn.php`（17 → 19），见 `README_autotractor_migration.md` §二 |
 | **对比页 4 个** | `GET /abcompare`、`GET /ahcompare`、`GET /adrhcompare`、`GET /ahhistory/<symbol>` | 三个对比页与分类页**共用同一个 `EchoAll()`**，差别只是符号数组来自 `abpair` / `ahpair` / `adrpair` 三张配对表；`ahhistorycn.php` 另走 `_ahhistory.php`。PHP 真身对照 **39 例全一致**，见 `README_compare_pages_migration.md`。**演示库三张表都是 0 行**（且没有 A 股与 H 股标的），所以本地恒空态 |
 | `etfdividendcn.php` | `GET /stock/<symbol>/etfdividend` | 分红数据页：`stockdividend` + `stockhistory` 四列（日期/分红/价格/比例%）。两道闸门（无 ref、`CountNetValue()==0`）+ 单行跳过。**外链只留 Sina，Yahoo 那一支去掉**（该域名对大陆返回服务停止公告）。对照 9 项全一致，见 `README_etfdividend_migration.md`。**演示库 `stockdividend` 4 行全是孤儿 `stock_id`**，所以本地最好结果是"表头 + 空行" |
 | `rotationtradingcn.php` | `GET/POST /stock/<symbol>/rotationtrading` | 轮动交易计算器：把持有的 QDII 换成同指数的另一只，给出可成交价/量、对冲值与建议股数。四族（XOP / XBI / 纳指匹配 / 标普匹配）+ 三层闸门。**标普那一支刻意放宽到 `SpyQdii`**，修 PHP "`SZ159655` 有入口链接、页面全空"的判据不齐。对照 43 条断言全通过（含"页面数组 PHP 为空 / 本版 4 只"这条刻意差异），见 `README_rotationtrading_migration.md`。顺手修了 `apply_snapshot()` 在价格为 0 时丢掉盘口的老问题 |
 | `overnightcnhcn.php` | `GET/POST /overnightcnh` | 义工群对冲计算器：把一笔要平衡的离岸人民币折成 23 只 QDII 各自的买卖股数，再换算成对冲标的（QQQ / SPY / XOP …）的股数。输入串末几位决定口径（`F` 申购 / `MCL` `MGC` 期货 / 无后缀纯金额），首字符 `-` = 卖。两套「建议对冲操作」文案（对冲值口径 / 季报成分股逐股）。对照 **617 条断言全通过**，见 `README_overnight_cnh_migration.md`。**演示库 11 只没有官方净值、2 只期货没有快照**，所以本地要挑纯金额（如 `?overnightcnh=100000`）才看得到全部 23 行 |
+| `autotractorcn.php` | `GET /autotractor` | 拖拉机自动化说明页：纯图文（安装步骤 4 条、操作 7 种、客户号 5 条、已知问题 10 条），没有数字也没有数据库。PHP 那边全在 `EchoAll()` 里拼字符串，所以做成"按 PHP echo 顺序排的 blocks + 按类型分派渲染"。**不渲染两张界面截图**（PHP 用 GD 现生成缩放图）。对照 13 段 / 26 条全一致，见 `README_autotractor_migration.md` |
 
 ## 三、edit 族：16 项全部有去处（0 项未迁）
 
@@ -127,10 +128,10 @@ require('../../php/ui/_editcn.php');
 
 | 类别 | 缺口 | 证据 |
 |---|---|---|
-| **行业分类页** | **2026-10-30 已全部迁掉**：`chinaindexcn` / `chinainternetcn` / `biotechcn` / `commoditycn` / `chinafuturecn` / `hangsengcn` / `hstechcn` / `hsharescn` / `mscius50cn` / `oilfundcn` / `qqqfundcn` / `spyfundcn` / `qdiihkcn` / `qdiijpcn` / `qdiieucn` / `qdiimixcn` 共 16 个 → `/category/<name>`（`qdiicn.php` 另有短路径 `/qdii`） | 见 `README_category_pages_migration.md`。**原判断是错的**：这里曾写成"`FUND_GROUPS` 加个键即可复用 `/fund/<group>`"，实测这些页根本不是"基金指数对照表"，而是 `_mystockgroup.php` 驱动的分类页（参考数据表 + 估值表）；`/fund/qdiihk` 之类的 404 是**另一个**东西（那 22 个名字本就不是分组名）。`btbondcn.php` 也不属于这一族（是公司介绍页，`_res.php`）。数组随后按生产端对齐（27 / 38 / 15），见该文 §七；**剩下的缺口是数据不是页面**：`chinaindex` 的 27 只 A 股 ETF 在演示库里连 `stock` 行都没有 |
+| **行业分类页** | **2026-10-30 已全部迁掉**：`chinaindexcn` / `chinainternetcn` / `biotechcn` / `commoditycn` / `chinafuturecn` / `hangsengcn` / `hstechcn` / `hsharescn` / `mscius50cn` / `oilfundcn` / `qqqfundcn` / `spyfundcn` / `qdiihkcn` / `qdiijpcn` / `qdiieucn` / `qdiimixcn` 共 16 个 → `/category/<name>`（`qdiicn.php` 另有短路径 `/qdii`）；2026-11-01 又补上同构的 `lofcn.php` / `overnightcn.php`，注册表共 **19** 个 | 见 `README_category_pages_migration.md` 与 `README_autotractor_migration.md` §二。**原判断是错的**：这里曾写成"`FUND_GROUPS` 加个键即可复用 `/fund/<group>`"，实测这些页根本不是"基金指数对照表"，而是 `_mystockgroup.php` 驱动的分类页（参考数据表 + 估值表）；`/fund/qdiihk` 之类的 404 是**另一个**东西（那 22 个名字本就不是分组名）。`btbondcn.php` 也不属于这一族（是公司介绍页，`_res.php`）。数组随后按生产端对齐（27 / 38 / 15），见该文 §七；**剩下的缺口是数据不是页面**：`chinaindex` 的 27 只 A 股 ETF 在演示库里连 `stock` 行都没有 |
 | ~~**对比页**~~ | ~~`ahcomparecn.php` / `abcomparecn.php` / `adrhcomparecn.php` / `ahhistorycn.php`~~ | **2026-10-31 已全部迁**：`/abcompare` / `/ahcompare` / `/adrhcompare` / `/ahhistory/<symbol>`，见 `README_compare_pages_migration.md`。**剩余缺口是数据不是页面**：演示库 `abpair` / `ahpair` / `adrpair` 都是 0 行，且 `stock` 表里没有 A 股（`SH600*` 0 只）也没有 H 股（`HK*` 只有外汇 `HKCNY`），所以四页恒空态 |
 | ~~**分红数据页**~~ | ~~`etfdividendcn.php`~~ | **2026-10-31 已迁**：`GET /stock/<symbol>/etfdividend`，见 `README_etfdividend_migration.md`。**剩余缺口同样是数据**：`stockdividend` 那 4 行的 `stock_id`（182/184/186/214）全部超出 `stock` 表最大 id（181），任何符号都查不到；`QQQ` / `SZ161125` 有净值能过闸门、但分红行为空，所以本地看到的是"表头 + 空行提示" |
-| **工具页** | `autotractorcn.php`（拖拉机自动化）/ `overnightcn.php`（义工群对比） | 无对应路由。同族三页里 `rotationtradingcn.php`（轮动交易）与 `overnightcnhcn.php`（对冲计算器）**2026-10-31 已迁**，见 `README_rotationtrading_migration.md` / `README_overnight_cnh_migration.md`；剩这两个都不带计算逻辑（`overnightcn.php` 只有 4 行、全交给 `_mystockgroup.php`，与分类页同一套壳子） |
+| ~~**工具页**~~ | ~~`autotractorcn.php`（拖拉机自动化）/ `overnightcn.php`（义工群对比）/ `lofcn.php`（LOF基金）~~ | **2026-11-01 全部迁完**：`/autotractor`（新 service + 模板 + 路由）、`/category/overnight` 与 `/category/lof`（分类页注册表 17 → 19，见 `README_autotractor_migration.md`）。同族另两页 `rotationtradingcn.php` 与 `overnightcnhcn.php` 于 2026-10-31 迁完（`README_rotationtrading_migration.md` / `README_overnight_cnh_migration.md`）。**顺带修掉两个老账**：`lofcn.php` 从来没进过任何清单（本文 2026-10-30 那版漏了它），以及页脚四个工具页链接还指着生产端（迁完没改 = 自留死链），现在整段挪到 `site_links.local_links()` |
 | **账号体系** | `fundaccountcn.php`（`/account` 目前是演示数据，未切真库）；`member` 表 + 登录 + 分组可见性整体暂缓 | `WEB_MIGRATION_PLAN.md` T4b |
 | **博客/杂文** | `cateyescn.php`、`thanousparadoxcn.php`、`woody/blog/*` | 站点内容，不在迁移范围 |
 

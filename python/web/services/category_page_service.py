@@ -75,10 +75,13 @@ from web.bootstrap import install_paths
 install_paths()
 
 from core.stocksymbol import (  # noqa: E402
+    StockSymbol,
     china_future_get_symbol_array,
     china_index_get_symbol_array,
+    get_all_symbol_array,
     get_china_internet_symbol_array,
     get_msci_us50_symbol_array,
+    get_over_night_symbol_array,
     get_qdii_gold_symbol_array,
     get_qdii_oil_symbol_array,
     qdii_eu_get_symbol_array,
@@ -170,6 +173,57 @@ def _oilfund_symbols():
         + qdii_get_oil_etf_symbol_array()
         + get_qdii_oil_symbol_array()
     )
+
+
+def _lof_symbols():
+    """``_stocklink.php`` 的 ``lof`` 分支：:
+
+        $ar = array();
+        foreach (GetAllSymbolArray() as $strSymbol)
+        {
+            $sym = new StockSymbol($strSymbol);
+            if ($sym->IsLofA())    $ar[] = $strSymbol;
+        }
+
+    与其它分类不同，这一支是**过滤**而不是直接取数组，所以结果是
+    ``get_all_symbol_array()`` 保持原序的子序列。``GetAllSymbolArray()``
+    在 PHP 那边也是一段 ``array_merge``（不是查库），本模块的函数与它逐项对应，
+    所以两边过滤出来的成员与顺序一致。
+    """
+    return [symbol for symbol in get_all_symbol_array() if StockSymbol(symbol).is_lof_a()]
+
+
+def _overnight_symbols():
+    """``GetOverNightSymbolArray()``，但黄金那一段按生产端顺序排。
+
+    PHP 侧就是 ``GetOverNightSymbolArray()``（``_stocklink.php`` 的 overnight
+    分支），问题出在它内嵌的 ``GetQdiiGoldSymbolArray()``：本地 PHP 快照里
+    6 只黄金基金的顺序是 ``SZ160216 SZ161815 SZ160719 SZ161116 SZ164701
+    SZ165513``，生产端 ``overnightcn.php``（2026-11-01 抓取）是
+    ``SZ160216 SZ164701 SZ160719 SZ161116 SZ165513 SZ161815`` —— **成员一致、
+    只有顺序不同**，与 :func:`_commodity_symbols` 撞的是同一个坑（那一页
+    2026-10-30 已经用 :data:`GOLD_DISPLAY_ORDER` 处理过一次）。
+
+    所以这里复用同一份顺序：把黄金 6 只整体挪到"第一个黄金成员"所在的位置。
+    不改 ``core.stocksymbol.get_qdii_gold_symbol_array()`` 本身 —— 那个数组是
+    本地 PHP 快照的忠实移植，auto 层的对照脚本靠它；顺序是**展示**问题，
+    在展示层解，与 commodity 的处置保持一致。
+    """
+    symbols = get_over_night_symbol_array()
+    gold = get_qdii_gold_symbol_array()
+    ordered = [s for s in GOLD_DISPLAY_ORDER if s in gold]
+    ordered += [s for s in gold if s not in GOLD_DISPLAY_ORDER]
+
+    result = []
+    placed = False
+    for symbol in symbols:
+        if symbol in ordered:
+            if not placed:
+                result.extend(ordered)
+                placed = True
+            continue
+        result.append(symbol)
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -267,6 +321,23 @@ CATEGORY_PAGES = {
         "symbols": qdii_hk_get_tech_symbol_array,
         "php": "hstechcn.php",
     },
+    # `lofcn.php` 与 `overnightcn.php` 是同一套壳子的另外两页，2026-10-30 那批
+    # 16 个漏了它们（`GetCategoryArray()` 的 switch 里这两支一直在）。位置按
+    # switch 的顺序插：lof 在 hstech 之后，overnight 在 oilfund 之后 ——
+    # 字典顺序就是导航顺序，别图省事都塞到末尾。
+    "lof": {
+        "display": "LOF基金",
+        # 注意 title **不带**"基金净值计算工具"后缀：PHP 的 `_getTitleStr()`
+        # 那一栏写的是 `'lof' => LOF_ALL_DISPLAY`，与 biotech 那批拼 $strTool
+        # 的写法不一样。overnight 同理。
+        "title": "LOF基金",
+        "description": (
+            "本网站有EST的LOF基金汇总，方便申购不起ETF的穷人发现套利机会。"
+            "使用拖拉机自动化软件前注意查询基金的限购状态和限购方式等具体内容。"
+        ),
+        "symbols": _lof_symbols,
+        "php": "lofcn.php",
+    },
     "mscius50": {
         "display": "MSCI美国50",
         "title": "MSCI美国50基金净值计算工具",
@@ -288,6 +359,18 @@ CATEGORY_PAGES = {
         ),
         "symbols": _oilfund_symbols,
         "php": "oilfundcn.php",
+    },
+    "overnight": {
+        "display": "义工群对比",
+        # 同样不带"基金净值计算工具"后缀 —— `'overnight' => OVERNIGHT_DISPLAY`。
+        "title": "义工群对比",
+        "description": (
+            "义工群对比LOF数据汇总，方便调试软件、对比两边软件的实时折价溢价"
+            "信息以及在消息过多的时候快速筛选和定位有夜盘实时跨市场套利机会"
+            "的基金。"
+        ),
+        "symbols": _overnight_symbols,
+        "php": "overnightcn.php",
     },
     "qdii": {
         "display": "美股QDII",

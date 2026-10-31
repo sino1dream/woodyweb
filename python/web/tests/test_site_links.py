@@ -69,14 +69,23 @@ class ProductionLinksTest(unittest.TestCase):
             [link["text"] for link in links[category_start:category_start + len(STOCK_CATEGORY)]],
             [text for _, text in STOCK_CATEGORY])
 
-    def test_overnight_cnh_keeps_page_named_query(self):
-        """``overnightcnh=95000`` —— 键就是页面名本身，换掉页面就读不到参数。"""
-        urls = {link["text"]: link["url"] for link in production_links()}
-        self.assertTrue(urls["义工群对冲计算器"].endswith("overnightcnh.php?overnightcnh=95000"))
+    def test_migrated_utility_pages_are_not_external(self):
+        """四个工具页迁完后，页脚不该再留生产端外链（那会成自指的"死链"）。
+
+        ``lofcn`` / ``overnightcn`` 进分类页注册表（2026-11-01）、
+        ``overnightcnh`` / ``autotractor`` 各有自己的路由。
+        """
+        urls = [link["url"] for link in production_links()]
+        for page in ("lof.php", "overnight.php", "overnightcnh.php", "autotractor.php"):
+            with self.subTest(page=page):
+                self.assertFalse([url for url in urls if url.endswith("/" + page)])
 
     def test_link_count(self):
-        """4 工具页（``ahcompare`` 已迁本地） + 账号工具 + 开发记录 + 7 菜单 + 10 分类。"""
-        self.assertEqual(len(production_links()), 4 + 1 + 1 + 7 + 10)
+        """工具页（本地已全迁，见 ``UTILITY_LINKS``）+ 账号工具 + 开发记录 + 7 菜单 + 10 分类。"""
+        self.assertEqual(
+            len(production_links()),
+            len(UTILITY_LINKS) + 1 + 1 + len(STOCK_MENU) + len(STOCK_CATEGORY),
+        )
 
     def test_ahcompare_is_not_external_anymore(self):
         """迁完 ``/ahcompare`` 后，页脚不该再留一条生产端外链（会成死链）。"""
@@ -146,9 +155,14 @@ class RenderedFooterTest(unittest.TestCase):
         self.assertIn("生产端对照（PHP 页面）", html)
 
     def test_external_links_open_in_new_tab(self):
+        """生产端那一段用绝对地址，且新窗口打开（``↗`` 后缀由模板给）。
+
+        取 ``chinaindex.php`` 当样本 —— 它属于"七个股票菜单"，本地没有对应页，
+        不会随某个工具页迁移而失效（``lof.php`` 就迁走了）。
+        """
         html = self.client.get("/status").get_data(as_text=True)
         self.assertIn('target="_blank" rel="noopener noreferrer"', html)
-        self.assertIn("palmmicro.com/woody/res/lof.php", html)
+        self.assertIn("palmmicro.com/woody/res/chinaindex.php", html)
 
     def test_admin_link_follows_identity(self):
         """页脚的管理员段在 ``is_admin()`` 为假时整条消失。
