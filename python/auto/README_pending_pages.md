@@ -1,7 +1,7 @@
 # 剩余未迁页面清单（"生产端未展示页面"及其它）
 
-> 复核日期：2026-11-01
-> 判定依据：`woody/res/*.php` 全量清点 + Flask `url_map` 53 条路由 + 真库/测试客户端实测
+> 复核日期：2026-11-02
+> 判定依据：`woody/res/*.php` 全量清点 + Flask `url_map` 57 条路由 + 真库/测试客户端实测
 > 本文只记**现状与缺口**，已完成项的细节见各自的 `README_*_migration.md`
 
 ## 一、这一批指什么
@@ -20,14 +20,14 @@
 | 分类页 | 16 | `biotechcn.php` 一族 4 行壳子，**已全部迁掉**（一个注册表 + 一个视图），见 `README_category_pages_migration.md`；2026-11-01 又补上 `lofcn.php` / `overnightcn.php` 两个同构页（注册表 17 → 19） |
 | 其它 | 34 | 分组页 / 历史页 / 账号页 / 工具页 |
 
-Flask 侧现有 **53 条路由**（`create_app().url_map`，含 `/static/<path>` 一条）。
+Flask 侧现有 **57 条路由**（`create_app().url_map`，含 `/static/<path>` 一条）。
 
-## 二、已迁的部分（15 个入口）
+## 二、已迁的部分（16 个入口）
 
 | PHP 页面 | Python | 备注 |
 |---|---|---|
 | `editquarterreportcn.php` | `GET/POST /holdings/quarter/<symbol>` | `QuarterReportSql(DailyStringSql)`，填 `0` = 删除 |
-| `editstockgroupcn.php` | `/admin/groups`、`/admin/group/<id>`、`POST /admin/group/submit` | 账号体系暂缓，固定演示成员 |
+| `editstockgroupcn.php` | `/admin/groups`、`/admin/group/<id>`、`POST /admin/group/submit` | 账号认证 2026-11-02 已接上（`/account/login`），但这一组页面仍固定演示成员 `DEMO_MEMBER_ID`；要按登录会员取分组得等 §八 第 1 项 |
 | `editstocktransactioncn.php` | `GET /transactions/edit` | `core/edittransactionform.py` |
 | **edit 族 14 项** | `GET|POST /stock/<symbol>/edit/<option>` | 一个路由顶 14 个页面（另 2 项 302 到季报/持仓的专门页），**索引页** `GET /stock/<symbol>/edit`（PHP 没有），见 `README_stock_option_edit_migration.md` |
 | `submitgroup.php` | `POST /admin/group/submit` | |
@@ -38,6 +38,7 @@ Flask 侧现有 **53 条路由**（`create_app().url_map`，含 `/static/<path>`
 | `deletesymbol.php` | `GET/POST /stock/<symbol>/delete` | 五道闸门 + 6 张表；**PHP 漏清 15 张残留表**，本版可显式级联；见 `README_deletesymbol_migration.md` |
 | **分类页 19 个** | `GET /category/<name>`，另有短路径 `GET /qdii` | 19 个 4 行壳子全部落到 `_mystockgroup.php`，所以做成一个注册表 + 一个视图；`_stocklink.php::GetCategoryArray()` 的数组与 `_getTitleStr()` / `_getMetaDescriptionStr()` 的文本都逐例对照过，见 `README_category_pages_migration.md`。2026-11-01 补上 `lofcn.php` / `overnightcn.php`（17 → 19），见 `README_autotractor_migration.md` §二 |
 | **对比页 4 个** | `GET /abcompare`、`GET /ahcompare`、`GET /adrhcompare`、`GET /ahhistory/<symbol>` | 三个对比页与分类页**共用同一个 `EchoAll()`**，差别只是符号数组来自 `abpair` / `ahpair` / `adrpair` 三张配对表；`ahhistorycn.php` 另走 `_ahhistory.php`。PHP 真身对照 **39 例全一致**，见 `README_compare_pages_migration.md`。**演示库三张表都是 0 行**（且没有 A 股与 H 股标的），所以本地恒空态 |
+| **账号认证 9 条** | `GET/POST /account/<action>`（6 个动作）、`GET /account/profile`、`GET/POST /account/editprofile`、`GET /account/logout` | `account/` 目录 57 个文件里只有 4 个是真的实现（`_editemail.php` / `_editemailform.php` / `_profile.php` / `_editprofileform.php`），其余是 4 行壳子或统计工具页。六个邮箱表单页合成一张 `PAGE_CONFIG` 表；session 键照 PHP（`SESS_ID` + `email`）。**前置**：`member` 表补 `password`/`ip` 两列 + 建 `profile` 表（`dbtools/patch_member_auth.sql`）。见 `README_member_auth_migration.md` |
 | `etfdividendcn.php` | `GET /stock/<symbol>/etfdividend` | 分红数据页：`stockdividend` + `stockhistory` 四列（日期/分红/价格/比例%）。两道闸门（无 ref、`CountNetValue()==0`）+ 单行跳过。**外链只留 Sina，Yahoo 那一支去掉**（该域名对大陆返回服务停止公告）。对照 9 项全一致，见 `README_etfdividend_migration.md`。**演示库 `stockdividend` 4 行全是孤儿 `stock_id`**，所以本地最好结果是"表头 + 空行" |
 | `rotationtradingcn.php` | `GET/POST /stock/<symbol>/rotationtrading` | 轮动交易计算器：把持有的 QDII 换成同指数的另一只，给出可成交价/量、对冲值与建议股数。四族（XOP / XBI / 纳指匹配 / 标普匹配）+ 三层闸门。**标普那一支刻意放宽到 `SpyQdii`**，修 PHP "`SZ159655` 有入口链接、页面全空"的判据不齐。对照 43 条断言全通过（含"页面数组 PHP 为空 / 本版 4 只"这条刻意差异），见 `README_rotationtrading_migration.md`。顺手修了 `apply_snapshot()` 在价格为 0 时丢掉盘口的老问题 |
 | `overnightcnhcn.php` | `GET/POST /overnightcnh` | 义工群对冲计算器：把一笔要平衡的离岸人民币折成 23 只 QDII 各自的买卖股数，再换算成对冲标的（QQQ / SPY / XOP …）的股数。输入串末几位决定口径（`F` 申购 / `MCL` `MGC` 期货 / 无后缀纯金额），首字符 `-` = 卖。两套「建议对冲操作」文案（对冲值口径 / 季报成分股逐股）。对照 **617 条断言全通过**，见 `README_overnight_cnh_migration.md`。**演示库 11 只没有官方净值、2 只期货没有快照**，所以本地要挑纯金额（如 `?overnightcnh=100000`）才看得到全部 23 行 |
@@ -132,7 +133,7 @@ require('../../php/ui/_editcn.php');
 | ~~**对比页**~~ | ~~`ahcomparecn.php` / `abcomparecn.php` / `adrhcomparecn.php` / `ahhistorycn.php`~~ | **2026-10-31 已全部迁**：`/abcompare` / `/ahcompare` / `/adrhcompare` / `/ahhistory/<symbol>`，见 `README_compare_pages_migration.md`。**剩余缺口是数据不是页面**：演示库 `abpair` / `ahpair` / `adrpair` 都是 0 行，且 `stock` 表里没有 A 股（`SH600*` 0 只）也没有 H 股（`HK*` 只有外汇 `HKCNY`），所以四页恒空态 |
 | ~~**分红数据页**~~ | ~~`etfdividendcn.php`~~ | **2026-10-31 已迁**：`GET /stock/<symbol>/etfdividend`，见 `README_etfdividend_migration.md`。**剩余缺口同样是数据**：`stockdividend` 那 4 行的 `stock_id`（182/184/186/214）全部超出 `stock` 表最大 id（181），任何符号都查不到；`QQQ` / `SZ161125` 有净值能过闸门、但分红行为空，所以本地看到的是"表头 + 空行提示" |
 | ~~**工具页**~~ | ~~`autotractorcn.php`（拖拉机自动化）/ `overnightcn.php`（义工群对比）/ `lofcn.php`（LOF基金）~~ | **2026-11-01 全部迁完**：`/autotractor`（新 service + 模板 + 路由）、`/category/overnight` 与 `/category/lof`（分类页注册表 17 → 19，见 `README_autotractor_migration.md`）。同族另两页 `rotationtradingcn.php` 与 `overnightcnhcn.php` 于 2026-10-31 迁完（`README_rotationtrading_migration.md` / `README_overnight_cnh_migration.md`）。**顺带修掉两个老账**：`lofcn.php` 从来没进过任何清单（本文 2026-10-30 那版漏了它），以及页脚四个工具页链接还指着生产端（迁完没改 = 自留死链），现在整段挪到 `site_links.local_links()` |
-| **账号体系** | `fundaccountcn.php`（`/account` 目前是演示数据，未切真库）；`member` 表 + 登录 + 分组可见性整体暂缓 | `WEB_MIGRATION_PLAN.md` T4b |
+| **账号体系** | **2026-11-02 迁完"认证内核"**：登录 / 注册 / 改密 / 改邮箱 / 重置密码 / 关号 + 资料页 + 编辑资料 + 登出（9 条路由，`README_member_auth_migration.md`）。**仍然是演示数据的**：`/account`（交易明细 + 资金汇总）与 `/group` / `/portfolio` 还读 `web/routes/account_demo_data.py` 的写死样例，没切 `stockgroup` 三张表 —— 那是同一份文档 §八 列的第一项待办 | `WEB_MIGRATION_PLAN.md` T4b |
 | **博客/杂文** | `cateyescn.php`、`thanousparadoxcn.php`、`woody/blog/*` | 站点内容，不在迁移范围 |
 
 ## 七、建议的推进顺序

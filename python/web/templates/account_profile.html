@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{# 资料页 —— 对应 account/php/_profile.php::EchoAll() 的**第一段**。
+
+   PHP 的三段：会员/资料 → 博客评论 → 基金申购金额。
+   后两段不迁（博客内容整体不迁；fundpurchase 那张表 PHP 里已被注释掉一半，
+   金额改存 groupitemamount），所以这里只有第一段 + 三个编辑入口。
+
+   字段顺序照抄 PHP 的中文分支（_echoAccountProfileChinese）：
+   电子邮件 → 状态 → 名字 → 电话 → 地址 → 网址 → 注册时间 → 上次登录时间
+   → 上次登录IP地址 → 活动指数 → 签名档。 #}
+{% block title %}{{ title }}{% endblock %}
+{% block content %}
+  <h1>{{ title }}</h1>
+
+  <p class="table-note">
+    <a href="{{ url_for('account_auth.auth_page', action='password') }}">修改密码</a>
+    ·
+    <a href="{{ url_for('account_auth.auth_page', action='updateemail') }}">更新登录电子邮件</a>
+    ·
+    <a href="{{ url_for('account_auth.edit_profile_page') }}">更新资料</a>
+    ·
+    <a href="{{ url_for('account_auth.logout') }}">退出登录</a>
+  </p>
+
+  <div class="account-profile">
+    <p>
+      电子邮件: <b>{{ member.email }}</b><br />
+      <span class="remark">{{ status_text }}。</span><br />
+      名字: {{ profile.get('name', '') }}<br />
+      电话: {{ profile.get('phone', '') }}<br />
+      地址: {{ profile.get('address', '') }}<br />
+      网址: {% if profile.get('web') %}<a href="{{ profile.get('web') }}" target="_blank" rel="noopener noreferrer">{{ profile.get('web') }}</a>{% endif %}<br />
+      注册时间: {{ member.register }}<br />
+      上次登录时间: {{ member.login }}<br />
+      上次登录IP地址: {{ member.ip }}<br />
+      活动指数: {{ member.activity }}<br />
+      签名档
+      <br /><b>{{ profile.get('signature', '') }}</b>
+    </p>
+  </div>
+
+  <p class="table-note">
+    账号体系刚接上，这一页只有资料本身。PHP 那边末尾还有「博客评论」与
+    「基金申购金额」两段 —— 前者属于博客内容（不在迁移范围），后者那张表
+    在 PHP 里已经改用 <code>groupitemamount</code>（基金申购金额走
+    <code>/stock/&lt;symbol&gt;/edit/editstockamount</code>）。
+  </p>
+
+  <p class="table-note">
+    换个身份看看？
+    <a href="{{ url_for('account_auth.auth_page', action='login') }}">登录</a>
+    ·
+    <a href="{{ url_for('account_auth.auth_page', action='closeaccount') }}">关闭帐号</a>
+    {% if is_admin %}· <a href="{{ url_for('admin.groups') }}">后台分组管理</a>{% endif %}
+  </p>
+{% endblock %}

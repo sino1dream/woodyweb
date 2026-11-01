@@ -660,3 +660,30 @@ h2 {
   margin: 6px 0;
   line-height: 1.7;
 }
+
+/* ---------------------------------------------------------------------------
+   账号页（/account/login、/account/profile、/account/editprofile）
+   ---------------------------------------------------------------------------
+   PHP 那边错误文案是用 GetFontElement() 现拼的红色 <font>，挂在输入框
+   右边那个 td 里。这里换成 .form-error（与 .remark/.alert 那套一致），
+   位置仍是"输入框下面/旁边"—— 错在哪个框要看得见，否则用户会以为
+   是别的格子填错了。 */
+.form-error {
+  display: inline-block;
+  margin-left: 8px;
+  color: #cc0000;
+}
+
+/* 单选按钮的标签：.admin-form label 是粗体 + 块级观感，
+   「否 / 是」跟在 radio 后面要横向排，否则会各占一行。 */
+.admin-form label.inline {
+  display: inline;
+  font-weight: normal;
+  margin-right: 4px;
+}
+
+/* 资料页那段"电子邮件 / 状态 / 名字…"是 <p> + <br> 拼的（照 PHP 的
+   布局），行距放宽一点，否则十一行挤成一块不好认。 */
+.account-profile p {
+  line-height: 1.9;
+}

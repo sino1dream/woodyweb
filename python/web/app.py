@@ -38,7 +38,7 @@ from web.services.calibration_service import (
 )
 from web.services.reference_service import ReferenceService, default_reference_service_factory
 from web.services.status_service import default_status_service_factory
-from web.services.admin_auth import is_admin
+from web.services.admin_auth import current_admin_email, current_member_id, is_admin
 from web.services.site_links import safe_footer_sections
 from web.services.sma_service import SmaService, default_sma_service_factory
 from web.services.stock_service import StockService, default_stock_service_factory
@@ -121,6 +121,10 @@ def create_app(
     #: 引用对象构造器。这一页一次要建 **23 个**引用对象（还带三档估值），
     #: 单测不可能连库 —— 注入一个"符号 → 假对象"的回调即可整段顶掉。
     overnight_refs_builder: Any = None,
+    #: 账号页（登录/注册/改密/…，``web/routes/account_auth.py``）的数据源工厂。
+    #: 与 ``admin_source_factory`` 同一套路：缺省 None → 请求级库连接；
+    #: 测试注入假数据源即可不连库跑完六个动作。
+    auth_source_factory: Any = None,
 ) -> Flask:
     """创建 Flask 应用，允许测试注入服务工厂。"""
     app = Flask(__name__)
@@ -238,6 +242,11 @@ def create_app(
     if overnight_refs_builder is not None:
         app.extensions["overnight_refs_builder"] = overnight_refs_builder
 
+    # 账号页（web/routes/account_auth.py）的数据源工厂。与 ``admin_source_factory``
+    # 同一套路：缺省 None → 路由现场用请求级库连接。
+    if auth_source_factory is not None:
+        app.extensions["auth_source_factory"] = auth_source_factory
+
     init_app(app)
     register_blueprints(app)
 
@@ -266,6 +275,12 @@ def create_app(
                 current_group=view_args.get("group"),
                 is_admin=is_admin(),
             ),
+            # 导航栏右上角的"登录 / 我的资料"靠它切换。取 session 里的
+            # ``SESS_ID``（PHP ``GetLoginId()``），**不查库** —— 每页一次
+            # 会员查询只为显示一个链接不值当，而且没有会员行时会多一次
+            # 空查询。邮箱同理走 session 缓存（登录时写进去的）。
+            "nav_member": current_member_id(),
+            "nav_email": current_admin_email() if current_member_id() else "",
         }
 
     @app.errorhandler(FundNotFoundError)

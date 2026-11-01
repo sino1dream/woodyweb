@@ -31,6 +31,17 @@
          登录态未接（账号体系暂缓），页面内有常驻说明 #}
       <a href="{{ url_for('admin.groups') }}">后台</a>
       <a href="{{ url_for('status.status_page') }}">状态</a>
+      {# 账号入口（account/ 目录那一族）。PHP 的导航栏没有这一条 ——
+         ``AccountMenu()`` 只挂在 account 页自己的 layout 上，其它页面靠
+         页脚 ``EchoLinks()``。本地加在导航里是因为登录之后**每页**都可能
+         要"看我的资料 / 退出"，藏在页脚点不到。已登录时显示邮箱前缀，
+         一眼能看出当前是谁。 #}
+      {% if nav_member %}
+        <a href="{{ url_for('account_auth.profile_page') }}">{{ nav_email or '我的资料' }}</a>
+        <a href="{{ url_for('account_auth.logout') }}">退出</a>
+      {% else %}
+        <a href="{{ url_for('account_auth.auth_page', action='login') }}">登录</a>
+      {% endif %}
     </nav>
   </header>
   {# 宽表格页（分组列表 19 列等）通过 main_class 把容器放宽，

@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+{# 账号页的六合一表单 —— 对应 PHP:
+
+     account/login*.php / register*.php / password*.php / updateemail*.php
+     / reminder*.php / closeaccount*.php        （每页 4 行壳子）
+   → account/php/_editemail.php     （引导语 + 标题，按 UrlGetPage() 分派）
+   → account/php/_editemailform.php （表单本体 + 错误码 → 四个位置的映射）
+
+   与 PHP 的形态差异：
+   * 字段显隐由路由的 PAGE_CONFIG 决定（那边是 _disableEditPassword /
+     _readonlyEditEmail 两个函数现场算），模板只读 form_config；
+   * 「隐藏」的字段直接不渲染 —— PHP 是渲染成 disabled 的空框。
+   * 错误文案挂在**对应输入框**下面，位置来自 auth_service.ERROR_FIELDS
+     （PHP 是 $strEmailErr / $strPasswordErr / $strPassword2Err / $strSubmitErr
+     四个变量拼进同一行 td）。 #}
+{% block title %}{{ title }}{% endblock %}
+{% block content %}
+  <h1>{{ title }}</h1>
+
+  {% if intro %}
+    <p class="table-note">{{ intro }}</p>
+  {% endif %}
+
+  <form class="admin-form" method="post"
+        action="{{ url_for('account_auth.auth_page', action=action) }}">
+    <p>
+      <label for="email">你的电子邮件</label><br />
+      <input type="text" id="email" name="email" value="{{ email }}"
+             size="40" maxlength="128" class="textfield"
+             {% if email_readonly %}readonly{% endif %} />
+      {% for message in errors.email %}
+        <span class="form-error">{{ message }}</span>
+      {% endfor %}
+      {% if email_readonly %}
+        <span class="table-note">这个动作不能改登录电子邮件。</span>
+      {% endif %}
+    </p>
+
+    {% if form_config.show_password %}
+      <p>
+        <label for="password">密码</label><br />
+        <input type="password" id="password" name="password" maxlength="32"
+               class="textfield" autocomplete="current-password" />
+        {% for message in errors.password %}
+          <span class="form-error">{{ message }}</span>
+        {% endfor %}
+      </p>
+    {% endif %}
+
+    {% if form_config.show_confirm %}
+      <p>
+        <label for="confirm">重复密码</label><br />
+        <input type="password" id="confirm" name="confirm" maxlength="32"
+               class="textfield" autocomplete="new-password" />
+        {% for message in errors.password2 %}
+          <span class="form-error">{{ message }}</span>
+        {% endfor %}
+      </p>
+    {% endif %}
+
+    <p>
+      <button type="submit">{{ title }}</button>
+      {% for message in errors.submit %}
+        <span class="form-error">{{ message }}</span>
+      {% endfor %}
+    </p>
+  </form>
+
+  <p class="table-note">
+    已登录？
+    <a href="{{ url_for('account_auth.profile_page') }}">看我的资料</a>
+    ·
+    <a href="{{ url_for('account_auth.auth_page', action='login') }}">登录</a>
+    ·
+    <a href="{{ url_for('account_auth.auth_page', action='register') }}">注册</a>
+    ·
+    <a href="{{ url_for('account_auth.auth_page', action='reminder') }}">忘记密码</a>
+    {% if login_email %}
+      · <a href="{{ url_for('account_auth.logout') }}">退出（{{ login_email }}）</a>
+    {% endif %}
+  </p>
+{% endblock %}

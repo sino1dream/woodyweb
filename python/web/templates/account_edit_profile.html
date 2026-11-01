@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{# 编辑资料 —— 对应 account/php/_editprofileform.php（出版单）+
+   account/php/_submitprofile.php（落库）。
+
+   PHP 是两个文件、表单 action 指向 submitprofile.php；本地合成一页
+   （GET 出版单、POST 落库），理由与六个邮箱表单一致：中间没有"跳开再回来"
+   的逻辑。
+
+   字段与顺序照抄：名字 / 电话 / 地址 / 网址 / 签名档 / 接收palmmicro邮件。
+   maxlength 也照抄（64 / 64 / 128 / 128），改小了用户会莫名输不进去，
+   改大了写库时才被截断 —— 两种都比"照抄"差。 #}
+{% block title %}{{ title }}{% endblock %}
+{% block content %}
+  <h1>{{ title }}</h1>
+
+  <p class="table-note">
+    登录帐号（<b>{{ member.email }}</b>）不在这里改 ——
+    <a href="{{ url_for('account_auth.auth_page', action='updateemail') }}">修改登录帐号</a>
+    那一页专门做这件事。
+  </p>
+
+  <form class="admin-form" method="post"
+        action="{{ url_for('account_auth.edit_profile_page') }}">
+    <p>
+      <label for="name">名字</label><br />
+      <input type="text" id="name" name="name" maxlength="64" class="textfield"
+             value="{{ profile.get('name', '') }}" />
+    </p>
+    <p>
+      <label for="phone">电话</label><br />
+      <input type="text" id="phone" name="phone" maxlength="64" class="textfield"
+             value="{{ profile.get('phone', '') }}" />
+    </p>
+    <p>
+      <label for="address">地址</label><br />
+      <input type="text" id="address" name="address" size="64" maxlength="128"
+             class="textfield" value="{{ profile.get('address', '') }}" />
+    </p>
+    <p>
+      <label for="web">网址</label><br />
+      <input type="text" id="web" name="web" size="64" maxlength="128"
+             class="textfield" value="{{ profile.get('web', '') }}" />
+    </p>
+    <p>
+      <label for="signature">签名档</label><br />
+      <textarea id="signature" name="signature" rows="6" cols="64">{{ profile.get('signature', '') }}</textarea>
+    </p>
+    <p>
+      <label>接收palmmicro邮件</label><br />
+      {# 两个 radio 的 value 就是 member.status 的两个取值（1 = 不收，2 = 订阅）。
+         PHP 那边 ``'1'`` / ``'2'`` 是字符串比较，本地 pymysql 给 int，
+         所以 status 由路由归一成整数再比。 #}
+      <input type="radio" id="status-no" name="status" value="1"
+             {% if status == 1 %}checked{% endif %} />
+      <label for="status-no" class="inline">否</label>
+      &nbsp;&nbsp;
+      <input type="radio" id="status-yes" name="status" value="2"
+             {% if status == 2 %}checked{% endif %} />
+      <label for="status-yes" class="inline">是</label>
+    </p>
+    <p>
+      <button type="submit">修改帐号资料</button>
+      <a href="{{ url_for('account_auth.profile_page') }}">回到资料页</a>
+    </p>
+  </form>
+{% endblock %}

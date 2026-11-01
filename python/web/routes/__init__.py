@@ -3,6 +3,7 @@
 from flask import Flask
 
 from web.routes.account import account_bp
+from web.routes.account_auth import account_auth_bp
 from web.routes.admin import admin_bp
 from web.routes.autotractor import autotractor_bp
 from web.routes.category import category_bp
@@ -37,6 +38,10 @@ def register_blueprints(app: Flask) -> None:
     app.register_blueprint(stock_bp)
     app.register_blueprint(portfolio_bp)
     app.register_blueprint(account_bp)
+    # 账号页（登录/注册/改密/改邮箱/重置/关号/资料/编辑资料/登出）——
+    # 对应 account/ 目录那一族页面，session 键照 PHP（SESS_ID + email）。
+    # 见 web/routes/account_auth.py
+    app.register_blueprint(account_auth_bp)
     app.register_blueprint(group_bp)
     app.register_blueprint(transactions_bp)
     app.register_blueprint(quote_bp)
