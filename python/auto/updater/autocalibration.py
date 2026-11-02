@@ -590,15 +590,18 @@ class AutoCalibrator:
             return outcome
 
         try:
-            from calc.fundcalc import qdii_est_symbol
+            from calc.fundcalc import qdii_est_cny_symbol, qdii_fund_est_symbol
         except ImportError:
-            outcome.skipped = "取不到 qdii_est_symbol 映射"
+            outcome.skipped = "取不到 qdii_fund_est_symbol 映射"
             return outcome
-        est_symbol = qdii_est_symbol(fund_symbol)
+        est_symbol = qdii_fund_est_symbol(fund_symbol)
         if not est_symbol:
-            outcome.skipped = "没有 QDII 估值标的（qdii_est_symbol）"
+            outcome.skipped = "没有 QDII 估值标的（qdii_fund_est_symbol）"
             return outcome
         outcome.pair_symbol = est_symbol
+        #: 汇率跟着 est 的地区走：美股 USCNY、港股 HKCNY、日股 JPCNY、欧股 EUCNY。
+        #: PHP 是"按地区选 Reference 类"，汇率写在类里；这里从 est 标的反查。
+        cny_symbol = qdii_est_cny_symbol(est_symbol)
 
         #: 锚点 = **基金净值日**（PHP ``$strDate = $this->GetDate()``，在
         #: ``UpdateOfficialNetValue()`` 之后）。净值定不了就整段失败 ——
@@ -627,9 +630,10 @@ class AutoCalibrator:
         #: 汇率**只取锚点当天**：PHP 是 ``$cny_ref->GetClose($strDate)``，
         #: 取不到就 return false（**不退到之前最近一条**）。用别的日子的汇率
         #: 会让 ``cny / cny_cal`` 与校准日错位，页面上的"基准汇率"就会对不上。
-        cny = self._cny_on(anchor)
+        cny = self._cny_on(anchor, cny_symbol)
         if cny is None:
-            outcome.skipped = "净值日 %s 没有汇率（PHP 取不到即 return false）" % anchor
+            outcome.skipped = "净值日 %s 没有 %s 中间价（PHP 取不到即 return false）" % (
+                anchor, cny_symbol)
             return outcome
         outcome.cny = cny
 
@@ -963,15 +967,20 @@ class AutoCalibrator:
         except (TypeError, ValueError):
             return None
 
-    def _cny_on(self, date: Any) -> Any:
-        """**指定那天**的美元人民币中间价；那天没有就返回 ``None``（不兜底）。
+    def _cny_on(self, date: Any, cny_symbol: str = "USCNY") -> Any:
+        """**指定那天**的中间价；那天没有就返回 ``None``（不兜底）。
 
         对应 PHP ``AdjustFactor()`` 里的 ``$cny_ref->GetClose($strDate)``
         （``qdiiref.php:181``）—— 它取不到就整段 ``return false``，
         **不会**退到最近一条。所以基金层校准走这个方法（:meth:`calibrate_fund`），
         而 :meth:`_cny`（带兜底）留给中间层那条路径。
+
+        ``cny_symbol`` 默认 ``USCNY``；**港股要传 ``HKCNY``、日股 ``JPCNY``、
+        欧股 ``EUCNY``** —— PHP 是按地区选 Reference 类各带一个汇率
+        （``QdiiHkReference`` 那条写死 ``fx_shkdcny``）。用美元汇率乘港币资产
+        会把校准值放大到约 7.8 倍。
         """
-        cny_id = self.source.get_stock_id("USCNY")
+        cny_id = self.source.get_stock_id(cny_symbol)
         if cny_id is None:
             return None
         reader = getattr(self.source, "get_netvalue_close", None)

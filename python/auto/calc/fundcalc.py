@@ -124,6 +124,87 @@ def qdii_eu_est_symbol(symbol: str) -> str | None:
     return None
 
 
+#: 有意排除的港股基金：est 标的不是港股指数，汇率口径要单独核。
+#:
+#: ``QdiiHkGetEstSymbol('SH501025')`` 在 PHP 里返回 ``SH000869``（**A 股**指数，
+#: 人民币计价），但它挂在 ``QdiiHkReference`` 上、汇率取 ``HKCNY`` —— 拿港币
+#: 汇率去乘人民币计价的指数，量级就差一个汇率。PHP 那句注释写的是 ``'03143'``，
+#: 说明 est 换过、汇率没跟着换。这条不属于"港股指数"这条主线，先不纳入自动
+#: 校准，等单独核清口径再说（见 ``README_p0_data_layer.md`` 遗留项）。
+QDII_HK_EST_EXCLUDED = ("SH501025",)
+
+#: est 标的 -> 中间价符号。
+#:
+#: PHP 里这个对应关系是**藏在 Reference 类里**的：``QdiiReference`` 固定
+#: ``USCNY``、``QdiiHkReference`` 固定 ``HKCNY``、``QdiiJpReference`` 固定
+#: ``JPCNY``、``QdiiEuReference`` 固定 ``EURCNY``（``qdiiref.php:238-300``）。
+#: 我们只有一条 ``calibrate_fund()``，所以把那张"按地区选类"的表显式化成
+#: 一张"est 标的 -> 汇率符号"的映射。
+QDII_EST_CNY_SYMBOLS = {
+    "^HSI": "HKCNY",
+    "^HSTECH": "HKCNY",
+    "^HSCE": "HKCNY",
+    "znb_NKY": "JPCNY",
+    "znb_TPX": "JPCNY",
+    "znb_CAC": "EUCNY",
+    "znb_DAX": "EUCNY",
+}
+
+#: 表里查不到就用美元中间价 —— 美股族占绝大多数，也是 ``QdiiReference`` 的默认。
+DEFAULT_QDII_CNY_SYMBOL = "USCNY"
+
+
+def qdii_est_cny_symbol(est_symbol: str | None) -> str:
+    """est 标的对应的中间价符号（``USCNY`` / ``HKCNY`` / ``JPCNY`` / ``EUCNY``）。
+
+    校准式子是 ``cal = est × cny ÷ 净值``，**汇率必须与 est 的地区一致**。
+    港股指数配 ``USCNY`` 会把 ``cal`` 放大到大约 7.8 倍（港币/美元），
+    页面上就变成"EST 差了一个数量级"。
+    """
+    return QDII_EST_CNY_SYMBOLS.get(est_symbol or "", DEFAULT_QDII_CNY_SYMBOL)
+
+
+def qdii_fund_est_symbol(symbol: str) -> str | None:
+    """基金 -> est 标的，**覆盖全部地区**。
+
+    PHP 是按地区分四个入口的（``QdiiGetEstSymbol`` / ``QdiiHkGetEstSymbol`` /
+    ``QdiiJpGetEstSymbol`` / ``QdiiEuGetEstSymbol``），调用方靠 Reference 类
+    分派。我们只有一条 ``calibrate_fund()``，所以在入口这里合起来 ——
+    先美股（``QdiiGetEstArray()`` 那张表），再港股、日股、欧股。
+
+    注意 :data:`QDII_HK_EST_EXCLUDED` 里的基金被有意跳过，理由见那里的注释。
+    """
+    est = qdii_est_symbol(symbol)
+    if est:
+        return est
+    if symbol in QDII_HK_EST_EXCLUDED:
+        return None
+    for finder in (qdii_hk_est_symbol, qdii_jp_est_symbol, qdii_eu_est_symbol):
+        est = finder(symbol)
+        if est:
+            return est
+    return None
+
+
+def qdii_fund_est_symbol_map() -> dict[str, str]:
+    """:func:`qdii_fund_est_symbol` 的全表（只收能定出 est 的基金）。
+
+    自动校准要遍历"所有该校的基金"时用它 —— ``qdii_est_symbol_map()`` 只有
+    美股族，港股/日股/欧股那边一只都进不去，``--funds`` 会安静地少算几十只。
+    """
+    mapping = dict(qdii_est_symbol_map())
+    for symbol in (list(QDII_HK_TECH_SYMBOLS) + list(QDII_HK_HANGSENG_SYMBOLS)
+                   + list(QDII_HK_HSHARES_SYMBOLS) + ["SZ161124"]
+                   + list(QDII_JP_NKY_SYMBOLS) + ["SH513800"]
+                   + list(QDII_EU_DAX_SYMBOLS) + ["SH513080"]):
+        if symbol in mapping:
+            continue
+        est = qdii_fund_est_symbol(symbol)
+        if est:
+            mapping[symbol] = est
+    return mapping
+
+
 @dataclass(frozen=True)
 class FundCalibration:
     position: float

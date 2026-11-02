@@ -701,6 +701,12 @@ python -B dbtools/bootstrap_fund_data.py --apply --from calib
 第 6 步之前还要一次 `quoteupdatercli --once` 才有快照可归档 —— **脚本不代跑
 长驻进程**（`--daemon` 是另一件事），只在 dry-run 里提示。
 
+**这九步覆盖不了"指数的多日历史"**：archive 只归档**当天**那一行。均线要的
+620 天窗口得另外跑 `dbtools/seed_index_history.py --days 800 --apply` ——
+它的默认清单现在是五个估值标的指数（`^NDX` `^GSPC` `^HSI` `^HSTECH` `^HSCE`），
+ETF 要显式 `--symbols` 点名。漏这一步的症状是「均线表整段为空 / EMA 空」，
+不是报错。
+
 ### 7.2 两条安全约定（与 `seed_p0_symbols.py` 同一套）
 
 * **默认 dry-run**：只做体检（查库，不联网）并打印要跑的命令；`--apply` 才执行；
@@ -788,13 +794,21 @@ CK6 是"让 `/fund/SZ161125` 与生产端 `sz161125cn.php` 逐段对齐"。前�
 
 ### 9.3 A 股 / 场内基金历史：以前没有源（新增 `updater/asharehistory.py`）
 
-`seed_index_history.py` 只有美股那条路（`US_MinKService`），于是
+`seed_index_history.py` 原来只有美股那条路（`US_MinKService`），于是
 `SZ161125` 的 `stockhistory` 只有 3 行。新源走新浪
 `CN_MarketData.getKLineData`（**裸 JSON 数组**，不是美股那条的 JSONP），
 实测与生产端「基金溢价记录」逐行一致：
 `10-08=3.294 / 10-09=3.312 / 10-12=3.337 / 10-13=3.330 / 10-14=3.340`。
 
 入口 `dbtools/seed_a_share_history.py`（默认 dry-run，`--symbols` / `--days`）。
+
+**同一个入口现在还管三个地区**（`indexhistory.fetch_daily_history()` 按符号分派）：
+
+| 符号 | 信源 | 备注 |
+| --- | --- | --- |
+| `^NDX` / `^GSPC` / `^DJI` 等美股指数、美股 ETF | 新浪 `US_MinKService.getDailyK` | 指数用点号前缀 `.NDX` |
+| `^HSI` / `^HSTECH` / `^HSCE` | **东财** `push2his`（`secid` 100.HSI / 124.HSTECH / 100.HSCEI） | 新浪港股日线已下线，见 §10.6 第 4 条 |
+| A 股 / 场内基金 | 新浪 `CN_MarketData.getKLineData` | 走 `seed_a_share_history.py`，不在本入口 |
 
 ### 9.4 净值历史回填（新增 `dbtools/backfill_nav_history.py`）
 
@@ -1020,23 +1034,53 @@ fundestcli 时官方中间价最新只到 X 日（SAFE 当日 09:20 公布），
    --symbols <ETF 清单> --days 800`，50/200 日均用 800 天窗口递推）。原来的
    说法是「`_plan_a_us_history.py` 刻意不算 EMA」，但那让均线 memo 对 ETF
    恒为空；既然补历史时手里就有 800 天收盘价，顺手算掉更省事。
-4. **港股指数抓不到日线**（`^HSI` / `^HSTECH` / `^HSCE` 经新浪美股接口返回 0 条，
-   那接口只认美股与美股指数）。它们的 `stockhistory` 停在 2026-10-26，
-   所以 est 走港股指数的 QDII（`qdiihk` / `hangseng` / `hstech` 那一族）同样
-   校不出新的 `cal_f`。要补得另找港股日线源，属独立一次数据修复。
-
-   **2026-11-02 探源结论**（省得再试一遍）：
+4. **港股指数日线已补齐（2026-11-02），走东财**。原来的说法是"新浪美股接口
+   也认港股指数、只是抓不到"，实际是**新浪的港股日线接口整体下线了**。
 
    | 用途 | 信源 | 结果 |
    | --- | --- | --- |
    | 港股指数**实时** | 新浪 `https://hq.sinajs.cn/list=hkHSI,hkHSTECH,hkHSCEI` | ✅ 可用，一次批量三个；字段含名称、今开、昨收、最高、最低、现价、成交额、日期时间 |
    | 港股指数**日线** | 新浪 `HK_IndexService.getIndexDailyKLine` / `HK_StockService.getDayKLine` / `HistoryTradeService.*`，在 `/hkstock/api/jsonp.php` 与 `quotes.sina.cn/hk/api/jsonp_v2.php` 两个 host 各试 | ❌ 全部 `{"__ERROR":3,"__ERRORMSG":"Service not valid"/"Service not found"}`；`/stock/hkstock/api/...` 这条旧路径直接 404 |
-   | 港股指数**日线**（替代） | 东财 `push2his.eastmoney.com/api/qt/stock/kline/get`，`secid` = `100.HSI` / `124.HSTECH` / `100.HSCEI` | ✅ 可用；历史长度 HSI 8998、HSCEI 8212、HSTECH 2912 根，`klines` 每行 `日期,开,收,高,低,成交量,成交额` |
+   | 港股指数**日线**（采用） | 东财 `push2his.eastmoney.com/api/qt/stock/kline/get`，`secid` = `100.HSI` / `124.HSTECH` / `100.HSCEI` | ✅ 可用；历史长度 HSI 8998、HSCEI 8212、HSTECH 2912 根，`klines` 每行 `日期,开,收,高,低,成交量,成交额` |
 
    **别拿 `HK_MinlineService.getMinLine?symbol=HSI&day=5` 当历史** —— 它只有最近
    5 天的**分钟线**，凑不出 EMA50/200，写进 `stockhistory` 只会污染。
+   同理 `HistoryTradeService.getHistoryRange` 返回的 `{"max":"2019-4","min":"1980-4"}`
+   是"可查范围"，不是数据。
 
-   要落地得给 `auto/updater/indexhistory.py` 加一条东财分支（港股 secid 前缀
-   恒指系 `100.`、恒生科技 `124.`），**截至 2026-11-02 未实现**。
+   ## 落地形态（四处，缺一条港股就还是校不出来）
+
+   | 位置 | 改动 | 为什么 |
+   | --- | --- | --- |
+   | `auto/updater/indexhistory.py` | `EASTMONEY_HK_SECIDS` + `fetch_eastmoney_history()`，`fetch_daily_history()` 按符号分派 | 新浪那条路走不通，得换成东财 |
+   | `calc/fundcalc.qdii_fund_est_symbol()` | 美股表 → 港股 / 日股 / 欧股四个入口合并 | `qdii_est_symbol_map()` 只对应 PHP `QdiiGetEstArray()`（美股 33 只），港股 28 只**一个都不在里面** |
+   | `calc/fundcalc.qdii_est_cny_symbol()` | est 标的 → 汇率符号（`^HSI`→`HKCNY` 等） | PHP 是按地区选 Reference 类各带一个汇率；我们只有一条 `calibrate_fund()`，得从 est 反查 |
+   | `calc/fundestcalc` | `_resolve` / `_calibration_cny_with_date` / `_fair_cny` / `_spot_cny` 全部按地区取汇率 | 页面「基准汇率 cny_cal」写死 `USCNY` 时，港股显示 6.71 而校准值是按 0.856 算的，EST 差一个数量级 |
+
+   ## 校准值口径（与生产端逐位一致）
+
+   `cal = ^HSI × HKCNY ÷ 基金净值`，锚点 = 基金净值日。实测 SH513600：
+
+   ```text
+   23294.42（^HSI 10-30 收盘）× 0.85594（HKCNY 10-30）/ 2.5391 = 7852.635129
+   生产端 sh513600cn.php 校准记录 2026-10-30 = 7852.6351     ✅ 逐位一致
+   ```
+
+   ## 一次性修复的完整顺序
+
+   ```text
+   1. python -B dbtools\backup_db.py
+   2. python -B dbtools\seed_index_history.py --symbols '^HSI' '^HSTECH' '^HSCE' --days 800 --apply
+   3. python -B dbtools\backfill_nav_history.py --symbols <港股 28 只> --days 30 --apply
+   4. python -B auto\cli\autocalibrationcli.py --funds --apply
+   ```
+
+   第 3 步不能省：港股那 28 只的净值原来只有 **1 条**、停在 10-13，
+   锚点定不下来时 `calibrate_fund` 直接跳过（PHP `UpdateOfficialNetValue()`
+   返回 false 同款行为），补了日线也白搭。
+
+   **日股 / 欧股仍是缺口**：`znb_NKY` / `znb_TPX` / `znb_DAX` / `znb_CAC`
+   没有 `stockhistory`（那 6 只基金的净值也停在 10-13），`--funds` 会给
+   "没有净值/行情"的跳过。它们的 est 是新浪的 `znb_*` 全球指数，得另找日线。
 5. 持仓口径的 8 只（SH501312 等）仍无 est 符号，官方 EST 走不到 ——
    等各自的 `holdings` 数据（§1.3）。

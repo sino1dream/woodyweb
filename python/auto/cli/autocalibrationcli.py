@@ -219,15 +219,20 @@ def _calibrate_forced(calibrator, source, symbol, apply: bool):
 def _fund_targets(source, symbol=None) -> list:
     """要校准的**基金**符号（``cal_f`` 那一层）。
 
-    清单取 :func:`~calc.fundcalc.qdii_est_symbol_map` —— 与 PHP
-    ``QdiiGetEstArray()`` 同源，所以能拿到各家基金 ⇄ 估值标的的对应。
+    清单取 :func:`~calc.fundcalc.qdii_fund_est_symbol_map` —— 它把 PHP 按地区
+    分开的四个入口（``QdiiGetEstSymbol`` / ``QdiiHkGetEstSymbol`` /
+    ``QdiiJpGetEstSymbol`` / ``QdiiEuGetEstSymbol``）合成一张表。
+
+    **别用 ``qdii_est_symbol_map()``**：那个只对应 ``QdiiGetEstArray()``，
+    即"美股族"那 33 只；港股 28 只、日股 4 只、欧股 2 只在里面一个都没有，
+    用错了会安静地少算几十只（2026-11-02 就是这么发现港股全族没校准的）。
     只看落在 ``stock`` 表里的。
     """
-    from calc.fundcalc import qdii_est_symbol_map
+    from calc.fundcalc import qdii_fund_est_symbol_map
 
     if symbol:
         return [symbol]
-    return [s for s in sorted(qdii_est_symbol_map())
+    return [s for s in sorted(qdii_fund_est_symbol_map())
             if source.get_stock_id(s) is not None]
 
 
@@ -274,7 +279,7 @@ def cmd_funds(args) -> int:
             round(outcome.calibration, 6) if outcome.calibration is not None else "-",
             "已写库" if outcome.written else ("预演" if not apply else "未写（已有）")))
         print("        [算式] 标的价 × 汇率 / 基金净值（PHP QdiiGetCalibration）"
-              "  锚点日 %s" % outcome.date)
+              "  汇率 %s  锚点日 %s" % (outcome.cny, outcome.date))
         if outcome.written:
             written += 1
         for warning in outcome.warnings:

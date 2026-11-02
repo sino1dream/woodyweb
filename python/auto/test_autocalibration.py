@@ -811,7 +811,7 @@ class FundAnchorTest(unittest.TestCase):
                                    cny_dates={"2026-10-19"})
         outcome = _calibrator(source).calibrate_fund("SZ161125", apply=False)
 
-        self.assertIn("没有汇率", outcome.skipped or "")
+        self.assertIn("没有 USCNY 中间价", outcome.skipped or "")
         self.assertIsNone(outcome.cny)
 
     def test_skips_when_there_is_no_net_value_at_all(self):
@@ -851,6 +851,90 @@ class FundAnchorTest(unittest.TestCase):
 
         self.assertIn("已校准过", outcome.skipped or "")
         self.assertEqual(source.connection.calibration, [])
+
+
+class _HkFundAnchorSource(_FundAnchorSource):
+    """港股基金（``SZ159920`` → ``^HSI``）的假数据源。
+
+    与美股版的差别只有两处：est 标的换成 ``^HSI``、汇率换成 ``HKCNY``，
+    并且**两个中间价都给值** —— 这样"取了哪个汇率"能被确定地断言到。
+    只给港币、不给美元的话，回落 USCNY 那条错误路径会因为取不到值而
+    "恰好"跳过，测试就变成了假绿。
+    """
+
+    HK_EST_ID = 135
+    HK_CNY_ID = 9
+    US_CNY_ID = 8
+
+    def __init__(self, nav_date="2026-10-30", nav=1.3722, est_quote=None,
+                 hk_cny=0.85594, us_cny=6.7138, **kwargs):
+        stock = {"^HSI": self.HK_EST_ID, "HKCNY": self.HK_CNY_ID,
+                 "USCNY": self.US_CNY_ID, "SZ159920": 87}
+        _FundAnchorSource.__init__(self, nav_date=nav_date, nav=nav,
+                                   est_quote=est_quote, cny=us_cny,
+                                   stock=stock, **kwargs)
+        self.hk_cny = hk_cny
+        self.us_cny = us_cny
+
+    def get_netvalue_close(self, stock_id, date):
+        if stock_id == self.HK_CNY_ID:
+            return self.hk_cny
+        if stock_id == self.US_CNY_ID:
+            return self.us_cny
+        if stock_id == self.HK_EST_ID:
+            return None  # 指数没有净值，走行情价那一级
+        return None
+
+    def get_history_close(self, stock_id, date):
+        if stock_id == self.HK_EST_ID:
+            return self._est_quote.get(str(date))
+        return None
+
+
+class HkFundAnchorTest(unittest.TestCase):
+    """港股基金的 ``cal_f`` 必须用 ``HKCNY``，不是 ``USCNY``。
+
+    PHP 是按地区选 Reference 类的：``QdiiHkReference`` 用 ``fx_shkdcny``
+    （``qdiiref.php:250``）。我们只有一条 ``calibrate_fund()``，汇率从 est
+    标的反查（``qdii_est_cny_symbol``）。
+
+    这条错了的代价是**校准值差约 7.8 倍**，而页面仍然 200、日志也不报错 ——
+    2026-11-02 之前港股 28 只根本没有校准记录，正是这类"静默跳过"。
+    """
+
+    EST_QUOTE = {"2026-10-30": 23294.42}
+
+    def test_uses_hk_rate_not_usd(self):
+        source = _HkFundAnchorSource(est_quote=self.EST_QUOTE)
+        outcome = _calibrator(source).calibrate_fund("SZ159920", apply=False)
+
+        self.assertEqual(outcome.pair_symbol, "^HSI")
+        self.assertAlmostEqual(float(outcome.cny), 0.85594, places=9)
+        self.assertNotAlmostEqual(float(outcome.cny), 6.7138, places=3)
+
+    def test_calibration_value_matches_the_hk_formula(self):
+        source = _HkFundAnchorSource(est_quote=self.EST_QUOTE)
+        outcome = _calibrator(source).calibrate_fund("SZ159920", apply=False)
+
+        # 23294.42 × 0.85594 / 1.3722 = 14530.407998（库里那一条）
+        self.assertAlmostEqual(float(outcome.calibration),
+                               23294.42 * 0.85594 / 1.3722, places=5)
+        self.assertEqual(str(outcome.date), "2026-10-30")
+
+    def test_skips_when_hk_rate_missing_even_if_usd_exists(self):
+        """港币中间价当天没有 -> 不校准（**不能退到美元**）。"""
+        source = _HkFundAnchorSource(est_quote=self.EST_QUOTE)
+        source.hk_cny = None
+        outcome = _calibrator(source).calibrate_fund("SZ159920", apply=False)
+
+        self.assertIn("没有 HKCNY 中间价", outcome.skipped or "")
+        self.assertIsNone(outcome.calibration)
+
+    def test_usd_fund_still_uses_usd(self):
+        """同一条路径上的美股基金不受影响。"""
+        source = _FundAnchorSource(nav_date="2026-10-30", est_quote=self.EST_QUOTE)
+        outcome = _calibrator(source).calibrate_fund("SZ161125", apply=False)
+        self.assertAlmostEqual(float(outcome.cny), 6.72, places=9)
 
 
 class FundToMiddleTest(unittest.TestCase):

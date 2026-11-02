@@ -1,10 +1,15 @@
 import unittest
 
 from calc.fundcalc import (
+    QDII_HK_EST_EXCLUDED,
     PalmmicroFundCalculator,
     fund_adjust_position,
     fund_reverse_adjust_position,
+    qdii_est_cny_symbol,
     qdii_est_symbol,
+    qdii_est_symbol_map,
+    qdii_fund_est_symbol,
+    qdii_fund_est_symbol_map,
     qdii_get_calibration,
     qdii_get_peer_value,
     qdii_get_value,
@@ -160,6 +165,64 @@ class ProductionCaliberTest(unittest.TestCase):
         """标普系基金的 est 是 ``^GSPC`` 不是 ``SPY`` —— 差了约 10 倍。"""
         self.assertEqual(qdii_est_symbol("SZ161125"), "^GSPC")
         self.assertEqual(qdii_est_symbol("SZ161130"), "^NDX")
+
+
+class RegionalEstTest(unittest.TestCase):
+    """跨地区（港股/日股/欧股）的 est 与汇率分派。
+
+    PHP 有四个入口函数、按 Reference 类各带一个汇率；我们合成一张表。
+    这里钉住的是"**别只认美股**"——2026-11-02 之前 ``--funds`` 用的
+    ``qdii_est_symbol_map()`` 只有 ``QdiiGetEstArray()`` 那张美股表，
+    港股 28 只一条校准记录都没有，页面照样 200，看日志才发现。
+    """
+
+    def test_hk_indices_map_to_the_hk_rate(self):
+        self.assertEqual(qdii_est_cny_symbol("^HSI"), "HKCNY")
+        self.assertEqual(qdii_est_cny_symbol("^HSTECH"), "HKCNY")
+        self.assertEqual(qdii_est_cny_symbol("^HSCE"), "HKCNY")
+
+    def test_jp_and_eu_map_to_their_own_rates(self):
+        self.assertEqual(qdii_est_cny_symbol("znb_NKY"), "JPCNY")
+        self.assertEqual(qdii_est_cny_symbol("znb_TPX"), "JPCNY")
+        self.assertEqual(qdii_est_cny_symbol("znb_DAX"), "EUCNY")
+        self.assertEqual(qdii_est_cny_symbol("znb_CAC"), "EUCNY")
+
+    def test_us_est_still_uses_usd(self):
+        for est in ("^NDX", "^GSPC", "^DJI", "XOP", "XBI", "QQQ", None, ""):
+            self.assertEqual(qdii_est_cny_symbol(est), "USCNY")
+
+    def test_hk_funds_resolve_est_by_group(self):
+        # 恒生 / 恒生科技 / 国企三族各取一只，est 必须是对应的指数
+        self.assertEqual(qdii_fund_est_symbol("SZ159920"), "^HSI")     # 恒生ETF
+        self.assertEqual(qdii_fund_est_symbol("SZ159740"), "^HSTECH")  # 恒生科技
+        self.assertEqual(qdii_fund_est_symbol("SZ159850"), "^HSCE")    # H股50
+
+    def test_hk_hang_seng_special_member(self):
+        # PHP: ``in_arrayHangSengQdiiHk($s) || $s == 'SZ161124'``
+        self.assertEqual(qdii_fund_est_symbol("SZ161124"), "^HSI")
+
+    def test_us_funds_keep_their_est(self):
+        self.assertEqual(qdii_fund_est_symbol("SZ161125"), "^GSPC")
+        self.assertEqual(qdii_fund_est_symbol("SZ162719"), "IEO")
+
+    def test_excluded_hk_fund_is_not_auto_calibrated(self):
+        """``SH501025`` 的 est 是 A 股指数，汇率口径没核清 -> 有意排除。"""
+        self.assertIn("SH501025", QDII_HK_EST_EXCLUDED)
+        self.assertIsNone(qdii_fund_est_symbol("SH501025"))
+
+    def test_combined_map_covers_more_than_the_us_table(self):
+        us_only = qdii_est_symbol_map()
+        combined = qdii_fund_est_symbol_map()
+        self.assertGreater(len(combined), len(us_only))
+        # 美股族必须一个不少，且值不变
+        for symbol, est in us_only.items():
+            self.assertEqual(combined.get(symbol), est)
+        # 港股 28 只要全在里面
+        hk = [s for s, est in combined.items() if est in ("^HSI", "^HSTECH", "^HSCE")]
+        self.assertEqual(len(hk), 28)
+
+    def test_unknown_symbol_has_no_est(self):
+        self.assertIsNone(qdii_fund_est_symbol("SH999999"))
 
 
 if __name__ == "__main__":

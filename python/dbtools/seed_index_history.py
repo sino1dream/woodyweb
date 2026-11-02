@@ -47,6 +47,13 @@ KWEB RSPH VGT VNQ XBI XLY XOP``）的日线全停在 10-23，而基金净值已�
 
 所以 ``--symbols`` 不是锦上添花，是把 ETF 拉进同一个补数入口。
 
+## 港股三个指数（2026-11-02 加入默认清单）
+
+``^HSI`` / ``^HSTECH`` / ``^HSCE`` 的日线**不在新浪**（港股日线接口整体下线），
+走东财 ``push2his``，``indexhistory.fetch_daily_history()`` 按符号自动分派。
+补它们之前，est 走港股指数的 28 只基金**一条校准记录都没有** ——
+``calibrate_fund()`` 锚在净值日、est 取不到收盘价就直接跳过，页面照样 200。
+
 用法：
 
     python -B dbtools\\seed_index_history.py                 # 预演（只抓不写）
@@ -54,6 +61,7 @@ KWEB RSPH VGT VNQ XBI XLY XOP``）的日线全停在 10-23，而基金净值已�
     python -B dbtools\\seed_index_history.py --apply --days 800
     python -B dbtools\\seed_index_history.py --symbols IEO QQQ --apply
     python -B dbtools\\seed_index_history.py --symbols IEO,QQQ --apply
+    python -B dbtools\\seed_index_history.py --symbols '^HSI' '^HSTECH' --apply
 """
 
 from __future__ import annotations
@@ -70,12 +78,18 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(
 from updater import indexhistory  # noqa: E402
 from core.stockdata import MySqlFundDataSource  # noqa: E402
 
-#: 默认要补的符号。这两个是 QDII 的估值标的（``^NDX`` → 纳指、``^GSPC`` → 标普）。
+#: 默认要补的符号。
+#:
+#: 五个**估值标的指数**：``^NDX`` → 纳指、``^GSPC`` → 标普、``^HSI`` /
+#: ``^HSTECH`` / ``^HSCE`` → 恒生 / 恒生科技 / 国企。港股三个 2026-11-02 加进来
+#: （此前 est 走港股指数的 28 只基金一条校准记录都没有，见模块 docstring 与
+#: ``README_p0_data_layer.md`` §10.6 第 4 条）。港股走东财，美股走新浪，
+#: 由 ``indexhistory.fetch_daily_history()`` 按符号分派。
 #:
 #: **``QQQ``/``SPY`` 这类 ETF 不在默认清单里、但同样需要补** —— 别被
 #: 上面 docstring 那段"ETF 由 daemon 正常抓"的老说法带偏：本地 daemon 只写
 #: 快照。要补就用 ``--symbols`` 显式点名，理由见模块 docstring。
-TARGETS = ["^NDX", "^GSPC"]
+TARGETS = ["^NDX", "^GSPC", "^HSI", "^HSTECH", "^HSCE"]
 
 #: 默认补多少天。``MAX_QUOTES_DAYS = 620`` 是均线要的窗口，
 #: 但月线要凑够 20 个月、EMA200 也要 200 天，所以给宽一点。

@@ -152,7 +152,14 @@ class EstimateCalculator:
         if mid_date is None:
             return None
 
-        cny_id = self.source.get_stock_id("USCNY")
+        #: 汇率**跟随 est 标的的地区**：美股 USCNY、港股 HKCNY、日股 JPCNY、欧股 EUCNY。
+        #: PHP 是"按地区选 Reference 类"（``QdiiHkReference`` 用 ``fx_shkdcny``），
+        #: 我们只有一条通用路径，所以从 est 标的反查。写死 USCNY 会让港股基金
+        #: 的"基准汇率"显示 6.71 而不是 0.856，EST 直接差一个数量级。
+        from calc.fundcalc import qdii_est_cny_symbol
+
+        cny_symbol = qdii_est_cny_symbol(est_symbol)
+        cny_id = self.source.get_stock_id(cny_symbol)
         cny_date = self.source.get_latest_net_value_date(cny_id) if cny_id else None
         cny_mid = self._net_value(cny_id, mid_date) if cny_id else None
         cny_current = self._latest_net_value(cny_id) if cny_id else None
@@ -188,11 +195,12 @@ class EstimateCalculator:
             #: 基准价**实际**取到的那天（可能是兜底后的日期，见
             #: :meth:`_est_quote_ref_with_date`）。页面算法说明要显示它。
             "est_quote_ref_date": est_ref_date,
+            "cny_symbol": cny_symbol,
             "cny_date": cny_date,
             "cny_mid": cny_mid,
             "cny_current": cny_current,
             # 参考/实时 EST 该用的汇率（对应 ``GetForexRef()``：ETF 即期、LOF 中间价）
-            "cny_fair": self._fair_cny(symbol, cny_current),
+            "cny_fair": self._fair_cny(symbol, cny_current, cny_symbol),
         }
 
     # -- 单个基金 ---------------------------------------------------------
@@ -373,8 +381,9 @@ class EstimateCalculator:
         official_est = self._official_est_value(est_symbol, mid_date, data)
         official_label = self._official_est_label(est_symbol, mid_date, data)
         official_cny = ctx["cny_mid"] if ctx["cny_mid"] is not None else ctx["cny_current"]
-        official_cny_label = ("USCNY 中间价 %s" % mid_date if ctx["cny_mid"] is not None
-                              else "USCNY 中间价 %s（最新，%s 无报价）" % (ctx["cny_date"], mid_date))
+        official_cny_label = ("%s 中间价 %s" % (ctx["cny_symbol"], mid_date) if ctx["cny_mid"] is not None
+                              else "%s 中间价 %s（最新，%s 无报价）" % (
+                                  ctx["cny_symbol"], ctx["cny_date"], mid_date))
 
         fair_est = ctx["day_quote"]
         fair_label = "%s %s 当日收盘价" % (est_symbol, mid_date)
@@ -395,7 +404,7 @@ class EstimateCalculator:
             "est_cal": ctx["est_quote_ref"],
             "est_cal_date": ctx.get("est_quote_ref_date") or self._calibration_date_of(ctx["stock_id"]),
             "cny_cal": cny_cal,
-            "cny_symbol": "USCNY",
+            "cny_symbol": ctx["cny_symbol"],
             "cny_cal_date": data.get("CNY_date") or self._calibration_date_of(ctx["stock_id"]),
             "price": self._market_price(symbol, ctx["stock_id"]),
             "tiers": [
@@ -455,11 +464,13 @@ class EstimateCalculator:
 
     def _fair_cny_label(self, symbol: str, ctx: dict) -> str:
         """参考/实时 EST 用的汇率口径（ETF 即期、LOF 中间价）。"""
+        cny_symbol = ctx.get("cny_symbol") or "USCNY"
         if not ctx.get("is_etf"):
-            return "USCNY 中间价 %s" % ctx["cny_date"]
-        if self._spot_cny() not in (None, ""):
-            return "fx_susdcny 即期（ETF 按盘中汇率申赎）"
-        return "USCNY 中间价 %s（即期缺失，退回中间价）" % ctx["cny_date"]
+            return "%s 中间价 %s" % (cny_symbol, ctx["cny_date"])
+        spot_symbol = self._spot_symbol_of(cny_symbol)
+        if self._spot_cny(cny_symbol) not in (None, ""):
+            return "%s 即期（ETF 按盘中汇率申赎）" % spot_symbol
+        return "%s 中间价 %s（即期缺失，退回中间价）" % (cny_symbol, ctx["cny_date"])
 
     def _realtime_quote_with_label(self, ctx: dict) -> tuple:
         """实时 EST 用的中间层值 + 它的口径标签。
@@ -816,8 +827,15 @@ class EstimateCalculator:
         """:meth:`_calibration_cny` 的带日期版本：``(值, 实际取到的日期)``。
 
         三级兜底后真正取到的可能不是校准日 —— 页面算法说明要显示实际那天。
+
+        **汇率符号跟着 est 标的的地区走**（港股 ``HKCNY``）：``cal_f`` 是用
+        那个地区的中间价算出来的，这里取错地区，页面上"基准汇率 cny_cal"
+        就会显示 6.71 而校准值是按 0.856 算的，EST 直接差一个数量级。
         """
-        cny_id = self.source.get_stock_id("USCNY")
+        from calc.fundcalc import qdii_est_cny_symbol
+
+        cny_symbol = qdii_est_cny_symbol(self._est_symbol(symbol))
+        cny_id = self.source.get_stock_id(cny_symbol)
         if cny_id is None:
             return None, None
 
@@ -979,7 +997,7 @@ class EstimateCalculator:
         except Exception:
             return False
 
-    def _fair_cny(self, symbol: str, cny_current: Any) -> Any:
+    def _fair_cny(self, symbol: str, cny_current: Any, cny_symbol: str = "USCNY") -> Any:
         """参考/实时 EST 该用的汇率（对应 ``GetForexRef()``）。
 
         ## ETF 用即期、LOF 用中间价
@@ -1005,31 +1023,39 @@ class EstimateCalculator:
 
         即期取不到（快照缺失）时退回 ``cny_current`` —— 与 PHP
         ``$cny_ref->GetPrice()`` 兜底同向。
+
+        ``cny_symbol`` 决定"哪个地区的即期"：港股 ETF 要 ``fx_shkdcny``，
+        配 ``fx_susdcny`` 会让参考 EST 差一个汇率。
         """
         if not self._is_etf_a(symbol):
             return cny_current
 
-        spot = self._spot_cny()
+        spot = self._spot_cny(cny_symbol)
         return spot if spot not in (None, "") else cny_current
 
-    def _spot_cny(self) -> Any:
-        """即期美元人民币（``fx_susdcny``）的当前值。
+    def _spot_symbol_of(self, cny_symbol: str) -> Any:
+        """中间价符号 -> 对应的即期外汇符号（``USCNY`` -> ``fx_susdcny``）。
 
-        第 1 优先行情快照（daemon 写的，角色同 PHP 的 sinajs 缓存），
-        没有快照再退回净值表 —— 即期外汇正常情况下只有快照。
-
-        符号取自 ``refobj.QDII_REGIONS``（延迟 import，避免 ``calc`` ↔ ``ref``
-        的循环依赖）：它把四个地区的中期价与即期外汇配在一起，
-        是"哪个即期配哪个中间价"的唯一出处。
+        符号取自 ``refobj.QDII_REGIONS`` —— 它把四个地区的中期价与即期外汇
+        配在一起，是"哪个即期配哪个中间价"的唯一出处。
         """
         try:
             from ref.refobj import QDII_REGIONS
         except ImportError:
             return None
 
-        # 本模块的中间价固定用 USCNY（``_resolve`` 里就是这样取的），
-        # 所以即期也取同一地区的那个。
-        spot_symbol = QDII_REGIONS.get("us", (None, None))[1]
+        for mid_symbol, spot_symbol in QDII_REGIONS.values():
+            if mid_symbol == cny_symbol:
+                return spot_symbol
+        return None
+
+    def _spot_cny(self, cny_symbol: str = "USCNY") -> Any:
+        """即期外汇（``fx_susdcny`` / ``fx_shkdcny`` …）的当前值。
+
+        第 1 优先行情快照（daemon 写的，角色同 PHP 的 sinajs 缓存），
+        没有快照再退回净值表 —— 即期外汇正常情况下只有快照。
+        """
+        spot_symbol = self._spot_symbol_of(cny_symbol)
         if not spot_symbol:
             return None
 

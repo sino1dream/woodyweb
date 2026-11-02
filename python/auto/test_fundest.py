@@ -1134,6 +1134,52 @@ class FairCnyTest(unittest.TestCase):
         calc = self._calc(spot=6.679)
         self.assertNotEqual(calc._fair_cny("SZ162411", 6.72), 6.679)
 
+    # -- 地区分派 ---------------------------------------------------------
+    class _SpotSource:
+        """按符号回答即期价的假源 —— 用来验"哪个地区配哪个即期"。
+
+        只实现 ``_spot_cny()`` 用到的两个方法（``get_stock_id`` /
+        ``get_stored_quote``），不装全套。
+        """
+
+        class _Quote:
+            def __init__(self, price):
+                self.price = price
+
+        def __init__(self, prices):
+            self.prices = dict(prices)
+
+        def get_stock_id(self, symbol):
+            return symbol if symbol in self.prices else None
+
+        def get_stored_quote(self, symbol):
+            price = self.prices.get(symbol)
+            return self._Quote(price) if price is not None else None
+
+    def _hk_calc(self, prices):
+        from calc.fundestcalc import EstimateCalculator
+
+        return EstimateCalculator(self._SpotSource(prices), store=None)
+
+    def test_spot_symbol_follows_the_region(self):
+        """中间价 -> 即期的对应关系来自 ``QDII_REGIONS``，不是写死美元。"""
+        calc = self._calc()
+        self.assertEqual(calc._spot_symbol_of("USCNY"), "fx_susdcny")
+        self.assertEqual(calc._spot_symbol_of("HKCNY"), "fx_shkdcny")
+        self.assertEqual(calc._spot_symbol_of("JPCNY"), "fx_sjpycny")
+        self.assertEqual(calc._spot_symbol_of("EUCNY"), "fx_seurcny")
+        self.assertIsNone(calc._spot_symbol_of("XXXX"))
+
+    def test_hk_etf_uses_hk_spot(self):
+        """港股 ETF 的参考 EST 该用港币即期 —— 配 ``fx_susdcny`` 差一个汇率。"""
+        calc = self._hk_calc({"fx_susdcny": 6.679, "fx_shkdcny": 0.8562})
+        self.assertEqual(calc._fair_cny("SZ159920", 0.85594, "HKCNY"), 0.8562)
+
+    def test_default_cny_symbol_stays_usd(self):
+        """不传 ``cny_symbol`` 时仍走美元 —— 美股链路的行为不能变。"""
+        calc = self._calc(spot=6.679)
+        self.assertEqual(calc._fair_cny("SH513100", 6.72), 6.679)
+
 
 class ExplainTest(unittest.TestCase):
     """``EstimateCalculator.explain()`` —— 页面「算法说明」那一段的数据源。
