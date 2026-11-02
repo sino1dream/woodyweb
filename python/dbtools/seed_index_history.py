@@ -30,11 +30,30 @@
 （**不是**算出来的），而这两张表原来是空的 → ``GetBullBear()`` 恒为
 ``None``、页面上不会出现"牛市/熊市"。所以这里用标准 EMA 递推补上。
 
+## 美股 ETF 也要靠这里补（2026-11-02 补的教训）
+
+脚本原来只补 ``^NDX`` / ``^GSPC``，注释里写着"``QQQ``/``SPY`` 是 ETF，
+本来就由 daemon 正常抓"。**那个前提在本地不成立**：行情 daemon 只写
+``realtimequote`` **快照**，从不写 ``stockhistory``；ETF 的日线只有两条路
+进来 —— 本脚本，或 ``quotecli --archive-snapshot``（把快照搬进历史，只能
+搬"当天"那一行）。
+
+代价是 2026-11-02 发现的一整类停摆：11 个美股 ETF（``AGG IBB IEO IXC
+KWEB RSPH VGT VNQ XBI XLY XOP``）的日线全停在 10-23，而基金净值已经到
+10-29。``calibrate_fund()`` 的锚点是"基金净值日"、est 只认那一天的收盘价
+（没有快照兜底），于是 est 走 ETF 的 14 只基金**一只都校不出来**，页面上
+``est_cal`` / ``cny_cal`` 就停在 10-23。est 走指数的基金没这个问题，因为
+每日例程只归档了 ``^NDX ^GSPC`` 两个 —— 差别只是"例程覆盖了谁"。
+
+所以 ``--symbols`` 不是锦上添花，是把 ETF 拉进同一个补数入口。
+
 用法：
 
     python -B dbtools\\seed_index_history.py                 # 预演（只抓不写）
     python -B dbtools\\seed_index_history.py --apply          # 真写
     python -B dbtools\\seed_index_history.py --apply --days 800
+    python -B dbtools\\seed_index_history.py --symbols IEO QQQ --apply
+    python -B dbtools\\seed_index_history.py --symbols IEO,QQQ --apply
 """
 
 from __future__ import annotations
@@ -51,8 +70,11 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(
 from updater import indexhistory  # noqa: E402
 from core.stockdata import MySqlFundDataSource  # noqa: E402
 
-#: 要补的符号。这两个是 QDII 的估值标的（``^NDX`` → 纳指、``^GSPC`` → 标普）。
-#: ``QQQ``/``SPY`` 是 ETF，本来就由 daemon 正常抓，不用在这里补。
+#: 默认要补的符号。这两个是 QDII 的估值标的（``^NDX`` → 纳指、``^GSPC`` → 标普）。
+#:
+#: **``QQQ``/``SPY`` 这类 ETF 不在默认清单里、但同样需要补** —— 别被
+#: 上面 docstring 那段"ETF 由 daemon 正常抓"的老说法带偏：本地 daemon 只写
+#: 快照。要补就用 ``--symbols`` 显式点名，理由见模块 docstring。
 TARGETS = ["^NDX", "^GSPC"]
 
 #: 默认补多少天。``MAX_QUOTES_DAYS = 620`` 是均线要的窗口，
@@ -66,8 +88,10 @@ EMA_DAYS = (50, 200)
 def main() -> int:
     apply = "--apply" in sys.argv
     days = _arg_int("--days", DEFAULT_DAYS)
+    # --symbols 显式点名时只补那几个（ETF 一律走这条路），否则用默认的两个指数。
+    targets = _arg_list("--symbols") or TARGETS
 
-    print("要补的符号：%s" % ", ".join(TARGETS))
+    print("要补的符号：%s" % ", ".join(targets))
     print("每个最多取最近 %d 个交易日" % days)
     print("")
 
@@ -76,7 +100,7 @@ def main() -> int:
     cursor = connection.cursor()
 
     total_written = 0
-    for symbol in TARGETS:
+    for symbol in targets:
         print("=" * 74)
         print(symbol)
         print("=" * 74)
@@ -117,7 +141,7 @@ def main() -> int:
     if apply:
         print("完成，共写入 %d 行历史。" % total_written)
         print("接着可以：")
-        print("  python -B quotecli.py '^NDX' '^GSPC'          # 补当日快照")
+        print("  python -B quotecli.py %s    # 补当日快照" % " ".join(targets))
         print("  python -B _verify_sma_on_page.py             # 看均线表出不出来")
     else:
         print("这是预演。真正执行请加 --apply。")
@@ -177,6 +201,23 @@ def _write_ema(cursor, connection, stock_id, ema_days, rows) -> int:
         written += 1
     connection.commit()
     return written
+
+
+def _arg_list(name: str) -> list:
+    """取 ``--symbols A B C`` 或 ``--symbols A,B,C`` 的符号清单。
+
+    与 :func:`_arg_int` 同一种"土解析"，因为这个脚本一直没上 argparse。
+    遇到下一个 ``--`` 开头的参数就停 —— 否则 ``--symbols IEO --apply`` 会把
+    ``--apply`` 当成符号去查 stock 表。
+    """
+    if name not in sys.argv:
+        return []
+    symbols = []
+    for token in sys.argv[sys.argv.index(name) + 1:]:
+        if token.startswith("--"):
+            break
+        symbols.extend(part for part in token.split(",") if part)
+    return symbols
 
 
 def _arg_int(name: str, fallback: int) -> int:

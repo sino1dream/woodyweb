@@ -18,7 +18,7 @@
 | 3 | ``nav`` | ``navcli`` | 基金净值；校准的分母 |
 | 4 | ``quotes`` | ``quotecli --all-qdii`` | 行情历史；中间层"当日收盘价"的来源 |
 | 5 | ``middle-nav`` | ``autocalibrationcli --sync-nav --apply`` | 中间层净值 = 收盘价，闸门要它才能前进 |
-| 6 | ``archive`` | ``quotecli --archive-snapshot`` | daemon 只写快照，**历史要单独归档**；归档后锚点才推得动 |
+| 6 | ``archive`` | ``quotecli --archive-snapshot --all-qdii`` | daemon 只写快照，**历史要单独归档**；归档后锚点才推得动。``--all-qdii`` 会并入 ``^NDX`` / ``^GSPC``，漏了它 est 走美股 ETF 的基金全断锚 |
 | 7 | ``calib`` | ``autocalibrationcli --apply`` 与 ``--funds --apply`` | 两层校准值 |
 | 8 | ``fundest`` | ``fundestcli`` | 官方 EST 落库，最后一步 |
 
@@ -99,8 +99,8 @@ STEPS = [
          _cli("quotecli.py"), ["--all-qdii"]),
     Step("middle-nav", "中间层派生净值（净值 = 当日收盘价）",
          _cli("autocalibrationcli.py"), ["--sync-nav", "--apply"]),
-    Step("archive", "把实时快照归档进 stockhistory",
-         _cli("quotecli.py"), ["--archive-snapshot"]),
+    Step("archive", "把实时快照归档进 stockhistory（含指数）",
+         _cli("quotecli.py"), ["--archive-snapshot", "--all-qdii"]),
     Step("calib", "中间层校准值 cal_m",
          _cli("autocalibrationcli.py"), ["--apply"]),
     Step("fund-calib", "基金层校准值 cal_f",

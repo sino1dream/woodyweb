@@ -693,7 +693,7 @@ python -B dbtools/bootstrap_fund_data.py --apply --from calib
 | 3 | `nav` | `navcli` | 基金净值，是基金层校准值的分母 |
 | 4 | `quotes` | `quotecli --all-qdii` | 行情历史，也是中间层"当日收盘价"的来源 |
 | 5 | `middle-nav` | `autocalibrationcli --sync-nav --apply` | 推进中间层净值日期，闸门才开得了 |
-| 6 | `archive` | `quotecli --archive-snapshot` | daemon 只写快照，**历史要单独归档**；不归档锚点推不动（§6.4） |
+| 6 | `archive` | `quotecli --archive-snapshot --all-qdii` | daemon 只写快照，**历史要单独归档**；不归档锚点推不动（§6.4）。`--all-qdii` 会自动并入 `^NDX` / `^GSPC`，**不要只归档指数** —— 那会漏掉 est 走美股 ETF 的 14 只基金（§10.5 第 3 步） |
 | 7 | `calib` | `autocalibrationcli --apply` | 中间层 `cal_m` |
 | 8 | `fund-calib` | `autocalibrationcli --funds --apply` | 基金层 `cal_f` |
 | 9 | `fundest` | `fundestcli` | 官方 EST，要前面全部就位 |
@@ -991,8 +991,12 @@ python -B auto/cli/forexcli.py --backfill
 python -B auto/cli/quotecli.py --all-qdii
 # 2) 刷新实时快照（estquote / realtimequote）
 python -B auto/cli/quoteupdatercli.py --once
-# 3) 归档指数快照（^NDX / ^GSPC 不在 --all-qdii 里，中间层 cal_m 推进用）
-python -B auto/cli/quotecli.py --archive-snapshot ^NDX ^GSPC
+# 3) 归档快照进行情历史：--all-qdii 覆盖 102 基金 + 22 中间层，并自动并入
+#    ^NDX / ^GSPC 两个指数（quotecli.INDEX_ARCHIVE_SYMBOLS）。
+#    **别只归档指数** —— 2026-11-02 那次停摆就是这么来的：est 走美股 ETF 的
+#    14 只基金历史停在 10-23、净值已到 10-29，一只都校不出来，页面
+#    est_cal / cny_cal 卡在 10-23。
+python -B auto/cli/quotecli.py --archive-snapshot --all-qdii
 # 4) 中间层净值推进（净值(t) = 当日收盘价）
 python -B auto/cli/autocalibrationcli.py --sync-nav --apply
 # 5) 写官方 EST：fundest[X]，X = 中间层最新日期
@@ -1012,7 +1016,13 @@ fundestcli 时官方中间价最新只到 X 日（SAFE 当日 09:20 公布），
 2. **中间层 `cal_m` 的每日推进**靠上面凌晨第 3 步归档的指数日线；它不进
    EST 数学（`cal_f` 在估值式里约掉、`cal_m` 根本不出现），只影响
    「校准记录」段落与中间层页面的新鲜度。
-3. **ETF 没有 `stockema` 行**（均线 memo 不显示）—— `_plan_a_us_history.py`
-   刻意不算 EMA；要补得连 50/200 日窗口一起灌，属另一次数据修复。
-4. 持仓口径的 8 只（SH501312 等）仍无 est 符号，官方 EST 走不到 ——
+3. **ETF 的 `stockema` 行 2026-11-02 已补上**（`seed_index_history.py
+   --symbols <ETF 清单> --days 800`，50/200 日均用 800 天窗口递推）。原来的
+   说法是「`_plan_a_us_history.py` 刻意不算 EMA」，但那让均线 memo 对 ETF
+   恒为空；既然补历史时手里就有 800 天收盘价，顺手算掉更省事。
+4. **港股指数抓不到日线**（`^HSI` / `^HSTECH` / `^HSCE` 经新浪美股接口返回 0 条，
+   那接口只认美股与美股指数）。它们的 `stockhistory` 停在 2026-10-26，
+   所以 est 走港股指数的 QDII（`qdiihk` / `hangseng` / `hstech` 那一族）同样
+   校不出新的 `cal_f`。要补得另找港股日线源，属独立一次数据修复。
+5. 持仓口径的 8 只（SH501312 等）仍无 est 符号，官方 EST 走不到 ——
    等各自的 `holdings` 数据（§1.3）。

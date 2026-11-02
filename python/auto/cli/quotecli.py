@@ -72,6 +72,12 @@ from core.stocksymbol import StockSymbol  # noqa: E402
 
 DEFAULT_SYMBOLS = ["SZ161130", "SZ161125", "SH513100", "QQQ", "SPY"]
 
+#: ``--archive-snapshot --all-qdii`` 时要额外归档的指数。
+#: 它们是 QDII 的估值标的，但**不在** ``sina_quote_symbols()`` 里
+#: （见 ``core/symbolinventory.py`` 的说明：期货/外汇/指数各有取数入口），
+#: 所以 ``--all-qdii`` 覆盖不到，得在这里补。
+INDEX_ARCHIVE_SYMBOLS = ("^NDX", "^GSPC")
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="抓取新浪行情并落库")
@@ -110,8 +116,20 @@ def cmd_archive_snapshot(args: argparse.Namespace) -> int:
 
     只读 ``realtimequote``、只写 ``stockhistory`` / ``stockhistorydate``，
     **不碰网络** —— 网络取数那一环 daemon 已经做过了。
+
+    ``--all-qdii`` 时**额外并入两个指数**：``sina_quote_symbols()`` 里没有
+    ``^NDX`` / ``^GSPC``（它们是"被读取的配对标的"，不走新浪行情抓取），
+    但归档这一步没有理由漏掉它们 —— 它们同样有快照、同样要进历史。
+    只归档 ``--all-qdii`` 而不含指数，会让中间层 ``cal_m`` 的锚点推不动；
+    反过来只归档指数（2026-11-02 之前的例程就是那样）会让 est 走美股 ETF
+    的 14 只基金全部断锚。两条合起来才是"归档全部"。
     """
     symbols = collect_symbols(args)
+    if args.all_qdii:
+        # 归档是"搬快照"，不是抓行情，所以把指数并进来没有副作用（幂等 upsert）。
+        for index_symbol in INDEX_ARCHIVE_SYMBOLS:
+            if index_symbol not in symbols:
+                symbols = list(symbols) + [index_symbol]
     if not symbols:
         print("没有指定符号（--archive-snapshot 需要显式给出符号或用 --all-qdii）。")
         return 1
