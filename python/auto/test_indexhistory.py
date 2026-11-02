@@ -98,6 +98,27 @@ class DispatchTest(unittest.TestCase):
             self.assertIn("push2his.eastmoney.com", opener.urls[0])
             self.assertIn("secid=" + secid, opener.urls[0])
 
+    def test_jp_eu_indices_go_eastmoney(self):
+        """``znb_`` 那族新浪只有实时，日线必须走东财，否则静默抓不到。"""
+        for symbol, secid in (("znb_NKY", "100.N225"),
+                              ("znb_DAX", "100.GDAXI"),
+                              ("znb_CAC", "100.FCHI")):
+            opener = RecordingOpener(EASTMONEY_TEXT)
+            indexhistory.fetch_daily_history(symbol, limit=10, opener=opener)
+            self.assertEqual(len(opener.urls), 1, symbol)
+            self.assertIn("push2his.eastmoney.com", opener.urls[0])
+            self.assertIn("secid=" + secid, opener.urls[0])
+
+    def test_topix_has_no_source(self):
+        """``znb_TPX`` 两边都没有日线：东财 ``data:null``、新浪没接口。
+
+        钉住"它抓不到"这个事实，免得以后有人以为漏了分派又去改。
+        """
+        self.assertNotIn("znb_TPX", indexhistory.EASTMONEY_SECIDS)
+        opener = RecordingOpener(EASTMONEY_TEXT)
+        self.assertEqual(indexhistory.fetch_eastmoney_history("znb_TPX", opener=opener), [])
+        self.assertEqual(opener.urls, [])
+
     def test_us_index_still_uses_sina(self):
         opener = RecordingOpener(SINA_TEXT)
         indexhistory.fetch_daily_history("^NDX", opener=opener)
@@ -142,9 +163,24 @@ class SecidTableTest(unittest.TestCase):
         self.assertEqual(set(indexhistory.EASTMONEY_HK_SECIDS),
                          {"^HSI", "^HSTECH", "^HSCE"})
 
-    def test_hk_secids_do_not_overlap_us_indices(self):
+    def test_jp_eu_secids_cover_the_three_indices(self):
+        self.assertEqual(set(indexhistory.EASTMONEY_JP_EU_SECIDS),
+                         {"znb_NKY", "znb_DAX", "znb_CAC"})
+
+    def test_merged_table_is_the_union(self):
+        """分派查的是合并表；两张子表加起来必须正好等于它。"""
+        self.assertEqual(
+            set(indexhistory.EASTMONEY_SECIDS),
+            set(indexhistory.EASTMONEY_HK_SECIDS) | set(indexhistory.EASTMONEY_JP_EU_SECIDS))
+
+    def test_secids_do_not_overlap_us_indices(self):
         # 重叠会让 ^NDX 被悄悄改走东财（那边没有这条 secid，结果是抓不到）
-        self.assertFalse(set(indexhistory.EASTMONEY_HK_SECIDS) & set(indexhistory.INDEX_CODES))
+        self.assertFalse(set(indexhistory.EASTMONEY_SECIDS) & set(indexhistory.INDEX_CODES))
+
+    def test_no_duplicate_secid(self):
+        """两个符号指同一个 secid ＝ 其中一个的收盘价会写进另一个。"""
+        values = list(indexhistory.EASTMONEY_SECIDS.values())
+        self.assertEqual(len(values), len(set(values)))
 
 
 if __name__ == "__main__":

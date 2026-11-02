@@ -31,7 +31,7 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 from source import forexsource
 
-#: 参考数据表里的两个外汇页面符号：离岸 / 在岸人民币实时价。
+#: 参考数据表里的外汇**页面符号**：离岸 / 在岸人民币 + 港币 / 日元 / 欧元即期。
 #: PHP 的对应物是 ``IsSinaForex``（``fx_`` 前缀，stocksymbol.php:771）：
 #: ``MyStockReference::LoadData()`` 抓新浪实时价只进内存、**不写库**
 #: （php/stock/stockref.php:493）。Python 侧按"web 只读快照"的架构
@@ -40,7 +40,24 @@ from source import forexsource
 #: 它们**不进 netvaluehistory** —— 那是 USCNY 等中间价符号的路
 #: （PHP ``chinamoney.php`` 的正路，见 :meth:`ForexUpdater.update`），
 #: 两张表两种语义，别混。
-PAGE_FOREX_SYMBOLS = ("fx_susdcny", "fx_susdcnh")
+#:
+#: ## 为什么港 / 日 / 欧三对也必须在这里（2026-11-02 补）
+#:
+#: 原来只有美元两对。后果不是"表里少一行"，而是**参考 EST 算错**：
+#: ``fundestcalc._fair_cny()`` 对 ETF 用``即期``、对 LOF 用``中间价``
+#: （PHP ``GetForexRef()`` 口径），而即期取不到时会**静默退回中间价**。
+#: 于是港 / 日 / 欧 QDII 的参考 EST 全部退化成"用中间价算的值"：
+#: 页面照常 200、数字看着正常，只是与生产端差 0.1–0.6%。
+#: 实测 ``SH513030`` 参考 EST 我们 1.757（＝中间价那档）/ 生产端 1.746
+#: （用 ``fx_seurcny`` 7.4336 算）—— 差的那点正是即期与中间价之差。
+#:
+#: 五个符号的新浪返回**都是 18 个字段、第 9 位是价、第 10 位是名称**，
+#: 所以 :meth:`SinaForexSource.fetch_rate` 不用为地区分叉。
+#: ``fx_sjpycny`` 是**每 1 日元**（0.0421），与 ``JPCNY`` 中间价的存储口径
+#: 一致；生产端页面显示的 "JPYCNY 4.2126 / JPCNY 4.2424" 是每 100 日元，
+#: 只是个显示倍数，别据此把库里的值乘 100。
+PAGE_FOREX_SYMBOLS = ("fx_susdcny", "fx_susdcnh",
+                      "fx_shkdcny", "fx_sjpycny", "fx_seurcny")
 
 
 class ForexUpdater:

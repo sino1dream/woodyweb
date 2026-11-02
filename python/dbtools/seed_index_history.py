@@ -47,12 +47,19 @@ KWEB RSPH VGT VNQ XBI XLY XOP``）的日线全停在 10-23，而基金净值已�
 
 所以 ``--symbols`` 不是锦上添花，是把 ETF 拉进同一个补数入口。
 
-## 港股三个指数（2026-11-02 加入默认清单）
+## 港股 / 日股 / 欧股（2026-11-02 加入默认清单）
 
 ``^HSI`` / ``^HSTECH`` / ``^HSCE`` 的日线**不在新浪**（港股日线接口整体下线），
-走东财 ``push2his``，``indexhistory.fetch_daily_history()`` 按符号自动分派。
-补它们之前，est 走港股指数的 28 只基金**一条校准记录都没有** ——
-``calibrate_fund()`` 锚在净值日、est 取不到收盘价就直接跳过，页面照样 200。
+``znb_NKY`` / ``znb_DAX`` / ``znb_CAC`` 的日线**也不在新浪**（全球指数那族只有
+实时）。六个一起走东财 ``push2his``，``indexhistory.fetch_daily_history()``
+按符号自动分派。
+
+补它们之前，est 走这些指数的基金**一条校准记录都没有** —— ``calibrate_fund()``
+锚在净值日、est 取不到收盘价就直接跳过，页面照样 200，日志也不报错。
+（港股 28 只、日欧 6 只，两批是同一类缺口。）
+
+``znb_TPX``（东证一部，只有 ``SH513800`` 在用）**补不了**：东财没有这个
+指数、新浪只有实时。它的基金仍会报"没有净值/行情"，属真缺口。
 
 用法：
 
@@ -80,16 +87,24 @@ from core.stockdata import MySqlFundDataSource  # noqa: E402
 
 #: 默认要补的符号。
 #:
-#: 五个**估值标的指数**：``^NDX`` → 纳指、``^GSPC`` → 标普、``^HSI`` /
-#: ``^HSTECH`` / ``^HSCE`` → 恒生 / 恒生科技 / 国企。港股三个 2026-11-02 加进来
-#: （此前 est 走港股指数的 28 只基金一条校准记录都没有，见模块 docstring 与
-#: ``README_p0_data_layer.md`` §10.6 第 4 条）。港股走东财，美股走新浪，
-#: 由 ``indexhistory.fetch_daily_history()`` 按符号分派。
+#: **八个估值标的指数**：``^NDX`` → 纳指、``^GSPC`` → 标普、``^HSI`` /
+#: ``^HSTECH`` / ``^HSCE`` → 恒生 / 恒生科技 / 国企、``znb_NKY`` / ``znb_DAX``
+#: / ``znb_CAC`` → 日经 225 / 德国 DAX / 法国 CAC。
+#:
+#: 港股三个 2026-11-02 加进来，日欧三个同一天加进来 —— 两批都是同一类缺口：
+#: est 走这些指数的基金**一条校准记录都没有**（页面 200、日志不报错，
+#: 属整族静默失效）。见模块 docstring 与 ``README_p0_data_layer.md`` §10.6。
+#: 港股 / 日股 / 欧股走东财，美股走新浪，由
+#: ``indexhistory.fetch_daily_history()`` 按符号分派。
+#:
+#: ``znb_TPX``（东证一部，只有 ``SH513800`` 用）**不在清单里** —— 东财没有
+#: 这个指数，新浪也只有实时，补不了（见 ``indexhistory`` 的说明）。
 #:
 #: **``QQQ``/``SPY`` 这类 ETF 不在默认清单里、但同样需要补** —— 别被
 #: 上面 docstring 那段"ETF 由 daemon 正常抓"的老说法带偏：本地 daemon 只写
 #: 快照。要补就用 ``--symbols`` 显式点名，理由见模块 docstring。
-TARGETS = ["^NDX", "^GSPC", "^HSI", "^HSTECH", "^HSCE"]
+TARGETS = ["^NDX", "^GSPC", "^HSI", "^HSTECH", "^HSCE",
+           "znb_NKY", "znb_DAX", "znb_CAC"]
 
 #: 默认补多少天。``MAX_QUOTES_DAYS = 620`` 是均线要的窗口，
 #: 但月线要凑够 20 个月、EMA200 也要 200 天，所以给宽一点。

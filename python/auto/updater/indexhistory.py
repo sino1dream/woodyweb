@@ -1,6 +1,6 @@
-"""抓取美股/美股指数/港股指数的历史日线（新浪 jsonp + 东财 kline 两条信源）。
+"""抓取美股/美股指数/港股指数/日欧指数的历史日线（新浪 jsonp + 东财 kline 两条信源）。
 
-## 港股为什么走东财，不走新浪
+## 港股、日股、欧股为什么走东财，不走新浪
 
 新浪的港股**日线**接口在 2026-11-02 实测已全部下线：`HK_IndexService.getIndexDailyKLine`
 / `HK_StockService.getDayKLine` / `HK_MinlineService.getDayKLine` /
@@ -9,11 +9,34 @@
 或 `"Service not found"`；akshare 那套 `/stock/hkstock/api/...` 旧路径直接 404。
 （新浪港股**实时**还好用：`hq.sinajs.cn/list=hkHSI`，见 `estquote` 表。）
 
-东财 `push2his` 的日线是现成的：`secid` 分别为 `100.HSI` / `124.HSTECH`
-/ `100.HSCEI`，历史长度 8998 / 2912 / 8212 根。**与新浪实时里的"昨收"逐字一致**
-（2026-10-30：恒生 23294.42、恒生科技 3754.90、国企 7862.22），是同源公开行情。
+新浪的**全球指数**（`znb_` 前缀，日经 / 德国 DAX / 法国 CAC 都在这一族）只有实时，
+没有日线：`GlobalService.getDailyK` / `getKLine` 一律 `Service not found` 或 404，
+`klc_kl.js` 那条老路径也是 404。Yahoo 全站 403（见 ``navsource.py``）。
 
-所以本模块按符号**分派**：港股三个指数走东财，其余走新浪。
+东财 `push2his` 的日线是现成的，港日欧都在同一条接口上，只是 `secid` 不同：
+
+======================  =============  ========  ==================================
+库内符号                 secid          历史长度   说明
+======================  =============  ========  ==================================
+``^HSI``                ``100.HSI``     8998     恒生指数
+``^HSTECH``             ``124.HSTECH``  2912     恒生科技（``124`` 是这一族）
+``^HSCE``               ``100.HSCEI``   8212     恒生国企
+``znb_NKY``             ``100.N225``    9707     日经 225
+``znb_DAX``             ``100.GDAXI``   8971     德国 DAX 30
+``znb_CAC``             ``100.FCHI``    9193     法国 CAC 40
+======================  =============  ========  ==================================
+
+**与库内既有价格逐字一致**（这条是判断"是不是同一个指数"最硬的依据）：
+
+* 港股 2026-10-30 收盘：恒生 23294.42 / 恒生科技 3754.90 / 国企 7862.22 —— 与新浪
+  实时里的"昨收"一字不差；
+* ``znb_DAX`` 2026-10-30 = 25818.21、``znb_CAC`` = 7969.42 —— 与 ``stockhistory``
+  里 daemon 抓的那两行（25818.211 / 7969.4199）逐位吻合。
+
+``znb_TPX``（东证一部股价指数，只有 ``SH513800`` 在用）**东财没有**，
+``100.TOPIX`` / ``100.TPX`` 都返回 ``data:null``，所以它仍然只有实时、没有日线。
+
+所以本模块按符号**分派**：港日欧这六个走东财，其余走新浪。
 
 ## 为什么需要
 
@@ -40,7 +63,7 @@
   （指数与 ETF 的日线本来就按复权价发布，项目里 ``stockhistory.adjclose``
   对指数就是这么用的）。
 
-港股指数（东财）::
+港 / 日 / 欧指数（东财）::
 
     https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=100.HSI&klt=101&fqt=1&lmt=800
     → {"data":{"klines":["2026-10-30,26346.29,26346.29,26489.79,26193.12,2581102,0",...]}}
@@ -95,6 +118,29 @@ EASTMONEY_HK_SECIDS = {
     "^HSTECH": "124.HSTECH",
     "^HSCE": "100.HSCEI",
 }
+
+#: 日股 / 欧股指数 -> 东财 ``secid``。
+#:
+#: 键是库内**新浪全球指数符号**（``znb_`` 前缀，见 ``php/stock/stocksymbol.php``
+#: 的 ``SINA_INDEX_PREFIX``）—— 这些符号是 ``qdii_jp_est_symbol()`` /
+#: ``qdii_eu_est_symbol()`` 的返回值，直接拿来抓历史。
+#:
+#: 三个实测都对得上库里 daemon 抓的收盘价（见模块 docstring），说明是同一指数。
+#:
+#: **``znb_TPX`` 不在表里**：东财没有东证一部（``100.TOPIX`` / ``100.TPX`` 都
+#: 返回 ``data:null``），新浪那边也只有实时。它至今没有日线，``--funds`` 时
+#: ``SH513800`` 会如实报"没有净值/行情"。
+EASTMONEY_JP_EU_SECIDS = {
+    "znb_NKY": "100.N225",
+    "znb_DAX": "100.GDAXI",
+    "znb_CAC": "100.FCHI",
+}
+
+#: 走东财的全部符号（港 + 日 + 欧）。
+#:
+#: :func:`fetch_daily_history` 与 :func:`fetch_eastmoney_history` 都查这一张，
+#: 加新市场只改上面两张表，不用动分派逻辑。
+EASTMONEY_SECIDS = dict(EASTMONEY_HK_SECIDS, **EASTMONEY_JP_EU_SECIDS)
 
 
 def quote_code_of(symbol: str) -> str:
@@ -167,13 +213,13 @@ def fetch_daily_history(symbol: str, limit: int = 0, timeout: float = DEFAULT_TI
     对应 PHP ``UpdateYahooHistoryChart()`` 拿到的数据形状。
     ``limit`` 是"最多保留最近多少条"（0 = 全部）。
 
-    港股三个指数（:data:`EASTMONEY_HK_SECIDS`）自动改走东财，其余走新浪
+    港股 / 日股 / 欧股指数（:data:`EASTMONEY_SECIDS`）自动改走东财，其余走新浪
     —— 调用方不用关心是哪条信源。
 
     抓不到时返回**空列表** —— 调用方按"没补到"处理，不要让它抛异常
     （与 ``forexsource.fetch_history_eastmoney`` 同款约定）。
     """
-    if symbol in EASTMONEY_HK_SECIDS:
+    if symbol in EASTMONEY_SECIDS:
         return fetch_eastmoney_history(symbol, limit=limit, timeout=timeout, opener=opener)
 
     code = quote_code_of(symbol)
@@ -199,17 +245,19 @@ def fetch_daily_history(symbol: str, limit: int = 0, timeout: float = DEFAULT_TI
 
 def fetch_eastmoney_history(symbol: str, limit: int = 0, timeout: float = DEFAULT_TIMEOUT,
                             opener: Any = None) -> List[Dict[str, Any]]:
-    """走东财抓港股指数日线，**日期升序**，形状与 :func:`fetch_daily_history` 一致。
+    """走东财抓港 / 日 / 欧指数日线，**日期升序**，形状与 :func:`fetch_daily_history` 一致。
 
     ``limit`` 语义同新浪那条：0 = 全部，否则保留**最近** N 条。
-    不在 :data:`EASTMONEY_HK_SECIDS` 里的符号直接返回空列表 —— 这条只服务港股。
+    不在 :data:`EASTMONEY_SECIDS` 里的符号直接返回空列表 —— 这条只服务
+    那六个指数（美股仍走新浪，那边历史更长也更稳）。
 
-    **当日 bar 是盘中未收盘价**（东财当天就会给一根）。这里**照原样返回**，
-    不做过滤：新浪那条白天也返回当日盘中价，两条信源口径一致；落库靠
+    **当日 bar 是盘中未收盘价**（东财当天就会给一根；日经北京时间白天在交易，
+    实测 2026-11-02 13:43 的 bar 还在动）。这里**照原样返回**，不做过滤：
+    新浪那条白天也返回当日盘中价，两条信源口径一致；落库靠
     ``ON DUPLICATE KEY UPDATE`` 次日覆盖这一行（``seed_index_history._write_history``
     就是这么写的）。所以别在这里加"跳过当天"，否则和新浪路径行为不一致。
     """
-    secid = EASTMONEY_HK_SECIDS.get(symbol)
+    secid = EASTMONEY_SECIDS.get(symbol)
     if secid is None:
         return []
 

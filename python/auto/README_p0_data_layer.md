@@ -703,9 +703,9 @@ python -B dbtools/bootstrap_fund_data.py --apply --from calib
 
 **这九步覆盖不了"指数的多日历史"**：archive 只归档**当天**那一行。均线要的
 620 天窗口得另外跑 `dbtools/seed_index_history.py --days 800 --apply` ——
-它的默认清单现在是五个估值标的指数（`^NDX` `^GSPC` `^HSI` `^HSTECH` `^HSCE`），
-ETF 要显式 `--symbols` 点名。漏这一步的症状是「均线表整段为空 / EMA 空」，
-不是报错。
+它的默认清单现在是八个估值标的指数（`^NDX` `^GSPC` `^HSI` `^HSTECH` `^HSCE`
+`znb_NKY` `znb_DAX` `znb_CAC`），ETF 要显式 `--symbols` 点名。漏这一步的症状是
+「均线表整段为空 / EMA 空」，不是报错。
 
 ### 7.2 两条安全约定（与 `seed_p0_symbols.py` 同一套）
 
@@ -802,12 +802,13 @@ CK6 是"让 `/fund/SZ161125` 与生产端 `sz161125cn.php` 逐段对齐"。前�
 
 入口 `dbtools/seed_a_share_history.py`（默认 dry-run，`--symbols` / `--days`）。
 
-**同一个入口现在还管三个地区**（`indexhistory.fetch_daily_history()` 按符号分派）：
+**同一个入口现在还管四个地区**（`indexhistory.fetch_daily_history()` 按符号分派）：
 
 | 符号 | 信源 | 备注 |
 | --- | --- | --- |
 | `^NDX` / `^GSPC` / `^DJI` 等美股指数、美股 ETF | 新浪 `US_MinKService.getDailyK` | 指数用点号前缀 `.NDX` |
 | `^HSI` / `^HSTECH` / `^HSCE` | **东财** `push2his`（`secid` 100.HSI / 124.HSTECH / 100.HSCEI） | 新浪港股日线已下线，见 §10.6 第 4 条 |
+| `znb_NKY` / `znb_DAX` / `znb_CAC` | **东财** `push2his`（`secid` 100.N225 / 100.GDAXI / 100.FCHI） | 新浪全球指数只有实时；`znb_TPX` 两边都没有 |
 | A 股 / 场内基金 | 新浪 `CN_MarketData.getKLineData` | 走 `seed_a_share_history.py`，不在本入口 |
 
 ### 9.4 净值历史回填（新增 `dbtools/backfill_nav_history.py`）
@@ -1066,21 +1067,59 @@ fundestcli 时官方中间价最新只到 X 日（SAFE 当日 09:20 公布），
    生产端 sh513600cn.php 校准记录 2026-10-30 = 7852.6351     ✅ 逐位一致
    ```
 
+   **日股 / 欧股 2026-11-02 同日补齐**（同一类缺口，同一套做法）：
+   `znb_NKY` / `znb_DAX` / `znb_CAC` 在新浪**只有实时、没有日线**
+   （`GlobalService.getDailyK` / `getKLine` 一律 `Service not found` 或 404，
+   `klc_kl.js` 老路径也是 404；Yahoo 全站 403），改走东财同一条 kline 接口：
+   `secid` = `100.N225` / `100.GDAXI` / `100.FCHI`，历史 9707 / 8971 / 9193 根。
+
+   交叉验证用的是"库里 daemon 抓的那 7 行"：
+
+   ```text
+   znb_DAX  2026-10-30 库内 25818.2110   东财 25818.2100   差 0.0000%
+   znb_CAC  2026-10-30 库内  7969.4200   东财  7969.4200   差 0.0000%
+   znb_NKY  2026-10-26 库内 62214.6100   东财 62189.6500   差 0.0401%
+   znb_NKY  2026-10-22 库内 63917.2100   东财 62907.8400   差 1.5792%
+   ```
+
+   欧洲两行逐位相同 —— 因为例程归档跑在上海早上，那时欧洲还没开盘，
+   快照拿到的就是**上一交易日收盘**。日经不同：东京 = 上海 +1 小时，
+   上海早上正是东京盘中，快照是**盘中价**，所以差 0.04–1.58%。
+   落库后这 7 行被东财收盘价覆盖，是修正而不是回退。
+
+   **`znb_TPX`（东证一部）仍然补不了**：东财 `100.TOPIX` / `100.TPX` 都返回
+   `data:null`，新浪只有实时，`klc_kl.js` 404。只有 `SH513800` 用它，
+   `--funds` 会如实报"`znb_TPX` 在净值日 2026-10-30 没有净值/行情"。
+
+   ## 外汇即期也必须覆盖港 / 日 / 欧（同日一并补）
+
+   补完日欧日线后还有半档没到位：`fundestcalc._fair_cny()` 对 ETF 用**即期**、
+   对 LOF 用**中间价**（PHP `GetForexRef()` 口径），而即期取不到时会**静默退回
+   中间价**。`PAGE_FOREX_SYMBOLS` 原来只有 `fx_susdcny` / `fx_susdcnh` 两个，
+   于是港 / 日 / 欧 QDII 的参考 EST 全部退化成"用中间价算的值"：
+
+   ```text
+   SH513030  参考EST  我们 1.757（中间价 7.457 那档）  生产端 1.746（即期 7.4336）
+   ```
+
+   五个符号的新浪返回都是 18 字段、第 9 位是价、第 10 位是名称，
+   `SinaForexSource.fetch_rate()` 不用为地区分叉。`fx_sjpycny` 是**每 1 日元**
+   （0.0421），与 `JPCNY` 中间价的存储口径一致 —— 生产端页面上的
+   "JPYCNY 4.2126 / JPCNY 4.2424" 是每 100 日元，只是显示倍数。
+
    ## 一次性修复的完整顺序
 
    ```text
    1. python -B dbtools\backup_db.py
-   2. python -B dbtools\seed_index_history.py --symbols '^HSI' '^HSTECH' '^HSCE' --days 800 --apply
-   3. python -B dbtools\backfill_nav_history.py --symbols <港股 28 只> --days 30 --apply
+   2. python -B dbtools\seed_index_history.py --days 800 --apply
+      （默认清单已含八个：^NDX ^GSPC ^HSI ^HSTECH ^HSCE znb_NKY znb_DAX znb_CAC）
+   3. python -B dbtools\backfill_nav_history.py --symbols <要补的基金> --days 30 --apply
    4. python -B auto\cli\autocalibrationcli.py --funds --apply
+   5. python -B auto\cli\forexcli.py --fx-only      # 五个即期快照
    ```
 
-   第 3 步不能省：港股那 28 只的净值原来只有 **1 条**、停在 10-13，
+   第 3 步不能省：这些基金的净值原来只有 **1 条**、停在 10-13，
    锚点定不下来时 `calibrate_fund` 直接跳过（PHP `UpdateOfficialNetValue()`
    返回 false 同款行为），补了日线也白搭。
-
-   **日股 / 欧股仍是缺口**：`znb_NKY` / `znb_TPX` / `znb_DAX` / `znb_CAC`
-   没有 `stockhistory`（那 6 只基金的净值也停在 10-13），`--funds` 会给
-   "没有净值/行情"的跳过。它们的 est 是新浪的 `znb_*` 全球指数，得另找日线。
 5. 持仓口径的 8 只（SH501312 等）仍无 est 符号，官方 EST 走不到 ——
    等各自的 `holdings` 数据（§1.3）。

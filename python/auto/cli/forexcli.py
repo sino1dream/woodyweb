@@ -9,11 +9,11 @@
     python -B auto\\cli\\forexcli.py --check          # 只看各源能取到什么，不写库
     python -B auto\\cli\\forexcli.py                  # 抓取并写入 netvaluehistory
                                                     # （同时更新参考数据表的
-                                                    #  USDCNH/USDCNY 实时快照）
+                                                    #  外汇即期快照）
     python -B auto\\cli\\forexcli.py --api            # 打印汇率源接口说明（换源参考）
     python -B auto\\cli\\forexcli.py --list-sources   # 列出已注册的汇率源
     python -B auto\\cli\\forexcli.py --compare        # 只做双源对比，不写库
-    python -B auto\\cli\\forexcli.py --fx-only        # 只更新 USDCNH/USDCNY 实时快照
+    python -B auto\\cli\\forexcli.py --fx-only        # 只更新五个外汇即期快照
 
 环境变量：
 
@@ -21,7 +21,8 @@
 * ``PALMMICRO_FOREX_TOLERANCE``   相对容差（默认 0.01，即 1%）
 
 两类数据别混：``netvaluehistory`` 里是 USCNY 等**中间价历史**（货币网源，
-``CnyReference`` 读它）；参考数据表里的 USDCNH/USDCNY 是**实时行情快照**
+``CnyReference`` 读它）；参考数据表里的外汇即期
+（USDCNY/USDCNH/HKDCNY/JPYCNY/EURCNY）是**实时行情快照**
 （新浪源，落 ``realtimequote``）—— 后者曾经没有更新链路，快照会停在
 很久以前（见 ``forexupdater.update_page_forex`` 的说明）。
 """
@@ -62,7 +63,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--backfill", action="store_true",
                         help="尝试回补历史汇率（上游不稳定，尽力而为）")
     parser.add_argument("--fx-only", action="store_true",
-                        help="只更新参考数据表的 USDCNH/USDCNY 实时快照，不写中间价")
+                        help="只更新参考数据表的外汇即期快照（USDCNY/USDCNH/HKDCNY/JPYCNY/EURCNY），不写中间价")
     parser.add_argument("--fill-official-dates", action="store_true",
                         help="给基金官方日期补汇率（用相邻交易日真实值）")
     parser.add_argument("--purge-fake", action="store_true",
@@ -178,7 +179,7 @@ def main() -> int:
 
     if args.fx_only:
         written = updater.update_page_forex(apply=True)
-        print("外汇实时快照：写入 %d 条（USDCNH/USDCNY）。" % written)
+        print("外汇即期快照：写入 %d 条（USDCNY/USDCNH/HKDCNY/JPYCNY/EURCNY）。" % written)
         if updater.last_error:
             print("注意：%s" % updater.last_error)
         return 0
@@ -219,10 +220,10 @@ def main() -> int:
     if updater.last_error:
         print("注意：%s" % updater.last_error)
 
-    # 参考数据表的 USDCNH/USDCNY 走的是实时快照（另一条链路，见
+    # 参考数据表的外汇即期走的是实时快照（另一条链路，见
     # forexupdater.update_page_forex 的说明），这里顺手一起更新
     fx_written = updater.update_page_forex(apply=True)
-    print("已写入 %d 条外汇实时快照（USDCNH/USDCNY）。" % fx_written)
+    print("已写入 %d 条外汇即期快照（USDCNY/USDCNH/HKDCNY/JPYCNY/EURCNY）。" % fx_written)
     if updater.last_error:
         print("注意：%s" % updater.last_error)
 

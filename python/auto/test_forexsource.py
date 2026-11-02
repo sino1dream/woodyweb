@@ -11,6 +11,7 @@ import unittest
 
 from source import forexsource
 from source import navsource
+from updater import forexupdater
 from updater.forexupdater import ForexUpdater
 from sql.quotestore import MemoryQuoteStore
 
@@ -541,6 +542,29 @@ class ForexPageForexUpdateTest(unittest.TestCase):
 
         self.assertEqual(written, 2)
         self.assertEqual(snapshot.saved, [])
+
+    def test_region_spot_symbols_are_all_refreshed(self):
+        """港 / 日 / 欧即期也必须刷 —— 少了它们参考 EST 会静默退回中间价。
+
+        2026-11-02 之前这里只有美元两对，于是 ``SH513030`` 的参考 EST
+        用中间价 7.457 而不是即期 7.4336，与生产端差 0.6%。
+        """
+        symbols = list(forexupdater.PAGE_FOREX_SYMBOLS)
+        self.assertEqual(symbols, ["fx_susdcny", "fx_susdcnh",
+                                   "fx_shkdcny", "fx_sjpycny", "fx_seurcny"])
+
+        snapshot = _FakeSnapshotStore()
+        updater = self._updater({symbol: str(40 + i) for i, symbol in enumerate(symbols)},
+                                snapshot)
+        rates = dict(zip(symbols, (6.6475, 6.6435, 0.84733, 0.042129, 7.4344)))
+        written = updater.update_page_forex(source=_FakePageForexSource({
+            symbol: {"symbol": symbol, "date": "2026-11-02", "rate": rate}
+            for symbol, rate in rates.items()
+        }))
+
+        self.assertEqual(written, 5)
+        self.assertEqual([s["symbol"] for s in snapshot.saved], symbols)
+        self.assertIsNone(updater.last_error)
 
 
 class NormalizeDateTest(unittest.TestCase):
