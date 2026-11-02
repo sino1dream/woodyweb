@@ -1024,5 +1024,19 @@ fundestcli 时官方中间价最新只到 X 日（SAFE 当日 09:20 公布），
    那接口只认美股与美股指数）。它们的 `stockhistory` 停在 2026-10-26，
    所以 est 走港股指数的 QDII（`qdiihk` / `hangseng` / `hstech` 那一族）同样
    校不出新的 `cal_f`。要补得另找港股日线源，属独立一次数据修复。
+
+   **2026-11-02 探源结论**（省得再试一遍）：
+
+   | 用途 | 信源 | 结果 |
+   | --- | --- | --- |
+   | 港股指数**实时** | 新浪 `https://hq.sinajs.cn/list=hkHSI,hkHSTECH,hkHSCEI` | ✅ 可用，一次批量三个；字段含名称、今开、昨收、最高、最低、现价、成交额、日期时间 |
+   | 港股指数**日线** | 新浪 `HK_IndexService.getIndexDailyKLine` / `HK_StockService.getDayKLine` / `HistoryTradeService.*`，在 `/hkstock/api/jsonp.php` 与 `quotes.sina.cn/hk/api/jsonp_v2.php` 两个 host 各试 | ❌ 全部 `{"__ERROR":3,"__ERRORMSG":"Service not valid"/"Service not found"}`；`/stock/hkstock/api/...` 这条旧路径直接 404 |
+   | 港股指数**日线**（替代） | 东财 `push2his.eastmoney.com/api/qt/stock/kline/get`，`secid` = `100.HSI` / `124.HSTECH` / `100.HSCEI` | ✅ 可用；历史长度 HSI 8998、HSCEI 8212、HSTECH 2912 根，`klines` 每行 `日期,开,收,高,低,成交量,成交额` |
+
+   **别拿 `HK_MinlineService.getMinLine?symbol=HSI&day=5` 当历史** —— 它只有最近
+   5 天的**分钟线**，凑不出 EMA50/200，写进 `stockhistory` 只会污染。
+
+   要落地得给 `auto/updater/indexhistory.py` 加一条东财分支（港股 secid 前缀
+   恒指系 `100.`、恒生科技 `124.`），**截至 2026-11-02 未实现**。
 5. 持仓口径的 8 只（SH501312 等）仍无 est 符号，官方 EST 走不到 ——
    等各自的 `holdings` 数据（§1.3）。
