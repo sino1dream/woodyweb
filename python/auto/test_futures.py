@@ -476,12 +476,34 @@ class FuturesCalibratorTest(unittest.TestCase):
         self.assertEqual(calibrator.proxy_symbol_of("^NDX"), FALLBACK_PROXIES["^NDX"])
 
     def test_fallback_maps_are_complete(self):
-        """两个兜底表的键必须一致，免得只配了一半。"""
-        self.assertEqual(sorted(FALLBACK_FUTURES), sorted(FALLBACK_PROXIES))
+        """代理 ETF 的键必须是期货配对的**子集**，免得配了代理却没有期货。
+
+        反向不成立：``^HSI`` / ``znb_NKY`` 有真实指数快照，不需要
+        "ETF 反推点位"这条兜底路径（``FALLBACK_PROXIES`` 只有美股两对）。
+        """
+        self.assertTrue(set(FALLBACK_PROXIES) <= set(FALLBACK_FUTURES))
         self.assertEqual(FALLBACK_FUTURES["^NDX"], "hf_NQ")
         self.assertEqual(FALLBACK_FUTURES["^GSPC"], "hf_ES")
+        self.assertEqual(FALLBACK_FUTURES["^HSI"], "hf_HSI")
+        self.assertEqual(FALLBACK_FUTURES["znb_NKY"], "hf_NK")
         self.assertEqual(FALLBACK_PROXIES["^NDX"], "QQQ")
         self.assertEqual(FALLBACK_PROXIES["^GSPC"], "SPY")
+
+    def test_hk_jp_futures_have_own_time_zone(self):
+        """``hf_HSI`` / ``hf_NK`` 不能按 ``hf_`` 前缀一律算纽约。
+
+        照抄 PHP ``IsSinaFutureUS()`` 会让新浪给的上海时间戳被换成前一天
+        （上海 09:59 = 纽约前一日 20:59），日期直接错掉，校准永远对不齐。
+        两者都刻意与配对的指数同区，``check_adjust_time`` 才能直接比 HH:MM。
+        """
+        from core.stocksymbol import StockSymbol
+
+        self.assertEqual(StockSymbol("hf_HSI").get_time_zone(),
+                         StockSymbol("^HSI").get_time_zone())
+        self.assertEqual(StockSymbol("hf_NK").get_time_zone(),
+                         StockSymbol("znb_NKY").get_time_zone())
+        # 美股期货不受影响
+        self.assertEqual(StockSymbol("hf_NQ").get_time_zone(), "America/New_York")
 
 
 class RealtimeSourceValueTest(unittest.TestCase):

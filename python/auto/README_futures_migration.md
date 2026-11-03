@@ -83,12 +83,23 @@ PHP 判 `count($ar) >= 13`，本版同。
 ### 3.1 配对表
 
 ```
-^NDX  -> hf_NQ    纳斯达克100 → NQ 期货
-^GSPC -> hf_ES    标普500    → ES 期货
+^NDX    -> hf_NQ    纳斯达克100   → NQ 期货
+^GSPC   -> hf_ES    标普500       → ES 期货
+^HSI    -> hf_HSI   恒生指数      → 恒指期货      （2026-11-03 补）
+znb_NKY -> hf_NK    日经225       → 日经期货      （2026-11-03 补）
 ```
 
 存在 `futurespair` 表（`id` = 指数，`stock_id` = 期货 —— 与 PHP `PairSql` 的列语义一致）。
 表里查不到时退回 `futurescalib.FALLBACK_FUTURES`，**避免少一行配置就整条静默失效**。
+
+**两张表都要有**，方向一致但用途不同：`fundpair` 是 PHP `FundPairReference`
+走的（页面「参考数据」表那行期货 + 实时 EST 列出不出现），`futurespair` 是本项目
+`fundestcalc` 走的（数值），而且 `quoteupdater` 靠它反推"该抓哪些期货"。
+一次性补齐用 `dbtools/patch_hk_jp_futures.py`。
+
+**恒生科技 `^HSTECH` / 国企 `^HSCE` 没有期货**：新浪 `hf_HSTECH` /
+`hf_HSCEI` / `hf_HTI` / `hf_HHI` 实测全部空串，生产端
+`sh513010cn.php` / `sh510900cn.php` 也没有实时EST 列。别补配对。
 
 ### 3.2 校准：两种方式
 
@@ -103,8 +114,8 @@ PHP 判 `count($ar) >= 13`，本版同。
 
 **② 本项目替代（日期对齐）**——`calibrate_from_proxy()`：
 
-指数（`^NDX`）在库里**没有行情快照**（点位从新浪直接抓、不落 `stockhistory`），
-所以严格时刻对齐永不成立。改用**中间层 ETF 反推指数**：
+写这段时 `^NDX` / `^GSPC` 在库里**没有行情快照**（点位从新浪直接抓、不落
+`stockhistory`），所以严格时刻对齐永不成立。改用**中间层 ETF 反推指数**：
 
 ```text
 指数点位 = ETF价 / ETF的校准值       （实测恒等式：30807.93 / 749.3773 = 41.111 = QQQ 校准值）
@@ -198,11 +209,15 @@ python -B dbtools\calibrate_futures.py --apply     # 写期货校准值
 
 ## 八、仍未完成
 
-1. **原油/日本/欧洲的实时 EST**：配对表与兜底映射目前只有 `^NDX` / `^GSPC`。
-   原油类要加 `hf_CL`（XOP 那批）、日经要加 `hf_NK`；
-   印度与欧洲**没有对应期货**，按作者文档实时 EST 直接用指数。
+1. **原油类的实时 EST**：`hf_CL`（XOP 那批）仍没配对。日经已通（`znb_NKY → hf_NK`），
+   恒指已通（`^HSI → hf_HSI`）；恒生科技 / 国企 / 印度 / 欧洲**没有对应期货**，
+   按作者文档实时 EST 直接用指数（欧洲三只目前连指数配对都没配，它们本可以
+   走 `calibrate_from_proxy` 那条路）。
 2. **`AverageCalibraion()` 的自动触发**：PHP 在构造 `FundPairReference` 时
    检查 `CheckAdjustFactorTime()` 并顺手校准。本版做成显式命令
-   （`futurescli.py` / `calibrate_futures.py`），还没接进页面访问路径。
-3. **`^NDX` / `^GSPC` 自身没有行情快照**：所以严格时刻对齐那条路在本项目里
-   走不通（已用 ETF 反推替代）。要把指数行情也落库才能走 PHP 原逻辑。
+   （`futurescli.py --apply` / `calibrate_futures.py`），还没接进页面访问路径。
+3. **`^NDX` / `^GSPC` 的严格时刻对齐**：这两个指数的快照只覆盖美股常规盘
+   （`realtimequote` 里是 16:50 收盘价），而期货在盘前盘后都在动，所以日常
+   例程里它们**基本对齐不上**，用的仍是 2026-10-14 那两条由
+   `calibrate_futures.py` 写下的历史校准值。港股 / 日经没有这个问题
+   （指数与期货同时段交易）。要彻底解决得让 daemon 在美股常规盘内抓指数快照。

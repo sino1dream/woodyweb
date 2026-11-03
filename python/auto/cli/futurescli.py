@@ -66,6 +66,33 @@ def _future_symbols(source) -> list:
     return sorted(symbol for symbol in symbols if source.get_stock_id(symbol) is not None)
 
 
+def _index_future_pairs(source) -> dict:
+    """``{指数: 期货}`` —— ``futurespair`` 表 + 内置兜底合并。
+
+    原实现只遍历 ``FALLBACK_FUTURES``（美股两对），于是港股 / 日经即使把
+    配对写进了表里，刷新快照与校准两段也永远走不到它们。表里的一律以表为准
+    （表可覆盖兜底），兜底兜住"表里少一行"的静默失效。
+    """
+    pairs = dict(FALLBACK_FUTURES)
+    connection = getattr(source, "connection", None)
+    if connection is None:
+        return pairs
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "SELECT a.symbol AS index_symbol, b.symbol AS future_symbol "
+            "FROM futurespair fp JOIN stock a ON a.id = fp.id "
+            "JOIN stock b ON b.id = fp.stock_id"
+        )
+        for row in cursor.fetchall():
+            pairs[str(row["index_symbol"])] = str(row["future_symbol"])
+    except Exception:
+        pass
+    finally:
+        cursor.close()
+    return pairs
+
+
 def _store_futures_quote(source, quote) -> bool:
     """把期货行情写进 ``realtimequote`` 快照（后台抓、Web 读）。"""
     stock_id = source.get_stock_id(quote.symbol)
@@ -157,7 +184,7 @@ def cmd_fetch(args) -> int:
     # 先把指数快照刷到"此刻"：PHP 里期货与指数是同批抓的，时刻天然相同；
     # 拿刚抓的期货去比昨天的指数快照，结构性地永远对不齐。
     print("刷新指数快照（让两边的时刻可比）：")
-    for index_symbol in sorted(FALLBACK_FUTURES):
+    for index_symbol in sorted(_index_future_pairs(source)):
         print("  %-8s %s" % (index_symbol, "已刷新" if _refresh_index_snapshot(source, index_symbol) else "刷新失败"))
     print("")
 
@@ -184,7 +211,7 @@ def cmd_fetch(args) -> int:
     # 尝试校准：需要**指数**的行情时刻与期货一致
     print("")
     print("=== 尝试校准（需要期货与指数时刻对齐）===")
-    for index_symbol, future_symbol in sorted(FALLBACK_FUTURES.items()):
+    for index_symbol, future_symbol in sorted(_index_future_pairs(source).items()):
         quote = quotes.get(future_symbol)
         if quote is None:
             continue
@@ -217,9 +244,15 @@ def cmd_fetch(args) -> int:
             getattr(index_quote, "date", None), getattr(index_quote, "time", None),
             "时刻对齐，可校准" if aligned else "不可校准",
             "（%s）" % reason if reason else ""))
-        if aligned and args.apply:
+        if aligned:
             factor = calibrator.calibrate(index_symbol, quote, index_quote, None, apply=False)
-            print("      校准值（未写库，供核对）= %s" % factor)
+            print("      校准值 = %s" % factor)
+            if args.apply and factor is not None:
+                # 原实现即使给了 --apply 也只走 apply=False —— 校准值从未真正落库，
+                # calibrationhistory 里 ^NDX / ^GSPC 一直没有行，实时 EST 因此
+                # 永远退回"中间层快照"。这里补上真正的写入（PHP AverageCalibraion）。
+                calibrator.calibrate(index_symbol, quote, index_quote, None, apply=True)
+                print("      已写 calibrationhistory（同一天按平均累加）")
 
     source.connection.close()
     return 0
@@ -287,7 +320,7 @@ def cmd_show(args) -> int:
     source = _source()
     print("%-8s %-10s %-13s %-12s %-10s %s" % ("期货", "指数", "最新价", "日期", "时间", "名称"))
     print("-" * 82)
-    for index_symbol, future_symbol in sorted(FALLBACK_FUTURES.items()):
+    for index_symbol, future_symbol in sorted(_index_future_pairs(source).items()):
         quote = _stored_quote(source, future_symbol)
         name = FUTURES_NAMES.get(future_symbol, "")
         if quote is None:
@@ -301,7 +334,7 @@ def cmd_show(args) -> int:
     print("")
     print("=== 指数校正状态 ===")
     table = CalibrationSql(source.connection)
-    for index_symbol in sorted(FALLBACK_FUTURES):
+    for index_symbol in sorted(_index_future_pairs(source)):
         index_id = source.get_stock_id(index_symbol)
         if index_id is None:
             print("  %-8s 不在 stock 表里" % index_symbol)
@@ -390,11 +423,19 @@ PHP 的 `GetSinaSymbol()` 有同样的兜底，所以它的期货取数走的是
 
 ## 期货与指数的配对
 
-    ^NDX  -> hf_NQ    纳斯达克100 → NQ 期货
-    ^GSPC -> hf_ES    标普500    → ES 期货
+    ^NDX    -> hf_NQ    纳斯达克100   → NQ 期货
+    ^GSPC   -> hf_ES    标普500       → ES 期货
+    ^HSI    -> hf_HSI   恒生指数      → 恒指期货
+    znb_NKY -> hf_NK    日经225       → 日经期货
 
 存在 `futurespair` 表（`id`=指数，`stock_id`=期货 —— 与 PHP `PairSql` 的列语义一致）。
 表里没有时退回 `futurescalib.FALLBACK_FUTURES`，避免少一行配置就静默失效。
+`fundpair` 里也要有同样四行：PHP 那边实时 EST 走 `fundpair`
+（`FundPairReference('^HSI')->GetPairRef()`），页面「参考数据」表靠它出期货行。
+
+**恒生科技 `^HSTECH` / 国企 `^HSCE` 没有期货**：新浪 `hf_HSTECH` / `hf_HSCEI` /
+`hf_HTI` / `hf_HHI` 实测全部返回空串，生产端 `sh513010cn.php` /
+`sh510900cn.php` 也都没有「实时EST」列 —— 数据源缺，不是配置漏。
 
 ## 校准：只在"时刻对齐"时做
 
@@ -406,6 +447,15 @@ PHP 的 `GetSinaSymbol()` 有同样的兜底，所以它的期货取数走的是
 只有两个市场**同时收着盘**的那一瞬间，`期货价 / 指数` 才是干净的比值。
 校准值 = 期货价 × 汇率 / 指数价（`CalcFactor()`），
 写入用**平均**（`WriteDailyAverage()`），同一天多次校准不会互相覆盖。
+
+`--apply` 才真正写 `calibrationhistory`；不带它只算给你核对。
+**「时刻对齐」看的是 HH:MM**：期货 tick 与指数快照差几秒没问题，跨分钟就得重跑。
+
+## 两个符号的时区例外
+
+`hf_HSI` / `hf_NK` 在 `StockSymbol.get_time_zone()` 里单独给了
+`Asia/Shanghai` / `Asia/Tokyo`，与它们配对的指数同区。照抄 PHP 的
+`IsSinaFutureUS()`（凡 `hf_` 即纽约）会把港股 09:59 换成前一天 20:59。
 
 ## 实时 EST
 

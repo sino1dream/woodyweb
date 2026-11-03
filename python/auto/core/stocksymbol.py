@@ -1186,7 +1186,23 @@ class StockSymbol:
         return True
 
     def get_time_zone(self):
-        """对应 PHP ``GetTimeZone()``：该符号所在市场的时区名。"""
+        """对应 PHP ``GetTimeZone()``：该符号所在市场的时区名。
+
+        **港股 / 日经期货是个例外**（``hf_HSI`` / ``hf_NK``，2026-11-03 接入）：
+        PHP 的 ``IsSinaFutureUS()`` 只按 ``hf_`` 前缀判定，于是所有外盘期货
+        一律算纽约 —— 那是建立在"PHP 只有 NQ/ES/CL 三个美股期货"之上的简化。
+        照抄到 ``hf_HSI`` 上会让新浪给的**上海时间戳**被换算成前一天 20:59
+        （上海 09:59 = 纽约前一日 20:59），日期都错掉。
+
+        这两个符号按真实市场给时区，并且刻意**与它们配对的指数同区**
+        （``^HSI`` → ``Asia/Shanghai``、``znb_NKY`` → ``Asia/Tokyo``）：
+        :func:`~calc.futurescalib.check_adjust_time` 在两端时区相同时不做换算，
+        直接比"日期 + HH:MM"，正是 PHP ``AverageCalibraion()`` 的语义。
+        """
+        if self.str_symbol == "hf_HSI":
+            return TIME_ZONE_SHANGHAI       # 与 ^HSI 同区（UTC+8，无夏令时）
+        if self.str_symbol == "hf_NK":
+            return "Asia/Tokyo"             # 与 znb_NKY 同区（UTC+9）
         if self.is_sina_fund():
             pass
         elif self.is_sina_future():

@@ -625,9 +625,17 @@ class FuturesCalibrator:
 
 
 #: 内置兜底映射。``futurespair`` 查不到时用它 —— 避免少一行配置就静默失效。
+#:
+#: 港股与日经的配对是 2026-11-03 补的（此前只有美股两对，港日两族的
+#: 「实时 EST」整列空着）。**恒生科技 ``^HSTECH`` 与国企 ``^HSCE`` 加不进来**：
+#: 新浪期货只提供 ``hf_HSI`` / ``hf_NK``，``hf_HSTECH`` / ``hf_HSCEI`` /
+#: ``hf_HTI`` / ``hf_HHI`` 全部返回空串（实测），生产端 ``sh513010cn.php``
+#: 与 ``sh510900cn.php`` 也确实没有实时 EST 列 —— 这是数据源缺，不是漏配。
 FALLBACK_FUTURES = {
     "^NDX": "hf_NQ",
     "^GSPC": "hf_ES",
+    "^HSI": "hf_HSI",
+    "znb_NKY": "hf_NK",
 }
 
 #: 指数 → 中间层 ETF 的兜底映射（反推指数点位用）。

@@ -1154,14 +1154,45 @@ fundestcli 时官方中间价最新只到 X 日（SAFE 当日 09:20 公布），
    差别只在**中间价日期**（我们 HKCNY 最新仍是 11-02，生产端已有 11-03），
    等凌晨 `forexcli` 跑过就一致。
 
-7. **港日两族的实时 EST 仍为空**（本次未做）：`FundReference.get_realtime_ref()`
-   要中间层引用带 `get_pair_ref()`，而 `fundpair` 表里**没有**指数 → 期货的行。
-   美元那两只有（`^NDX → hf_NQ`、`^GSPC → hf_ES`），港日缺三样：
+7. **港日实时 EST 已接通**（2026-11-03，commit 见 `patch_hk_jp_futures.py`）。
+   `FundReference.get_realtime_ref()` 要中间层引用带 `get_pair_ref()`，
+   也就是 `fundpair` 里要有「指数 → 期货」的行。原来只有美元两对
+   （`^NDX → hf_NQ`、`^GSPC → hf_ES`），港日缺四样，现已一次补齐：
 
-   - `stock` 表缺 `hf_HSI` / `hf_HSTECH` / `hf_HSCEI`（`hf_NK` 有，id 16，
-     但 `znb_NKY → hf_NK` 这一行也没建）；
-   - `fundpair` 表缺 `^HSI/^HSTECH/^HSCE`、`znb_NKY` 这几行；
-   - daemon 的期货快照与 `futurescalib` 还没接管这些符号。
+   - `stock` 表补 `hf_HSI`（`hf_NK` 原本就有，id 16）；
+   - `fundpair` 与 `futurespair` 各补两行：`^HSI → hf_HSI`、`znb_NKY → hf_NK`。
+     两张表方向一致但用途不同：PHP 的 `FundPairReference` 走 `fundpair`，
+     我们的 `futurescalib` 走 `futurespair`，而 `quoteupdater` 靠
+     `futurespair` 反推"该抓哪些期货"（`collect_symbols_from_source`）；
+   - `FALLBACK_FUTURES` / `FUTURES_SYMBOLS` / `FUTURES_NAMES` 三处符号表各加一条；
+   - `StockSymbol.get_time_zone()` 给 `hf_HSI` / `hf_NK` 单独定市场时区。
 
-   生产端 `sh513600cn.php` 的实时 EST 2.529 就是 `hf_HSI` 期货推出来的，
-   补齐上面三样才会出现在我们页面上。
+   **`get_time_zone` 那条是必需的**：PHP `IsSinaFutureUS()` 按 `hf_` 前缀一律
+   判纽约，那是"只有 NQ/ES/CL"时代的简化；照抄到 `hf_HSI` 上会把新浪给的
+   **上海时间戳**换成前一天 20:59（上海 09:59 = 纽约前一日 20:59），日期都错，
+   校准永远对不齐。现在 `hf_HSI` → `Asia/Shanghai`（与 `^HSI` 同区）、
+   `hf_NK` → `Asia/Tokyo`（与 `znb_NKY` 同区），`check_adjust_time` 直接比 HH:MM。
+
+   **`futurescli` 的两个洞也补了**：校准段原来只遍历 `FALLBACK_FUTURES`
+   （表里配了也走不到），且 `--apply` 时仍调 `apply=False` —— 校准值**从未真正
+   落库**（`calibrationhistory` 里 `^NDX`/`^GSPC` 那两条是
+   `dbtools/calibrate_futures.py` 写的历史值）。现在遍历「表 + 兜底」合并结果，
+   `--apply` 真写库。
+
+   验收（2026-11-03 10:05，恒指交易中）：`SH513600` 官方 2.558302 / 参考
+   2.533119 / **实时 2.533565（来源：期货 hf_HSI）**，`^HSI` 校准值 0.998713
+   （期货 23443.56 / 指数 23475.x）。
+
+8. **恒生科技 / 国企没有实时 EST，是数据源缺。** 新浪
+   `hf_HSTECH` / `hf_HSCEI` / `hf_HTI` / `hf_HHI` 实测全部返回空串，只有
+   `hf_HSI` 与 `hf_NK` 两个港股/日经期货可用。生产端 `sh513010cn.php`
+   （恒生科技）与 `sh510900cn.php`（国企）同样**没有**「实时EST」列 ——
+   我们页面也一致（表头五列，无实时EST）。**不要去"补"这两行配对**，
+   配了也只会让列出现但值恒空。
+
+9. **日经在 11-03 校准不了是休市，不是 bug。** 日本 11-03 是文化日，
+   东证休市：新浪 `znb_NKY` 与东财 `100.N225` 都停在 11-02 15:30（东京），
+   而 `hf_NK` 期货照常交易 → 日期不等 → 无法校准 → 日经实时 EST 回落中间层
+   快照。等 11-04 开盘自然通。**判断方法**：`futurescli` 的
+   `_misalign_reason` 会打印「日期不等（期货 2026-11-03 vs 指数 2026-11-02）」。
+

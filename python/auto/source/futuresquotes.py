@@ -287,4 +287,5 @@ FUTURES_NAMES = {
     "hf_ES": "标普500指数期货（E-mini S&P 500）",
     "hf_CL": "纽约原油（WTI）",
     "hf_NK": "日经225指数期货",
+    "hf_HSI": "恒生指数期货",
 }
