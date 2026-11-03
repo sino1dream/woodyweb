@@ -763,6 +763,98 @@ class ThreeEstTest(unittest.TestCase):
         self.assertIsNone(calculator.compute_realtime("SZ161130"))
 
 
+class FairGateTest(unittest.TestCase):
+    """参考 EST 的闸门：**ETF 无条件算，LOF 才按"日期一致"隐藏**。
+
+    ## 为什么单独钉这一条
+
+    ``compute_fair`` 原来只照抄了 ``FundPairReference::GetFairNetValue()``
+    的闸门（``cny_date == mid_date`` → 不显示）。那条对配对交易成立，对
+    ``_QdiiReference::EstRealtimeNetValue()`` **不成立** —— 后者是
+    ``IsEtfA() || 汇率日期不同 || 中间层日期不同``，ETF 那一项是"或"，无条件算。
+
+    照抄错的结果是**港股 / 日股 ETF 的参考 EST 整列消失**：恒生、日经的指数
+    行情日与本地汇率中间价日天然是同一天（都在北京时间当天更新），条件天天
+    成立；美元基金的中间层日期比北京晚一天，反而天天不成立，所以只有港日两族
+    出问题（欧股因时差侥幸躲过）。
+
+    生产端 ``sh513600cn.php`` 2026-11-03 的实测：官方 EST 2.553、参考 EST 2.527
+    —— 差额全部来自"即期汇率 vs 中间价"，中间层价两边是同一个数。
+    """
+
+    class _Source(ThreeEstTest.Source):
+        """把基金换成 A 股 ETF（``SH513100``），其余输入照抄 :class:`ThreeEstTest.Source`。"""
+
+        FUND = "SH513100"
+
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            self._ids[self.FUND] = "1"
+
+        def get_fund_profile(self, symbol):
+            if symbol == self.FUND:
+                return super().get_fund_profile("SZ161130")
+            return None
+
+    @staticmethod
+    def _calc(source):
+        from calc.fundestcalc import EstimateCalculator
+
+        return EstimateCalculator(source, store=None)
+
+    def test_etf_computes_fair_even_when_every_date_agrees(self):
+        """ETF：三个日期全一致也要算 —— 汇率口径不同，值本来就不一样。"""
+        source = self._Source(mid_date="2026-11-02", cny_date="2026-11-02",
+                              cny_current=0.85595, cny_on_mid_date=0.85595,
+                              cny_on_cal_date=0.85594)
+
+        record = self._calc(source).compute_fair(self._Source.FUND)
+
+        self.assertIsNotNone(record)
+
+    def test_lof_hides_fair_when_every_date_agrees(self):
+        """LOF：同样"日期全一致"，但中间价口径相同 → 与官方 EST 一模一样，隐藏。"""
+        source = self._Source(mid_date="2026-10-02", cny_date="2026-10-02",
+                              cny_on_mid_date=6.705)
+
+        self.assertIsNone(self._calc(source).compute_fair("SZ161130"))
+
+    def test_etf_fair_uses_the_spot_rate(self):
+        """ETF 的参考 EST 用**即期**汇率，LOF 用中间价 —— 比值就是两率之比。
+
+        用"同一个数据源，只把即期价加上/去掉"来对照：加上即期时参考 EST 按
+        ``spot / middle`` 缩放，去掉即期时回落到中间价（``cny_current``），
+        两条路径的比值必须**精确**等于 6.679 / 6.705。
+
+        这条同时量化了"参考 EST 为什么值得显示"（生产端 2.553 vs 2.527 的来源）。
+        """
+
+        class WithSpot(self._Source):
+            def get_stock_id(self, symbol):
+                if symbol == "fx_susdcny":
+                    return "20"
+                return super().get_stock_id(symbol)
+
+            def get_stored_quote(self, symbol):
+                if symbol == "fx_susdcny":
+                    class Q:
+                        price = 6.679
+                    return Q()
+                return None
+
+        base = dict(mid_date="2026-11-02", cny_date="2026-11-02",
+                    cny_current=6.705, cny_on_mid_date=6.705,
+                    cny_on_cal_date=6.705)
+        with_spot = self._calc(WithSpot(**base)).compute_fair(WithSpot.FUND)
+        without = self._calc(self._Source(**base)).compute_fair(WithSpot.FUND)
+
+        self.assertIsNotNone(with_spot)
+        self.assertIsNotNone(without)
+        # 容差放到 1e-3：替身把 ``fx_susdcny`` 加进符号表后，校准锚点那条汇率
+        # 也会去问它（``_build`` 的 ``data["CNY"]``），比值因此有 0.02% 的偏差。
+        self.assertAlmostEqual(with_spot.value / without.value, 6.679 / 6.705, places=3)
+
+
 class ProductionScaleTest(unittest.TestCase):
     """**生产尺度**下的回归：中间层校准值 41.58 不再把 EST 放大 4648 倍。
 

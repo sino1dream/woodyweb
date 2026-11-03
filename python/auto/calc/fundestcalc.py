@@ -241,30 +241,45 @@ class EstimateCalculator:
     def compute_fair(self, symbol: str) -> Any:
         """算该基金的**参考 EST**（``FairEst``），不写库。
 
-        对应 ``FundPairReference::GetFairNetValue()``
-        （``php/stock/fundpairref.php:256``）：
+        **PHP 里这一档有两份实现，闸门不一样**，本方法按"是不是场内 ETF"分派：
 
-        ```php
-        $strOfficialDate = $this->GetOfficialDate();      // = pair_ref 的日期 = 中间层日期
-        if ($this->cny_ref)
-        {
-            // 中间层日期与**汇率日期**不一致 -> 用当前汇率重算
-            if ($strOfficialDate != $this->cny_ref->GetDate())
-                return $this->EstFromPair($this->pair_ref->GetVal(), $this->cny_ref->GetVal());
-        }
-        if ($this->pair_ref->IsSinaFutureExceptGoldCN() || ($strOfficialDate != $this->pair_ref->GetDate()))
-            return $this->EstFromPair($this->pair_ref->GetVal());
-        return false;      // 两者都一致 -> 不显示（与官方 EST 相同，没有信息量）
-        ```
+        1. ``_QdiiReference::EstRealtimeNetValue()``（``php/stock/qdiiref.php:161``）
+           —— 基金详情页 / 分类页走的就是这一份：
 
-        这里 ``GetOfficialDate()`` 对 ``FundPairReference`` 返回的是
-        **``pair_ref`` 的日期**（即中间层日期），所以第二个条件里的
-        ``$strOfficialDate != $this->pair_ref->GetDate()`` 恒为假 ——
-        **真正决定参考 EST 是否出现的是"汇率日期"那一条**。
+           ```php
+           if ($this->IsEtfA() || ($cny_ref->GetDate() != $this->strOfficialDate)
+                              || ($strDate != $this->strOfficialDate))
+               $this->fFairNetValue = $this->GetQdiiValue($this->_getFairEstVal($strDate));
+           ```
 
-        **参考 EST 与官方 EST 同源，差别只在"用中间层当前价 + 当前汇率"。**
-        汇率日期与中间层日期一致时不显示（PHP 返回 ``false``）——
-        这不是算不出来，是没有意义。
+           **ETF 无条件算**。原因是 ETF 的参考 EST 与官方 EST 的汇率口径本来就不同
+           （``GetQdiiValue($strEst)`` 不带汇率 → 用 ``GetForexRef()``，ETF 是即期），
+           即使三个日期全一致，两个值也不相等、仍然有信息量。
+
+        2. ``FundPairReference::GetFairNetValue()``（``php/stock/fundpairref.php:256``）
+           —— 配对交易那条路（本方法不实现它，那套语义在
+           ``refobj.FundPairReference.get_fair_net_value()`` 里）：
+
+           ```php
+           if ($this->cny_ref && ($strOfficialDate != $this->cny_ref->GetDate()))
+               return $this->EstFromPair($this->pair_ref->GetVal(), $this->cny_ref->GetVal());
+           if ($this->pair_ref->IsSinaFutureExceptGoldCN() || ($strOfficialDate != $this->pair_ref->GetDate()))
+               return $this->EstFromPair($this->pair_ref->GetVal());
+           return false;      // 两者都一致 -> 不显示（与官方 EST 相同，没有信息量）
+           ```
+
+        ## 2026-11-03 修正：只把"日期一致就隐藏"用在 LOF 上
+
+        本方法原来**只有**第 2 份的闸门（``cny_date == mid_date`` → 返回 ``None``），
+        于是港股 / 日股 ETF 的参考 EST 整列消失：恒生、日经的**指数行情日与
+        本地汇率中间价日天然是同一天**（都在北京时间当天收盘后更新），
+        条件天天成立；美元基金的中间层日期比北京晚一天，反而天天不成立，
+        所以只有港日两族出问题（欧股因时差侥幸躲过）。
+
+        生产端实测（2026-11-03）``sh513600cn.php``：官方 EST 2.553、参考 EST 2.527；
+        ``sh513000cn.php``：官方 2.113、参考 2.10 —— 差额全部来自
+        "即期汇率 vs 中间价"（HKDCNY 0.8473 vs HKCNY 0.8560），
+        中间层价两边是同一个数。所以 ETF 这一档绝不能按日期一致隐藏。
 
         用途（作者原话）：验证算法准确度看**官方 EST**；
         按溢价折价决定套利与配对交易的看**参考 EST**
@@ -274,8 +289,11 @@ class EstimateCalculator:
         if ctx is None:
             return None
 
-        # 汇率日期与中间层日期一致 -> 参考 EST 等于官方 EST，PHP 此时返回 false
-        if ctx["cny_date"] is not None and str(ctx["cny_date"]) == str(ctx["mid_date"]):
+        # LOF 才按"汇率日期 == 中间层日期"隐藏：那时参考 EST 与官方 EST 同为
+        # 中间价口径、中间层价也相同，两个值一模一样。ETF 见 docstring 第 1 条。
+        if (not ctx["is_etf"]
+                and ctx["cny_date"] is not None
+                and str(ctx["cny_date"]) == str(ctx["mid_date"])):
             return None
 
         # 用中间层的**当日行情**（对应 `$pair_ref->GetVal()`），不用实时快照 ——

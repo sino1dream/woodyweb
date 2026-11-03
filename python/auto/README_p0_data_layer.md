@@ -1123,3 +1123,45 @@ fundestcli 时官方中间价最新只到 X 日（SAFE 当日 09:20 公布），
    返回 false 同款行为），补了日线也白搭。
 5. 持仓口径的 8 只（SH501312 等）仍无 est 符号，官方 EST 走不到 ——
    等各自的 `holdings` 数据（§1.3）。
+6. **参考 EST 的闸门（2026-11-03 修正）**：`fundestcalc.compute_fair()` 原来只
+   照抄了 `FundPairReference::GetFairNetValue()` 的闸门（`cny_date == mid_date`
+   → 返回 `None`），于是**港股 / 日股 ETF 的参考 EST 整列消失**。
+
+   两族的指数行情日与本地汇率中间价日**天然是同一天**（都在北京时间当天更新），
+   条件天天成立；美元基金的中间层日期比北京晚一天，反而天天不成立 ——
+   所以只有港日两族出问题（欧股因时差侥幸躲过，这也是当初没被发现的原因）。
+
+   正确闸门在 `_QdiiReference::EstRealtimeNetValue()`（`php/stock/qdiiref.php:168`）：
+
+   ```php
+   if ($this->IsEtfA() || ($cny_ref->GetDate() != $this->strOfficialDate)
+                      || ($strDate != $this->strOfficialDate))
+   ```
+
+   **ETF 那一项是"或"，无条件算** —— ETF 的参考 EST 走 `GetForexRef()`（即期），
+   官方 EST 走中间价，两个值本来就不相等。生产端实测（2026-11-03）：
+
+   ```text
+   sh513600cn.php  官方 2.553  参考 2.527   （HKDCNY 0.8473 vs HKCNY 0.8560）
+   sh513000cn.php  官方 2.113  参考 2.10    （JPYCNY 4.2126 vs JPCNY 4.2424）
+   ```
+
+   本地修复后逐只对齐：`SH513600` 官方 2.552 / 参考 2.526、`SH513000`
+   官方 2.113 / 参考 2.098 —— 差 0.001 来自 est 取的是 11-02 收盘价
+   （23409.06）而生产端抓的是当时的实时价。
+
+   LOF 仍保留"日期一致就隐藏"：`SZ161124` 本地空、生产端有 0.793，
+   差别只在**中间价日期**（我们 HKCNY 最新仍是 11-02，生产端已有 11-03），
+   等凌晨 `forexcli` 跑过就一致。
+
+7. **港日两族的实时 EST 仍为空**（本次未做）：`FundReference.get_realtime_ref()`
+   要中间层引用带 `get_pair_ref()`，而 `fundpair` 表里**没有**指数 → 期货的行。
+   美元那两只有（`^NDX → hf_NQ`、`^GSPC → hf_ES`），港日缺三样：
+
+   - `stock` 表缺 `hf_HSI` / `hf_HSTECH` / `hf_HSCEI`（`hf_NK` 有，id 16，
+     但 `znb_NKY → hf_NK` 这一行也没建）；
+   - `fundpair` 表缺 `^HSI/^HSTECH/^HSCE`、`znb_NKY` 这几行；
+   - daemon 的期货快照与 `futurescalib` 还没接管这些符号。
+
+   生产端 `sh513600cn.php` 的实时 EST 2.529 就是 `hf_HSI` 期货推出来的，
+   补齐上面三样才会出现在我们页面上。
