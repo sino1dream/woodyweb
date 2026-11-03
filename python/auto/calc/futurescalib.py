@@ -636,6 +636,11 @@ FALLBACK_FUTURES = {
     "^GSPC": "hf_ES",
     "^HSI": "hf_HSI",
     "znb_NKY": "hf_NK",
+    # 黄金走的是**两级**链路：基金 → 美股 ETF → 期货。
+    # 键是 ETF 而不是指数（``GLD`` 既是 ``fundestmap`` 里的 est，也是
+    # ``futurespair`` 里的"指数"角色），所以 ``cal`` 是 GC/GLD 的**单位换算**
+    # （≈10.94，黄金按美元/盎司、GLD 按 1/10 盎司份额），不是常见的 ≈1.0。
+    "GLD": "hf_GC",
 }
 
 #: 指数 → 中间层 ETF 的兜底映射（反推指数点位用）。

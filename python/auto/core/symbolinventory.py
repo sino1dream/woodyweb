@@ -59,7 +59,9 @@ FOREX_SYMBOLS = ("USCNY", "HKCNY", "EUCNY", "JPCNY")
 #: 外盘期货（实时 EST 的数据源，``source/futuresquotes.py`` 用裸 ``hf_`` 符号）。
 #: ``hf_HSI`` 是恒生指数期货（2026-11-03 补）；恒生科技 / 国企指数没有对应
 #: 的期货合约可取（新浪返回空串），所以它们没有实时 EST。
-FUTURES_SYMBOLS = ("hf_NQ", "hf_ES", "hf_CL", "hf_NK", "hf_HSI")
+#: ``hf_GC`` 是纽约黄金（2026-11-03 补），配对在 ``GLD`` 上（两级链路：
+#: 黄金基金 → GLD → hf_GC），不是配在指数上。
+FUTURES_SYMBOLS = ("hf_NQ", "hf_ES", "hf_CL", "hf_NK", "hf_HSI", "hf_GC")
 
 #: 即期外汇（参考数据表用，``refobj.QDII_REGIONS`` 引用）。
 SPOT_FOREX_SYMBOLS = ("fx_susdcny", "fx_shkdcny", "fx_sjpycny", "fx_seurcny")

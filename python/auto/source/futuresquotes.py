@@ -288,4 +288,5 @@ FUTURES_NAMES = {
     "hf_CL": "纽约原油（WTI）",
     "hf_NK": "日经225指数期货",
     "hf_HSI": "恒生指数期货",
+    "hf_GC": "纽约黄金（COMEX）",
 }
