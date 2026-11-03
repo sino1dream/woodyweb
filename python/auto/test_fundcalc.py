@@ -3,6 +3,7 @@ import unittest
 from calc.fundcalc import (
     QDII_HK_EST_EXCLUDED,
     PalmmicroFundCalculator,
+    extra_est_symbols,
     fund_adjust_position,
     fund_reverse_adjust_position,
     qdii_est_cny_symbol,
@@ -14,6 +15,7 @@ from calc.fundcalc import (
     qdii_get_peer_value,
     qdii_get_value,
     qdii_hk_est_symbol,
+    set_extra_est_symbols,
 )
 
 
@@ -223,6 +225,68 @@ class RegionalEstTest(unittest.TestCase):
 
     def test_unknown_symbol_has_no_est(self):
         self.assertIsNone(qdii_fund_est_symbol("SH999999"))
+
+
+class ExtraEstSymbolTest(unittest.TestCase):
+    """库里的 ``fundestmap`` 覆盖层（2026-11-03 加）。
+
+    背景：est 映射一直是硬编码的（照抄 PHP ``QdiiGetEstArray()`` 一族），
+    代码里没配的基金「跟踪代码」为空、官方 EST 整组为空 —— 而这类配置
+    本质是数据，不该每次改都要发版。覆盖层因此放在库里，优先级高于硬编码。
+    """
+
+    def setUp(self):
+        # 全量替换语义：每个用例都从"没有覆盖"开始
+        set_extra_est_symbols(None)
+
+    def tearDown(self):
+        set_extra_est_symbols(None)
+
+    def test_override_fills_a_gap(self):
+        """硬编码表里没有的基金，靠覆盖层补上。"""
+        self.assertIsNone(qdii_est_symbol("SZ160719"))
+        set_extra_est_symbols({"SZ160719": "GLD"})
+        self.assertEqual(qdii_est_symbol("SZ160719"), "GLD")
+        self.assertEqual(qdii_fund_est_symbol("SZ160719"), "GLD")
+
+    def test_override_can_replace_a_hard_coded_value(self):
+        """已有映射也能覆盖 —— 但明确是"覆盖"，不是"仅补充"。"""
+        self.assertEqual(qdii_est_symbol("SZ161125"), "^GSPC")
+        set_extra_est_symbols({"SZ161125": "SPY"})
+        self.assertEqual(qdii_est_symbol("SZ161125"), "SPY")
+
+    def test_clearing_falls_back_to_hard_coded(self):
+        set_extra_est_symbols({"SZ160719": "GLD"})
+        set_extra_est_symbols(None)
+        self.assertIsNone(qdii_est_symbol("SZ160719"))
+        self.assertEqual(qdii_est_symbol("SZ161125"), "^GSPC")
+
+    def test_injection_is_total_not_incremental(self):
+        """第二次注入必须**清掉**上一次 —— 否则长驻进程会留下上个库的配置。"""
+        set_extra_est_symbols({"SZ160719": "GLD", "SZ161116": "GLD"})
+        set_extra_est_symbols({"SZ164701": "GLD"})
+        self.assertIsNone(qdii_est_symbol("SZ160719"))
+        self.assertEqual(qdii_est_symbol("SZ164701"), "GLD")
+
+    def test_combined_map_includes_overrides(self):
+        """自动校准名单（``qdii_fund_est_symbol_map``）要能看到新增基金。"""
+        set_extra_est_symbols({"SZ160719": "GLD"})
+        self.assertEqual(qdii_fund_est_symbol_map().get("SZ160719"), "GLD")
+
+    def test_us_table_stays_a_mirror_of_php(self):
+        """``qdii_est_symbol_map()`` 是 ``QdiiGetEstArray()`` 的镜像，**不含**覆盖。
+
+        它被 ``qdii_symbols_for_est()`` 等按 est 反查基金的地方用到；掺进
+        库里的配置会让"这张表到底对应 PHP 哪一段"变得说不清。要全表请用
+        :func:`qdii_fund_est_symbol_map`。
+        """
+        set_extra_est_symbols({"SZ160719": "GLD"})
+        self.assertNotIn("SZ160719", qdii_est_symbol_map())
+
+    def test_blank_values_are_ignored(self):
+        """空符号 / 空标的直接丢弃，不写进映射（脏数据不该让页面显示空格子以外的错）。"""
+        set_extra_est_symbols({"SZ160719": "  ", "": "GLD", "  ": "GLD"})
+        self.assertEqual(extra_est_symbols(), {})
 
 
 if __name__ == "__main__":

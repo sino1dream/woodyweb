@@ -12,6 +12,7 @@ from calc.fundcalc import (
     qdii_eu_est_symbol,
     qdii_qqq_symbols,
     qdii_spy_symbols,
+    set_extra_est_symbols,
 )
 from core.stocksymbol import (
     StockSymbol,
@@ -510,6 +511,29 @@ class MySqlFundDataSource:
         # 校验工具负责打印。放在这里而不是抛异常：估值仍应给出结果，
         # 但使用者要能知道"这个结果用的汇率其实来自很久以前"。
         self.rate_warnings: list = []
+        # 库里覆盖的 est 映射（fundestmap 表）在这里注入 ``calc.fundcalc``。
+        # 放构造里是因为它是**唯一**同时覆盖 web 请求（每请求 new 一个 source）
+        # 与全部 CLI / daemon 进程的点 —— 放到某个调用方里，另一个调用方就会
+        # 静默用回硬编码表（2026-11-03 加，起因：跟踪代码/官方 EST 整组为空）。
+        self._load_extra_est_symbols()
+
+    def _load_extra_est_symbols(self) -> None:
+        """把 ``fundestmap`` 表的「基金 → 跟踪标的」注入到 ``calc.fundcalc``。
+
+        表不存在时**静默跳过**（老库、演示库、测试替身都可能没有这张表）：
+        这一层是补充配置，不该让整张页面因为一张可选表而 500。
+
+        只放 ``stock`` 表里存在的符号（``JOIN stock``）—— 写成符号文本是为了
+        允许"先配后补数据"，但读回来时能 join 上的才说明标的真的入库了。
+        """
+        try:
+            rows = self._fetchall(
+                "SELECT s.symbol AS symbol, m.est_symbol AS est_symbol "
+                "FROM fundestmap m JOIN stock s ON s.id = m.id"
+            )
+        except Exception:
+            rows = []
+        set_extra_est_symbols({row["symbol"]: row["est_symbol"] for row in rows})
 
     @classmethod
     def from_env(cls) -> "MySqlFundDataSource":

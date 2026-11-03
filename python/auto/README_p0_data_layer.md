@@ -1196,3 +1196,46 @@ fundestcli 时官方中间价最新只到 X 日（SAFE 当日 09:20 公布），
    快照。等 11-04 开盘自然通。**判断方法**：`futurescli` 的
    `_misalign_reason` 会打印「日期不等（期货 2026-11-03 vs 指数 2026-11-02）」。
 
+10. **「跟踪代码」列的来源与空缺（2026-11-03）**。列值在
+    `web/services/fund_list_service.py:447`：
+    `profile.est_symbol or profile.pair_symbol`，两级兜底 ——
+
+    * **est 符号**：`core/stockdata.py::_get_est_symbol()` 依次查
+      `qdii_est_symbol()` / `qdii_hk_est_symbol()` / `qdii_jp_est_symbol()` /
+      `qdii_eu_est_symbol()`，全是 `calc/fundcalc.py:71-118` 里**硬编码**的
+      字典与 if 分支（照抄 PHP `qdiiref.php:19-77` 的 `QdiiGetEstArray()` 一族）；
+    * **pair 符号**：`fundpair` 表（本地 78 行）的配对标的。
+
+    `est` 为空不只是"少一格显示"：`_QdiiReference` 不 `SetEstRef()` →
+    `GetOfficialNetValue()` 拿不到 → **官方EST / EST日期 / 溢价整组为空**。
+    `/fund/qdiilof` 26 只里 12 只有值，正好等于上述两张表的覆盖集合。
+
+    14 只空的分四类，**多数不是漏配**：
+
+    | 类别 | 基金 | 缺什么 |
+    |---|---|---|
+    | 有单只对标、代码没配 | 三只黄金（`SZ160719`/`SZ161116`/`SZ164701` → GLD） | 已由 `fundestmap` 补上 |
+    | 走**持仓加权** | `SZ163208`（油气FOF）、`SZ160644`（港美互联网） | `holdings` 数据 + `HoldingsReference` |
+    | 对标存在但库/源都没有 | `SH501225`（SOXX/SMH）、`SZ164824`（INDA）、`SH501312` | 标的符号要入库并回填历史 |
+    | 没有 ETF 对标 | 原油 4 只 + 商品 3 只 | 跟踪原油期货 / 一篮子商品 |
+
+    **别硬配前两类**：`SZ163208` 按 `USO` 算差 3.1%、按 `XOP` 差 0.6%，
+    都没对上生产端的 1.482，说明它走的是 `HoldingsReference`；
+    `SZ160644` 生产端「参考数据」只列汇率、没有任何标的，官方 EST 1.558
+    同样来自持仓加权 —— 配 `KWEB` 会算出 1.609（差 3.3%），把生产端
+    -0.9% 的溢价显示成 -4.1%，明显误导。实测数字见
+    `dbtools/patch_fund_est_map.py` 的 `EXCLUDED`。
+
+    **库里覆盖层 `fundestmap`**（`id` = 基金 stock.id，`est_symbol` 文本）：
+    优先级 **表 > 硬编码**，删行即回退。注入点只有一个 ——
+    `MySqlFundDataSource.__init__` 调 `calc.fundcalc.set_extra_est_symbols()`，
+    因为它是 web 每请求与全部 CLI/daemon 都必经的地方；放别处必有调用方
+    静默用回硬编码。`qdii_est_symbol_map()` **不含**覆盖（它是
+    `QdiiGetEstArray()` 的镜像），全表用 `qdii_fund_est_symbol_map()`。
+
+    验收（2026-11-03，生产端 `sz160719cn.php` / `sz161116cn.php` /
+    `sz164701cn.php`）：官方 EST 本地 1.742 / 1.446 / 1.514，
+    生产端 1.743 / 1.447 / 1.514 —— 差 0.001 来自 est 取 11-02 收盘
+    361.65，生产端抓的是当时实时价。
+
+

@@ -230,6 +230,30 @@ CREATE TABLE IF NOT EXISTS `fundpair` (
 ) ENGINE=MyISAM DEFAULT CHARSET=utf8 COLLATE=utf8_unicode_ci;
 
 -- ---------------------------------------------------------------------------
+-- 基金 -> 跟踪标的（est 符号）的**库里覆盖表**，2026-11-03 加
+--
+-- 为什么需要它：est 映射一直是**硬编码**的（``calc/fundcalc.py`` 的
+-- ``qdii_est_symbol_map()`` 等，逐行照抄 PHP ``qdiiref.php:19-77``）。
+-- 代码里的表只有作者当初配过的那批，页面「跟踪代码」列因此对
+-- 另一些基金永远是空的 —— 而且 est 为空不只是少一格显示：
+-- 估值链在 ``_get_est_symbol()`` 就断了，官方EST / EST日期 / 溢价
+-- 整组全空，页面上看像"没数据"，其实是没映射。
+--
+-- 优先级：**本表 > 代码里的硬编码表**（删行即回退到硬编码）。
+-- 表里只放"代码没有、需要补"的那些；已有映射想覆盖也允许，
+-- 但改之前先确认新旧值是否同一口径（指数 vs ETF 差几十倍）。
+--
+-- ``est_symbol`` 存**符号文本**而不是 stock.id：允许先配后补数据
+-- （标的还没入库时不至于写不进去），代价是可能写进拼错的符号 ——
+-- 写入方必须做存在性体检，跑批时也要能一眼看出哪个符号在 stock 表里不存在。
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `fundestmap` (
+  `id` int(10) unsigned NOT NULL COMMENT '基金在 stock 表的 id',
+  `est_symbol` varchar(16) NOT NULL COMMENT '跟踪标的符号，如 GLD / KWEB / ^NDX',
+  PRIMARY KEY (`id`)
+) ENGINE=MyISAM DEFAULT CHARSET=utf8 COLLATE=utf8_unicode_ci;
+
+-- ---------------------------------------------------------------------------
 -- 期货与指数的配对（实时 EST 用）
 --
 -- 对应 PHP ``FundPairReference`` 里那个 ``realtime_callback`` + 它的自动校准：

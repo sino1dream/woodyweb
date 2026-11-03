@@ -32,6 +32,40 @@ QDII_HK_HANGSENG_SYMBOLS = tuple(qdii_hk_get_hang_seng_symbol_array())
 QDII_JP_NKY_SYMBOLS = tuple(qdii_jp_get_nky_symbol_array())
 QDII_EU_DAX_SYMBOLS = tuple(qdii_eu_get_dax_symbol_array())
 
+#: 「库里覆盖」的基金 → est 映射，由数据源从 ``fundestmap`` 表读来注入。
+#:
+#: 为什么需要这一层：est 表一直是**硬编码**的（照抄 PHP ``qdiiref.php:19-77``），
+#: 页面上「跟踪代码」为空、官方 EST 整组为空的那批基金，根因就是"代码里没有
+#: 它们的映射"。改代码加映射要发版、要重跑测试，而这些配置本质是**数据**。
+#:
+#: 优先级：**本表 > 硬编码**。空掉即回退到硬编码（:func:`set_extra_est_symbols`
+#: 传 ``None`` 就清空）。
+_EXTRA_EST_SYMBOLS: dict[str, str] = {}
+
+
+def set_extra_est_symbols(mapping: dict[str, str] | None = None) -> None:
+    """注入（或清空）库里的 est 覆盖映射。
+
+    **幂等且全量替换**：每次都先清空再写入 —— 累加会让上一个连接/上一个库
+    的配置残留在进程里，长驻进程（web、daemon）尤其致命。
+
+    由 :meth:`core.stockdata.MySqlFundDataSource.__init__` 在构造时调用，
+    所以 web 每个请求、每个 CLI 进程都会拿到当前库的最新配置。测试里不想
+    受库影响就传 ``None`` 清空。
+    """
+    _EXTRA_EST_SYMBOLS.clear()
+    if mapping:
+        for symbol, est in mapping.items():
+            symbol = str(symbol or "").strip()
+            est = str(est or "").strip()
+            if symbol and est:
+                _EXTRA_EST_SYMBOLS[symbol] = est
+
+
+def extra_est_symbols() -> dict[str, str]:
+    """当前生效的库覆盖映射（只读副本，供体检/文档用）。"""
+    return dict(_EXTRA_EST_SYMBOLS)
+
 
 def fund_adjust_position(ratio: float, value: float, old_value: float) -> float:
     """Python port of PHP FundAdjustPosition."""
@@ -89,6 +123,10 @@ def qdii_est_symbol_map() -> dict[str, str]:
 
 
 def qdii_est_symbol(symbol: str) -> str | None:
+    # 库里覆盖（``fundestmap`` 表）优先于硬编码 —— 见 :func:`set_extra_est_symbols`。
+    extra = _EXTRA_EST_SYMBOLS.get(symbol)
+    if extra:
+        return extra
     return qdii_est_symbol_map().get(symbol)
 
 
@@ -202,6 +240,9 @@ def qdii_fund_est_symbol_map() -> dict[str, str]:
         est = qdii_fund_est_symbol(symbol)
         if est:
             mapping[symbol] = est
+    # 库里的覆盖放最后 —— 上面那几族数组是硬编码的，新增基金（LOF 里的黄金 /
+    # 油气 / 互联网等）根本不在数组里，只能靠这张表补进来。
+    mapping.update(_EXTRA_EST_SYMBOLS)
     return mapping
 
 
