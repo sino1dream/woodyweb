@@ -47,6 +47,8 @@ from core.stockgroupsql import (  # noqa: E402
     sql_update_stock_group,
 )
 from web.db import get_db  # noqa: E402
+from web.services import admin_console  # noqa: E402
+from web.services.admin_auth import is_admin  # noqa: E402
 
 admin_bp = Blueprint("admin", __name__, url_prefix="/admin")
 
@@ -84,18 +86,43 @@ def _group_rows(source: MySqlFundDataSource) -> list:
     return rows
 
 
-@admin_bp.route("")
 @admin_bp.route("/")
+@admin_bp.route("")
 def admin_index():
-    """``/admin`` 与 ``/admin/`` 直接跳到分组列表。
+    """后台控制台（``/admin`` 首页）。
 
     PHP 没有"/admin"这个入口（后台是 ``editstockgroupcn.php`` 一张页面），
-    本地把 ``/admin/groups`` 当入口用。但页头导航的「后台」和页脚的
-    「后台管理」都指这里，人手敲 ``/admin`` 才是最自然的猜法 ——
-    给它 404 不合理，跳过去就完了（2026-10-26 加，起因是用户实测
-    ``http://127.0.0.1:5000/admin`` 报 Not Found）。
+    本地用它当后台总入口 —— 页头导航的「后台」指这里。
+
+    收的是**生产端未展示**的三类东西：只能手敲 URL 的（16 项 ``edit*.php``
+    等）、生产端根本没有的（符号管理 / 索引页 / 登出 / 状态页）、生产端有而
+    本地未迁的。清单与理由在 ``web/services/admin_console.py``。
+
+    2026-11-04 之前这里是 302 跳 ``/admin/groups``；换成控制台是因为分组只是
+    后台能力的一小块，而"生产端只能手敲 URL"那 20 个页面**没有别的地方能
+    发现它们**（详见 ``auto/README_pending_pages.md``）。
+
+    这一页**不判权限**：数字拿不到就整块不渲染，绝不因为一条 ``COUNT(*)``
+    失败而让后台首页打不开 —— 出问题时恰恰最需要它能打开。
     """
-    return redirect(url_for("admin.groups"))
+    default_symbol = (request.args.get("symbol") or "").strip() or "QQQ"
+    source = _source()
+    cards = admin_console.quick_links(url_for)
+    counts = admin_console.entry_counts(
+        symbols=_count_or_none(source, "stock"),
+        groups=_count_or_none(source, "stockgroup", "member_id = %s",
+                              (DEMO_MEMBER_ID,)),
+    )
+    for card in cards:
+        card["count"] = counts.get(card["count_key"], "")
+    return render_template(
+        "admin_console.html",
+        cards=cards,
+        sections=admin_console.build_sections(url_for, is_admin=is_admin()),
+        default_symbol=default_symbol,
+        index_href=url_for("stock.stock_option_index", symbol=default_symbol),
+        is_admin=is_admin(),
+    )
 
 
 @admin_bp.route("/groups")
@@ -464,6 +491,35 @@ def _symbol_name(source: MySqlFundDataSource, stock_id) -> str:
 # ---------------------------------------------------------------------------
 # 内部助手
 # ---------------------------------------------------------------------------
+
+def _count_or_none(source: MySqlFundDataSource, table: str,
+                   where: str = "", params: tuple = ()):
+    """``SELECT COUNT(*)``；出任何错都返回 ``None``。
+
+    控制台首页三张卡右下角那个数字。**故意吞异常**：这些数字是装饰，
+    而"后台打不开"这种事偏偏最容易在库出问题时发生 —— 那时候更需要能点进去。
+    模板对 ``None`` 的处理是整块不渲染。
+    """
+    cursor = None
+    try:
+        cursor = source.connection.cursor()
+        sql = "SELECT COUNT(*) AS n FROM `%s`" % table
+        if where:
+            sql += " WHERE " + where
+        cursor.execute(sql, params)
+        row = cursor.fetchone()
+        return int(row["n"]) if row else None
+    except Exception:
+        # 表不存在 / 连接断了 / 权限不足 —— 都不该让控制台挂掉
+        try:
+            source.connection.rollback()
+        except Exception:
+            pass
+        return None
+    finally:
+        if cursor is not None:
+            _close(cursor)
+
 
 def _all_symbols(source: MySqlFundDataSource) -> list:
     """``GetAllSymbolArray()`` 的替身：库里全部符号。

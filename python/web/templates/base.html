@@ -27,9 +27,11 @@
       <a href="{{ url_for('group.group_page') }}">分组</a>
       {# 交易管理页（_mystocktransaction.php）—— 分组交易明细，演示数据 #}
       <a href="{{ url_for('transactions.transactions_page') }}">交易</a>
-      {# 后台管理（PHP 的 editstockgroupcn/submitgroup）—— 分组增删改查，
-         登录态未接（账号体系暂缓），页面内有常驻说明 #}
-      <a href="{{ url_for('admin.groups') }}">后台</a>
+      {# 后台控制台（/admin）：符号管理 / 分组管理 / 抓取工具三张入口卡，
+         外加一张「生产端未展示」的台账。PHP 那边后台只有 editstockgroupcn
+         一张表单，而 16 项 edit*.php 之类根本不进导航 —— 这一页就是那个
+         缺掉的入口。 #}
+      <a href="{{ url_for('admin.admin_index') }}">后台</a>
       <a href="{{ url_for('status.status_page') }}">状态</a>
       {# 账号入口（account/ 目录那一族）。PHP 的导航栏没有这一条 ——
          ``AccountMenu()`` 只挂在 account 页自己的 layout 上，其它页面靠

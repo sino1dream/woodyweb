@@ -709,3 +709,273 @@ h2 {
 .account-profile p {
   line-height: 1.9;
 }
+
+/* ---- 后台控制台（admin_console.html）------------------------------------
+   一张"生产端未展示"的台账 + 一套入口。三块视觉：
+
+   1. 顶部三张入口卡（符号 / 分组 / 抓取）—— 每张卡一个主色左边框，
+      整卡可点，右下角带一行现状数字；
+   2. 16 项 edit*.php 用 chip 网格而不是表格 —— 它们都是"给某只标的
+      打开一个表单"，一屏能扫完比逐行读表格快；
+   3. 其它三块用表格 —— 需要看说明，chip 装不下。
+
+   配色沿用站点主色 #049acc；警示只用一条左边框，不做整块红底。 */
+.console-lead {
+  margin: 4px 0 0;
+  color: #444;
+  line-height: 1.8;
+}
+
+/* 顶部那句身份提示。管理员是常态（淡绿），非管理员要显眼（淡黄）——
+   否则点进去被 403 会以为是 bug。 */
+.console-identity {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 1px 8px;
+  border-radius: 9px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.console-identity-ok {
+  color: #0a6b3d;
+  background: #e8f6ee;
+}
+
+.console-identity-warn {
+  color: #8a5a00;
+  background: #fff4e0;
+}
+
+.console-cards {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+  margin: 18px 0 4px;
+}
+
+.console-card {
+  display: flex;
+  flex-direction: column;
+  padding: 14px 16px;
+  background: #fff;
+  border: 1px solid #dde3e8;
+  border-left: 3px solid #049acc;
+  border-radius: 4px;
+  color: inherit;
+  text-decoration: none;
+}
+
+.console-card:hover {
+  background: #f7fbfd;
+  border-color: #049acc;
+  border-left-color: #036;
+}
+
+.console-card-title {
+  color: #036;
+  font-size: 16px;
+  font-weight: bold;
+}
+
+.console-card-lead {
+  margin-top: 4px;
+}
+
+.console-card-detail {
+  margin-top: 6px;
+  color: #777;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.console-card-count {
+  margin-top: 10px;
+  color: #049acc;
+  font-size: 12px;
+  font-weight: bold;
+}
+
+.console-section {
+  margin-top: 30px;
+}
+
+.console-section h2 {
+  margin: 0;
+  padding-bottom: 6px;
+  border-bottom: 2px solid #dde3e8;
+  font-size: 18px;
+}
+
+/* 未迁那一段换暖色分隔线：这几条是"已知缺口"，与上面两段"能用"的
+   性质不同，不该长得一样。 */
+.console-section-missing h2 {
+  border-bottom-color: #e6c9a8;
+}
+
+/* 标题右边的条目数。做成灰底小圆角，别抢标题。 */
+.console-count {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 7px;
+  border-radius: 9px;
+  background: #eef1f4;
+  color: #666;
+  font-size: 12px;
+  font-weight: normal;
+  vertical-align: 2px;
+}
+
+.console-note {
+  margin: 8px 0 12px;
+  color: #666;
+  font-size: 13px;
+  line-height: 1.75;
+}
+
+/* 符号输入框：16 个 chip 共用一次输入。整条做成一条"工具条"，
+   回链推到最右边，避免和 hint 挤在一起。 */
+.symbol-picker {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0 0 12px;
+  padding: 10px 14px;
+  background: #fff;
+  border: 1px solid #dde3e8;
+  border-radius: 4px;
+  font-size: 13px;
+}
+
+.symbol-picker label {
+  font-weight: bold;
+}
+
+.symbol-picker input {
+  padding: 3px 6px;
+  border: 1px solid #bbb;
+  border-radius: 3px;
+  font-family: inherit;
+  font-size: 13px;
+}
+
+.symbol-picker-fallback {
+  margin-left: auto;
+  white-space: nowrap;
+}
+
+.option-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 8px;
+}
+
+.option-chip {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  padding: 8px 10px;
+  background: #fff;
+  border: 1px solid #dde3e8;
+  border-radius: 4px;
+  color: #222;
+  text-decoration: none;
+}
+
+.option-chip:hover {
+  background: #f7fbfd;
+  border-color: #049acc;
+}
+
+.option-chip-title {
+  color: #036;
+  font-weight: bold;
+}
+
+.option-chip-php {
+  margin-top: 3px;
+  color: #999;
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 11px;
+  word-break: break-all;
+}
+
+/* 符号框清空时禁掉整组 chip：与其点进 /stock//edit 看 404，
+   不如明确表示"先填符号"。 */
+.option-chip.is-disabled {
+  opacity: 0.45;
+  pointer-events: none;
+}
+
+.access-badge {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 9px;
+  font-size: 11px;
+  font-weight: normal;
+  white-space: nowrap;
+}
+
+.option-chip .access-badge {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+}
+
+.access-admin {
+  color: #555;
+  background: #eef1f4;
+}
+
+.access-member {
+  color: #8a5a00;
+  background: #fff4e0;
+}
+
+.access-open {
+  color: #0a6b3d;
+  background: #e9f7f0;
+}
+
+/* 说明列是长句，行距放宽；PHP 文件名允许断词（submitdividend.php /
+   submitnetvalue.php 挤在一格里会溢出）。 */
+.console-table td:last-child {
+  color: #444;
+  line-height: 1.75;
+}
+
+.console-php {
+  color: #555;
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.verdict {
+  font-weight: bold;
+  white-space: nowrap;
+}
+
+.verdict-gap {
+  color: #b5651d;
+}
+
+.verdict-keep {
+  color: #777;
+}
+
+/* 窄屏：三张卡竖排，chip 退到单列。后台页在手机上用得少，但不能横向
+   溢出 —— 溢出比竖排更难受。 */
+@media (max-width: 760px) {
+  .console-cards {
+    grid-template-columns: 1fr;
+  }
+
+  .option-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .symbol-picker-fallback {
+    margin-left: 0;
+  }
+}

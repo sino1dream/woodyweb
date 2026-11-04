@@ -5,6 +5,9 @@
      StockGetReference 顺手入库，「删除」在 deletesymbol.php、改名在
      editstock.php，三个入口互不相通。本地把三件事收到一起。 #}
   <h1>后台 · 符号管理</h1>
+  <p class="table-note">
+    <a href="{{ url_for('admin.admin_index') }}">← 后台控制台</a>
+  </p>
   <p class="hint">
     <strong>演示环境说明</strong>：写操作立即生效，改数据前请自行备份
     （<code>python/dbtools/backup_db.py</code>）。

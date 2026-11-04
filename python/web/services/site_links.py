@@ -46,7 +46,10 @@ PHP 那串链接里，**工具页那一段**（``lof.php`` / ``overnight.php`` /
 1. **个人分组的 ``_getPersonalLinks()``** 需要登录态 + ``stockgroup`` 表，
    账号体系暂缓 —— 本地只给 ``/group`` 与 ``/portfolio`` 两个演示页；
 2. **管理员那段 debug 链接**（``stockpage('debug')`` / ``GetDebugFileLink()`` /
-   ``php/test.php``）本地没有对应页面，只保留 ``/admin/groups``；
+   ``php/test.php``）本地没有对应页面，只保留 ``/admin/groups``。
+   **刻意不改成 ``/admin``（控制台）**：页头导航的「后台」已经指控制台了，
+   页脚这条指分组页既保留了"管理员身份才看得到"的判据（``tests/test_site_links.py``
+   靠 ``href="/admin/groups"`` 与页头区分），也仍然是一个有效落点；
 3. **``GetStockCategoryLinks($strSymbol)`` 的十个行业分类**（biotech /
    commodity / qqqfund …）本地换成了分类页注册表（``/category/<name>``，
    2026-10-30 起 19 个页面全在本地），语义仍是"这一类还有哪些同类页"。

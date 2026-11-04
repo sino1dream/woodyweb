@@ -341,16 +341,17 @@ class AdminRouteTest(unittest.TestCase):
         self.client = self.app.test_client()
 
     # -- 列表 ---------------------------------------------------------------
-    def test_bare_admin_redirects_to_groups(self):
-        """``/admin`` 与 ``/admin/`` 都跳到分组列表，不是 404。
+    def test_bare_admin_renders_console(self):
+        """``/admin`` 与 ``/admin/`` 是后台控制台，不是 404、也不再 302。
 
-        页头导航的「后台」/页脚的「后台管理」都指进来，人手敲 ``/admin``
-        是最自然的猜法（2026-10-26 用户实测踩到 404）。
+        2026-11-04 之前这里是 302 跳 ``/admin/groups``。换成控制台是因为
+        分组只是后台能力的一小块，而「生产端只能手敲 URL」那 20 个页面
+        没有别的地方能发现它们（见 ``tests/test_admin_console.py``）。
         """
         for path in ("/admin", "/admin/"):
             response = self.client.get(path)
-            self.assertEqual(302, response.status_code, path)
-            self.assertTrue(response.headers["Location"].endswith("/admin/groups"), path)
+            self.assertEqual(200, response.status_code, path)
+            self.assertIn("后台 · 控制台", response.get_data(as_text=True), path)
 
     def test_groups_list(self):
         response = self.client.get("/admin/groups")

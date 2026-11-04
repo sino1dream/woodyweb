@@ -1,0 +1,145 @@
+{% extends "base.html" %}
+{% block title %}后台 · 控制台 - 基金估值{% endblock %}
+{% block content %}
+  {# 后台总入口。收的是「生产端未展示」的三类东西：
+       ① PHP 有页面但不进任何导航（16 项 edit*.php 等，只能手敲 URL）；
+       ② 生产端根本没有的（符号管理、索引页、登出、状态页 …）；
+       ③ 生产端有、本地未迁的（uploadfile / debugcn），明确记账。
+     清单数据在 web/services/admin_console.py，这里只管排布。 #}
+  <h1>后台 · 控制台</h1>
+  <p class="console-lead">
+    这一页收的是<strong>生产端未展示</strong>的功能：PHP 有页面却不进任何导航的
+    （只能凭 URL 手敲）、生产端根本没有的（本版新增）、以及生产端有而本地还没迁的。
+    真正干活的是各目的页 —— 权限闸门都在那边
+    （<code>web/services/admin_auth.py</code>），这一页只负责让人找得到。
+    {% if is_admin %}
+      <span class="console-identity console-identity-ok">当前身份：管理员</span>
+    {% else %}
+      <span class="console-identity console-identity-warn">当前不是管理员 —— 写操作会被目的页拒绝</span>
+    {% endif %}
+  </p>
+
+  <div class="console-cards">
+    {% for card in cards %}
+      <a class="console-card" href="{{ card.href }}">
+        <span class="console-card-title">{{ card.title }}</span>
+        <span class="console-card-lead">{{ card.lead }}</span>
+        <span class="console-card-detail">{{ card.detail }}</span>
+        {% if card.count %}<span class="console-card-count">{{ card.count }}</span>{% endif %}
+      </a>
+    {% endfor %}
+  </div>
+
+  {% for section in sections %}
+    <section class="console-section console-section-{{ section.key }}">
+      <h2>
+        {{ section.title }}
+        <span class="console-count">{{ section.entries|length }}</span>
+      </h2>
+      <p class="console-note">{{ section.note }}</p>
+
+      {% if section.layout == 'grid' %}
+        {# 16 项 edit*.php 都要一只标的才有意义，所以共用一个输入框：
+           下面的 chip 全带 data-symbol-link，输入变了就集体改写 href。
+           没有 JS 时 chip 指向占位符（404），所以右边另给一个服务端生成的
+           显式索引链接兜底。 #}
+        <div class="symbol-picker">
+          <label for="symbol-input">符号</label>
+          <input id="symbol-input" name="symbol" type="text" size="12"
+                 value="{{ default_symbol }}" autocomplete="off" spellcheck="false">
+          <span class="hint">下面的链接都跟着它走（<code>nf_AU0</code> 这种带下划线的不改大小写）。</span>
+          <a class="symbol-picker-fallback" href="{{ index_href }}">打开可编辑项索引 →</a>
+        </div>
+
+        <div class="option-grid">
+          {% for entry in section.entries %}
+            <a class="option-chip" href="{{ entry.href }}"
+               data-symbol-link data-symbol-href="{{ entry.href }}"
+               title="{{ entry.note }}">
+              <span class="option-chip-title">{{ entry.title }}</span>
+              <span class="option-chip-php">{{ entry.php }}</span>
+              {% if entry.access != 'admin' %}
+                <span class="access-badge access-{{ entry.access }}">{{ entry.access_label }}</span>
+              {% endif %}
+            </a>
+          {% endfor %}
+        </div>
+      {% else %}
+        <table class="data-table console-table">
+          <thead>
+            <tr>
+              <th style="width: 170px;">功能</th>
+              <th style="width: 230px;">生产端页面</th>
+              {% if section.key == 'missing' %}
+                <th style="width: 70px;">结论</th>
+              {% else %}
+                <th style="width: 80px;">权限</th>
+              {% endif %}
+              <th>说明</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for entry in section.entries %}
+              <tr>
+                <td>
+                  {% if entry.href %}
+                    <a href="{{ entry.href }}"
+                       {% if entry.needs_symbol %}data-symbol-link data-symbol-href="{{ entry.href }}"{% endif %}>{{ entry.title }}</a>
+                  {% else %}
+                    <strong>{{ entry.title }}</strong>
+                  {% endif %}
+                </td>
+                <td><code class="console-php">{{ entry.php }}</code></td>
+                {% if section.key == 'missing' %}
+                  <td>
+                    <span class="verdict verdict-{{ 'keep' if entry.verdict == '不迁' else 'gap' }}">{{ entry.verdict }}</span>
+                  </td>
+                {% else %}
+                  <td><span class="access-badge access-{{ entry.access }}">{{ entry.access_label }}</span></td>
+                {% endif %}
+                <td>{{ entry.note }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      {% endif %}
+    </section>
+  {% endfor %}
+
+  <p class="table-note">
+    清单的权威版本是 <code>auto/README_pending_pages.md</code>；
+    本页的静态定义在 <code>web/services/admin_console.py</code>，
+    加新页面时改那一处即可（16 项 edit 直接从 <code>STOCK_OPTIONS</code> 生成，不会漏）。
+  </p>
+
+  <script>
+    // 16 项 edit 链接共用一个符号输入框。规则与后端 _normalize_symbol 一致：
+    // 没有下划线就大写（新浪的 nf_AU0 大小写敏感，大写后行情会失踪）。
+    (function () {
+      var input = document.getElementById('symbol-input');
+      if (!input) { return; }
+      var links = document.querySelectorAll('[data-symbol-link]');
+
+      function normalize(value) {
+        var text = (value || '').replace(/^\s+|\s+$/g, '');
+        if (!text) { return ''; }
+        return text.indexOf('_') < 0 ? text.toUpperCase() : text;
+      }
+
+      function sync() {
+        var symbol = normalize(input.value);
+        for (var i = 0; i < links.length; i++) {
+          var template = links[i].getAttribute('data-symbol-href');
+          var href = template.replace('__SYMBOL__', encodeURIComponent(symbol));
+          links[i].setAttribute('href', href);
+          // 空输入时不让人点进 /stock//edit 这种半截地址
+          links[i].classList.toggle('is-disabled', !symbol);
+        }
+      }
+
+      input.addEventListener('input', sync);
+      input.addEventListener('change', sync);
+      sync();   // 首屏把占位符换成默认符号
+    })();
+  </script>
+{% endblock %}

@@ -5,6 +5,9 @@
      段落），这里给后台一个入口；行数据来自 core.stockgroupsql 的
      StockGroupSql.get_all + sql_get_stocks_array。 #}
   <h1>后台 · 分组管理</h1>
+  <p class="table-note">
+    <a href="{{ url_for('admin.admin_index') }}">← 后台控制台</a>
+  </p>
   <p class="hint">
     <strong>演示环境说明</strong>：PHP 后台页挂在登录会员下（未登录时提交不执行），
     这里不接账号体系，所有分组归属于演示会员 <code>member_id={{ member_id }}</code>，
@@ -15,8 +18,6 @@
     共 {{ rows|length }} 个分组。
     <a href="{{ url_for('admin.group_new') }}">新建分组</a>
     · <a href="{{ url_for('admin.symbols') }}">符号管理</a>
-    {# 抓取工具页（三个 submit*.php 的合并入口）—— 分组页是 /admin 的入口，
-       把它挂在这里最容易被找到；反向链接在 submit_tools.html 里。 #}
     · <a href="{{ url_for('submit.index') }}">抓取工具</a>
   </p>
 
