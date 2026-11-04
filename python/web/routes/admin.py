@@ -33,6 +33,7 @@ from web.bootstrap import install_paths
 
 install_paths()
 
+import deletesymbol  # noqa: E402  ``auto/deletesymbol.py``：删标的口径全在那里
 from core.stockdata import MySqlFundDataSource  # noqa: E402
 from core.stockgroupsql import (  # noqa: E402
     DEMO_MEMBER_ID,
@@ -232,6 +233,232 @@ def group_delete(group_id: int):
     else:
         flash("分组 %d 不存在" % group_id)
     return redirect(url_for("admin.groups"))
+
+
+# ---------------------------------------------------------------------------
+# 符号管理（``stock`` 表增删改）
+#
+# 与分组管理并列的第二块后台能力。PHP 那边**没有**这个页面：符号是
+# ``/woody/res/editstock.php`` 的「修改」（改名）与 ``deletesymbol.php``
+# （删）两个散装入口，而"新增"只能靠访问某个页面时 ``StockGetReference``
+# 顺手入库（``stock.php`` 的副作用）。本地没有那个副作用，所以缺一个
+# 显式的增删入口 —— 这就是这一块存在的理由（2026-11-04，起因是
+# ``/category/chinafuture`` 六只基金全部显示「库里无此符号」）。
+# ---------------------------------------------------------------------------
+
+#: 列表页最多显示多少行。演示库 300 行上下，一页足够；真的变多时用 ``?q=`` 收窄。
+SYMBOL_LIST_LIMIT = 300
+
+#: 列表页要显示行数的表：``(别名, 表名, 匹配列, 显示名)``。
+#:
+#: 匹配列写 ``symbol`` 的表按**符号字符串**存（``realtimequote`` / ``estquote``），
+#: 其余按 ``stock.id`` 存。这与 ``auto/deletesymbol.py`` 的 ``ORPHAN_TABLES``
+#: 是同一份知识，但这里只需要"看得见的几张大表"，不照搬全套。
+SYMBOL_COUNT_TABLES = (
+    ("n_history", "stockhistory", "stock_id", "历史价格"),
+    ("n_netvalue", "netvaluehistory", "stock_id", "单位净值"),
+    ("n_calibration", "calibrationhistory", "stock_id", "校准记录"),
+    ("n_quote", "realtimequote", "symbol", "实时快照"),
+    ("n_est", "estquote", "symbol", "EST快照"),
+)
+
+
+def _count_subquery(alias: str, table: str, column: str) -> str:
+    """拼一个相关子查询：``(SELECT COUNT(*) FROM t WHERE t.col = s.<x>)``。
+
+    为什么用子查询而不是 ``LEFT JOIN + GROUP BY``：``realtimequote`` /
+    ``estquote`` 是按符号字符串关联的，混在同一个 ``JOIN`` 里既难读也容易
+    把行数算错（一符号一行，多表 join 不会重复，但改成按 ``stock_id``
+    关联时就会踩到）。子查询慢一点，后台页不在乎。
+    """
+    left = "s.symbol" if column == "symbol" else "s.id"
+    return "(SELECT COUNT(*) FROM `%s` t WHERE t.`%s` = %s)" % (table, column, left)
+
+
+def _symbol_rows(source: MySqlFundDataSource, query: str = "") -> list:
+    """列表页的行：符号、名称，以及四张主要表的行数。
+
+    ``query`` 非空时按符号 / 名称模糊匹配（``LIKE`` 两边都加 ``%``）。
+    """
+    columns = ", ".join(
+        "%s AS %s" % (_count_subquery(alias, table, column), alias)
+        for alias, table, column, _label in SYMBOL_COUNT_TABLES
+    )
+    sql = "SELECT s.id, s.symbol, s.name, %s FROM stock s" % columns
+    params: tuple = ()
+    if query:
+        sql += " WHERE s.symbol LIKE %s OR s.name LIKE %s"
+        params = ("%" + query + "%", "%" + query + "%")
+    sql += " ORDER BY s.symbol LIMIT %d" % SYMBOL_LIST_LIMIT
+
+    cursor = source.connection.cursor()
+    try:
+        cursor.execute(sql, params)
+        rows = [dict(row) for row in cursor.fetchall()]
+    finally:
+        _close(cursor)
+
+    labels = [(alias, label) for alias, _table, _column, label in SYMBOL_COUNT_TABLES]
+    for row in rows:
+        row["counts"] = [
+            {"label": label, "rows": int(row.get(alias) or 0)}
+            for alias, label in labels
+            if int(row.get(alias) or 0)
+        ]
+        row["total"] = sum(item["rows"] for item in row["counts"])
+    return rows
+
+
+def _close(cursor) -> None:
+    close = getattr(cursor, "close", None)
+    if close:
+        close()
+
+
+def _normalize_symbol(text: str) -> str:
+    """符号归一：去掉 ``_`` 之外的空白，没有下划线就大写（``StockGetSymbol()``）。
+
+    与 ``build_qdii_reference`` 里那段规范化同源。**``nf_AU0`` 必须原样保留大小写**
+    —— 新浪对 ``nf_au0`` 返回空串，而 ``stock`` 的排序规则不区分大小写，
+    查重查不出来，只有行情会静默失踪。
+    """
+    symbol = (text or "").strip()
+    if not symbol:
+        return ""
+    if "_" not in symbol:
+        symbol = symbol.upper()
+    return symbol
+
+
+@admin_bp.route("/symbols")
+def symbols():
+    """符号列表（``stock`` 表）。"""
+    source = _source()
+    query = (request.args.get("q") or "").strip()
+    return render_template(
+        "admin_symbols.html",
+        rows=_symbol_rows(source, query),
+        query=query,
+        limit=SYMBOL_LIST_LIMIT,
+    )
+
+
+@admin_bp.route("/symbol/new")
+def symbol_new():
+    """新增符号表单（符号 + 名称）。"""
+    return render_template(
+        "admin_symbol_form.html",
+        mode="new",
+        symbol=_normalize_symbol(request.args.get("symbol") or ""),
+        name=(request.args.get("name") or "").strip(),
+        detail=None,
+    )
+
+
+@admin_bp.route("/symbol/<symbol>")
+def symbol_detail(symbol: str):
+    """编辑表单 + **关联数据清单**（删之前先看清楚要连带删什么）。"""
+    source = _source()
+    plan = _symbol_plan(source, symbol)
+    if not plan["found"]:
+        flash("库里没有符号 %s" % plan["symbol"])
+        return redirect(url_for("admin.symbols"))
+    return render_template(
+        "admin_symbol_form.html",
+        mode="edit",
+        symbol=plan["symbol"],
+        name=_symbol_name(source, plan["stock_id"]),
+        detail=plan,
+    )
+
+
+@admin_bp.route("/symbol/submit", methods=["POST"])
+def symbol_submit():
+    """新增 / 改名提交。"""
+    source = _source()
+    mode = request.form.get("mode") or "new"
+    symbol = _normalize_symbol(request.form.get("symbol"))
+    name = (request.form.get("name") or "").strip()
+
+    if not symbol:
+        flash("符号不能为空")
+        return redirect(url_for("admin.symbols"))
+
+    if mode == "edit":
+        return _rename_symbol(source, symbol, name)
+    return _create_symbol(source, symbol, name)
+
+
+def _create_symbol(source: MySqlFundDataSource, symbol: str, name: str):
+    """插一行 ``stock``。**只写这张表** —— 行情 / 净值 / 校准值都不造。"""
+    if source.get_stock_id(symbol) is not None:
+        flash("符号 %s 已在库里" % symbol)
+        return redirect(url_for("admin.symbol_detail", symbol=symbol))
+    cursor = source.connection.cursor()
+    try:
+        cursor.execute("INSERT INTO stock (symbol, name) VALUES (%s, %s)",
+                       (symbol, name or symbol))
+        source.connection.commit()
+    except Exception as exc:  # 唯一键冲突、连接断了等等
+        try:
+            source.connection.rollback()
+        except Exception:
+            pass
+        flash("新增 %s 失败：%s: %s" % (symbol, type(exc).__name__, exc))
+        return redirect(url_for("admin.symbol_new", symbol=symbol, name=name))
+    finally:
+        _close(cursor)
+
+    flash("已新增符号 %s。行情 / 净值 / 校准值都还没有 —— "
+          "参考数据会显示「无行情快照」，估值表要等这些数据到货后才出现。" % symbol)
+    return redirect(url_for("admin.symbol_detail", symbol=symbol))
+
+
+def _rename_symbol(source: MySqlFundDataSource, symbol: str, name: str):
+    """改显示名。**不改符号本身** —— 符号是六张表的外键锚点，改了等于换了标的。"""
+    stock_id = source.get_stock_id(symbol)
+    if stock_id is None:
+        flash("库里没有符号 %s" % symbol)
+        return redirect(url_for("admin.symbols"))
+    if not name:
+        flash("名称不能为空（要清空就写符号本身）")
+        return redirect(url_for("admin.symbol_detail", symbol=symbol))
+
+    cursor = source.connection.cursor()
+    try:
+        cursor.execute("UPDATE stock SET name = %s WHERE id = %s", (name, stock_id))
+        source.connection.commit()
+    finally:
+        _close(cursor)
+    flash("已把 %s 的名称改为「%s」" % (symbol, name))
+    return redirect(url_for("admin.symbol_detail", symbol=symbol))
+
+
+@admin_bp.route("/symbol/<symbol>/delete", methods=["POST"])
+def symbol_delete(symbol: str):
+    """删符号。闸门与清表清单全部复用 ``auto.deletesymbol``。"""
+    source = _source()
+    include_orphans = bool(request.form.get("include_orphans"))
+    result = deletesymbol.apply(source.connection, symbol, include_orphans=include_orphans)
+    flash(deletesymbol.describe(result))
+    if result.get("blocked"):
+        return redirect(url_for("admin.symbol_detail", symbol=result["symbol"]))
+    return redirect(url_for("admin.symbols"))
+
+
+def _symbol_plan(source: MySqlFundDataSource, symbol: str) -> dict:
+    """``deletesymbol.plan()`` 的包装：把 ``connection`` 换成数据源里的那条。"""
+    return deletesymbol.plan(source.connection, symbol)
+
+
+def _symbol_name(source: MySqlFundDataSource, stock_id) -> str:
+    cursor = source.connection.cursor()
+    try:
+        cursor.execute("SELECT name FROM stock WHERE id = %s", (stock_id,))
+        row = cursor.fetchone()
+        return str(row["name"]) if row else ""
+    finally:
+        _close(cursor)
 
 
 # ---------------------------------------------------------------------------

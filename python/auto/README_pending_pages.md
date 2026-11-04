@@ -122,6 +122,7 @@ require('../../php/ui/_editcn.php');
 | 页面 | 干什么 | 状态 | 建议 |
 |---|---|---|---|
 | `deletesymbol.php` | 删标的（`php/deletestock.php`，先查五道闸门再连锁删） | **已迁** | `GET/POST /stock/<symbol>/delete`（先预览再执行），见 `README_deletesymbol_migration.md` |
+| ~~后台符号管理~~ | `stock` 表的增 / 删 / 改名 | **本地新增（PHP 没有这一页）** | `GET /admin/symbols`、`/admin/symbol/new`、`/admin/symbol/<symbol>`（关联数据 + 删除确认）、`POST /admin/symbol/submit`、`POST /admin/symbol/<symbol>/delete`。PHP 那边三件事是散的：改名在 `editstock.php`、删除在 `deletesymbol.php`、「新增」只是访问页面时 `StockGetReference` 的副作用。删除口径全部复用 `auto/deletesymbol.py`（闸门 + 6 张主表 + 可选残留表）。起因：`/category/chinafuture` 六只基金全显示「库里无此符号」，而本地没有那个"顺手入库"的副作用，缺一个显式入口 |
 | `uploadfile.php` | 上传 Yahoo 历史行情 CSV 到 `stockhistory` | 未迁 | 低优先（本地用 `dbtools/seed_*` 顶替） |
 | `debugcn.php` | 访问日志/恶意 IP 统计页（依赖 nginx 日志） | 未迁 | **不建议迁**，PHP 专属运维页 |
 

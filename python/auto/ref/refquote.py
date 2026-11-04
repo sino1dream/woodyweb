@@ -162,6 +162,7 @@ def apply_snapshot(ref: Any, quote: Any) -> bool:
     ref.str_prev_price = getattr(quote, "prev_price", None)
     ref.str_date = getattr(quote, "date", None)
     ref.str_time = getattr(quote, "time", None)
+    apply_vwap(ref, getattr(quote, "vwap", None))
     name = getattr(quote, "name", None)
     if name:
         ref.str_name = name
@@ -186,6 +187,29 @@ _ORDER_BOOK_ATTRS = (
     ("ask_prices", "ask_price"),
     ("ask_quantities", "ask_quantity"),
 )
+
+
+def apply_vwap(ref: Any, vwap: Any) -> bool:
+    """把快照里的**当日均价**写回引用对象的 ``str_vwap``；写了返回 ``True``。
+
+    对应 PHP ``StockReference::_onSinaFutureCN()`` 里 ``$this->strVWAP = $ar[28]``：
+    那一行只有国内商品期货才解析得出均价，其它标的恒为空串。
+
+    ## 为什么空值不回写
+
+    与 :func:`apply_order_book` 同一个理由：``vwap`` 为空可能只是"这一路数据没有
+    均价"，不代表引用对象上原有的值失效。真要让均价消失，重建引用对象即可。
+
+    ## 为什么只认本来就有这个属性的对象
+
+    ``StockReference.__init__`` 里 ``str_vwap`` 默认是 ``None``；只有解析过
+    ``nf_`` 行情的对象才会被赋值。没有这个属性的对象（只算估值的中间层）不该被
+    凭空挂上 —— 挂了也不会有人读，反而让人以为"这里有数据"。
+    """
+    if vwap in (None, "") or not hasattr(ref, "str_vwap"):
+        return False
+    setattr(ref, "str_vwap", str(vwap))
+    return True
 
 
 def apply_order_book(ref: Any, book: Any) -> bool:

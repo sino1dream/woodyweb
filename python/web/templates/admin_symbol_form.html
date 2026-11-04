@@ -1,0 +1,108 @@
+{% extends "base.html" %}
+{% block title %}{{ "新增" if mode == "new" else "符号 " ~ symbol }} - 基金估值{% endblock %}
+{% block content %}
+  {# 新增 / 编辑符号，编辑页顺带把"删掉会连带删什么"摆出来。
+     删除口径全部来自 auto/deletesymbol.py 的 plan()：页面上的数字就是
+     真要点下去删的数字。 #}
+  <h1>{{ "新增符号" if mode == "new" else "符号 " ~ symbol }}</h1>
+  <p class="table-note">
+    <a href="{{ url_for('admin.symbols') }}">返回符号列表</a>
+    · <a href="{{ url_for('admin.groups') }}">分组管理</a>
+  </p>
+
+  <form method="post" action="{{ url_for('admin.symbol_submit') }}" class="symbol-form admin-form">
+    <input type="hidden" name="mode" value="{{ mode }}" />
+    <p>
+      <label for="symbol">符号</label><br />
+      {% if mode == "new" %}
+        <input name="symbol" id="symbol" value="{{ symbol }}" type="text"
+               size="20" maxlength="32" class="textfield" />
+        <span class="table-note">
+          库里符号的大写形式（如 <code>SH513100</code> / <code>^NDX</code>）。
+          <strong>带下划线的符号保持原样大小写</strong>（<code>nf_AU0</code>、<code>hf_GC</code>）——
+          新浪对 <code>nf_au0</code> 返回空串，而查重不区分大小写，只有行情会静默失踪。
+        </span>
+      {% else %}
+        <code>{{ symbol }}</code>
+        <span class="table-note">
+          符号本身不可改（它是一堆表的外键锚点）。要换符号请先新增、再删旧的。
+        </span>
+      {% endif %}
+    </p>
+    <p>
+      <label for="name">名称</label><br />
+      <input name="name" id="name" value="{{ name }}" type="text"
+             size="30" maxlength="128" class="textfield" />
+      <span class="table-note">中文/英文显示名。留空时新增会用符号本身顶替。</span>
+    </p>
+    <p>
+      <button type="submit">{{ "新增" if mode == "new" else "保存名称" }}</button>
+      <a href="{{ url_for('admin.symbols') }}">取消</a>
+    </p>
+  </form>
+
+  {% if detail %}
+    <h2>关联数据</h2>
+    <p class="table-note">
+      <code>stock_id={{ detail.stock_id }}</code>
+      · 主表共 {{ detail.deleted_rows }} 行，附带表共 {{ detail.orphan_rows }} 行。
+    </p>
+
+    {% if detail.blocked %}
+      <p class="hint">
+        <strong>删不了</strong>：{{ detail.blocked_by.table }} 里还有它
+        （{{ detail.blocked_by.detail or "有记录" }}）。先把配对 / 持仓拆掉再来。
+      </p>
+    {% endif %}
+
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>表</th>
+          <th style="width: 90px;">行数</th>
+          <th>说明</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for item in detail.deletes %}
+          <tr>
+            <td>{{ item.table }}</td>
+            <td>{{ item.rows }}</td>
+            <td>{{ item.label }}{% if item.table == "stock" %}（删完符号就没了）{% endif %}</td>
+          </tr>
+        {% endfor %}
+        {% for item in detail.orphans %}
+          <tr>
+            <td>{{ item.table }}</td>
+            <td>{{ item.rows }}</td>
+            <td>{{ item.label }} —— {{ item.note }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+
+    <h2>删除</h2>
+    <p class="hint">
+      默认只删 PHP <code>deletestock.php</code> 会删的那 {{ detail.deletes|length }} 张表；
+      勾上「一并清理残留表」才会动上面列出的附带表。**删除不可撤销**，
+      动手前先备份（<code>python/dbtools/backup_db.py</code>）。
+    </p>
+    <form method="post" action="{{ url_for('admin.symbol_delete', symbol=symbol) }}"
+          class="admin-form"
+          onsubmit="return confirm('确认删除 {{ symbol }}？主表 {{ detail.deleted_rows }} 行数据会一起删掉，且不可撤销。');">
+      <p>
+        <label>
+          <input type="checkbox" name="include_orphans" value="1" />
+          一并清理残留表（{{ detail.orphan_rows }} 行）
+        </label>
+      </p>
+      <p>
+        <button type="submit" class="danger-button"
+                {% if detail.blocked %}disabled{% endif %}>删除 {{ symbol }}</button>
+        {% if detail.blocked %}
+          <span class="table-note">被闸门挡住，按钮禁用。</span>
+        {% endif %}
+      </p>
+    </form>
+  {% endif %}
+{% endblock %}

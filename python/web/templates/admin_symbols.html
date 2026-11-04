@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block title %}后台 · 符号管理 - 基金估值{% endblock %}
+{% block content %}
+  {# 符号（stock 表）列表。PHP 没有这一页：那边「新增」只能靠访问某个页面时
+     StockGetReference 顺手入库，「删除」在 deletesymbol.php、改名在
+     editstock.php，三个入口互不相通。本地把三件事收到一起。 #}
+  <h1>后台 · 符号管理</h1>
+  <p class="hint">
+    <strong>演示环境说明</strong>：写操作立即生效，改数据前请自行备份
+    （<code>python/dbtools/backup_db.py</code>）。
+    新增只写 <code>stock</code> 一行 —— 行情、净值、校准值都还得另外补，
+    否则页面会显示「无行情快照」。
+  </p>
+
+  <p class="table-note">
+    共 {{ rows|length }} 个符号{% if query %}（过滤：<code>{{ query }}</code>）{% endif %}
+    {% if rows|length >= limit %}（已达上限 {{ limit }}，请用搜索收窄）{% endif %}
+    · <a href="{{ url_for('admin.symbol_new') }}">新增符号</a>
+    · <a href="{{ url_for('admin.groups') }}">分组管理</a>
+  </p>
+
+  <form method="get" action="{{ url_for('admin.symbols') }}" class="admin-form">
+    <input name="q" value="{{ query }}" type="text" size="20" class="textfield"
+           placeholder="符号或名称" />
+    <button type="submit">搜索</button>
+    {% if query %}<a href="{{ url_for('admin.symbols') }}">清除</a>{% endif %}
+  </form>
+
+  <table class="data-table admin-symbols">
+    <thead>
+      <tr>
+        <th style="width: 50px;">ID</th>
+        <th style="width: 100px;">符号</th>
+        <th>名称</th>
+        <th>已有数据</th>
+        <th style="width: 120px;">操作</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in rows %}
+        <tr>
+          <td>{{ row.id }}</td>
+          <td><a href="{{ url_for('admin.symbol_detail', symbol=row.symbol) }}">{{ row.symbol }}</a></td>
+          <td>{{ row.name }}</td>
+          <td>
+            {% if row.counts %}
+              {% for item in row.counts %}{{ item.label }} {{ item.rows }}{% if not loop.last %} · {% endif %}{% endfor %}
+            {% else %}
+              <span class="table-note">空</span>
+            {% endif %}
+          </td>
+          <td>
+            <a href="{{ url_for('admin.symbol_detail', symbol=row.symbol) }}">编辑 / 删除</a>
+          </td>
+        </tr>
+      {% else %}
+        <tr><td colspan="5">
+          {% if query %}没有匹配「{{ query }}」的符号。{% else %}库里还没有符号。{% endif %}
+        </td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+{% endblock %}

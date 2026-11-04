@@ -94,7 +94,12 @@ class SymbolInventoryTest(unittest.TestCase):
         self.assertNotIn("^GSPC", symbols)
         self.assertIn("QQQ", symbols)
         self.assertIn("SPY", symbols)
-        self.assertEqual(len(symbols), 22)
+        # 22 个 QDII 中间层 + 3 个国内商品期货（nf_AU0 / nf_AG0 / nf_M0）。
+        # 期货那三个是「A股商品」6 只基金的估值标的，走的是 fundpair 而不是
+        # 外盘那套 futurespair，所以必须进 est 名单才写得到 estquote。
+        self.assertEqual(len(symbols), 25)
+        for symbol in ("nf_AU0", "nf_AG0", "nf_M0"):
+            self.assertIn(symbol, symbols, symbol)
 
     def test_fund_pairs_one_row_per_fund_with_est(self):
         """70 对 = 102 只减去 32 只 QdiiMix 成员。"""
@@ -120,13 +125,21 @@ class SymbolInventoryTest(unittest.TestCase):
             self.assertIn(symbol, required, symbol)
 
     def test_sina_quote_symbols_excludes_other_pipelines(self):
-        """新浪行情链路只抓基金 + est；期货/外汇各有入口。"""
+        """新浪行情链路只抓基金 + est；外盘期货/外汇各有入口。
+
+        **国内**商品期货（``nf_``）是例外：它们没有 ``futurescli`` 那条路，
+        行情本来就来自 ``hq.sinajs.cn/list=nf_AU0``，而且 ``get_sina_symbol()``
+        对它们返回原样大写符号（不像 ``hf_`` 会退化成 ``gb_hf_nq``），
+        所以它们必须留在新浪链路里 —— 这也是它们能进 ``estquote`` 的前提。
+        """
         from core.symbolinventory import sina_quote_symbols
 
         symbols = sina_quote_symbols()
-        self.assertEqual(len(symbols), 124)
+        self.assertEqual(len(symbols), 127)     # 124 + 3 个国内商品期货
         self.assertEqual(len(symbols), len(set(symbols)), "有重复符号")
         for symbol in fund_symbols() + est_symbols():
+            self.assertIn(symbol, symbols, symbol)
+        for symbol in ("nf_AU0", "nf_AG0", "nf_M0"):
             self.assertIn(symbol, symbols, symbol)
         for symbol in ("USCNY", "HKCNY", "EUCNY", "JPCNY",
                        "hf_NQ", "hf_ES", "hf_CL", "hf_NK",

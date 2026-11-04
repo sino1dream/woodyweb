@@ -31,12 +31,13 @@ class FakeQuote:
     """``quotestore.RecentQuote`` 形状。"""
 
     def __init__(self, price="4.884", prev_price="4.814", date="2026-10-09",
-                 time="15:00:00", name="纳指LOF"):
+                 time="15:00:00", name="纳指LOF", vwap=""):
         self.price = price
         self.prev_price = prev_price
         self.date = date
         self.time = time
         self.name = name
+        self.vwap = vwap
 
 
 class FakeRef:
@@ -53,6 +54,8 @@ class FakeRef:
         self.has_data = has_data
         self.quote_loader = None
         self.loaded = 0
+        #: ``StockReference`` 里这个字段默认 ``None``，只有 ``nf_`` 行情会填它
+        self.str_vwap = None
 
     def get_symbol(self):
         return self.str_symbol
@@ -131,6 +134,26 @@ class ApplySnapshotTest(unittest.TestCase):
 
     def test_none_quote_is_not_success(self):
         self.assertFalse(apply_snapshot(FakeRef(), None))
+
+    def test_fills_vwap(self):
+        """均价随行情一起装填（``_onSinaFutureCN()`` 的 ``strVWAP``）。"""
+        ref = FakeRef()
+        self.assertTrue(apply_snapshot(ref, FakeQuote(vwap="3119.003")))
+        self.assertEqual(ref.str_vwap, "3119.003")
+
+    def test_empty_vwap_keeps_existing_value(self):
+        """快照没带均价时**不清空** —— 与盘口同一个理由。"""
+        ref = FakeRef()
+        ref.str_vwap = "3119.003"
+        apply_snapshot(ref, FakeQuote())
+        self.assertEqual(ref.str_vwap, "3119.003")
+
+    def test_vwap_ignored_without_the_attribute(self):
+        """只算估值的中间层没有 ``str_vwap``，不该被凭空挂上。"""
+        ref = FakeRef()
+        del ref.str_vwap
+        self.assertTrue(apply_snapshot(ref, FakeQuote(vwap="3119.003")))
+        self.assertFalse(hasattr(ref, "str_vwap"))
 
 
 class LoadQuoteTest(unittest.TestCase):

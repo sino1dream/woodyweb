@@ -180,17 +180,27 @@ def main() -> int:
 def _write_history(cursor, stock_id, rows) -> int:
     """写 ``stockhistory``。
 
-    ``adjclose`` 取 ``close``：指数/ETF 的日线本来就按复权价发布
+    ``adjclose`` 默认取 ``close``：指数/ETF 的日线本来就按复权价发布
     （项目里 ``stockhistory.adjclose`` 对指数就是这么用的），接口也没有复权列。
+
+    **期货是例外**：行里带 ``adjclose`` 键时用它 —— 国内商品期货的
+    ``adjclose`` 存**结算价**，照 PHP ``_updateStockHistory()``
+    （``mystockref.php:143`` 把 ``strSettlePrice`` 作为第 5 个参数传给
+    ``WriteHistory``）。``FundPairReference::DailyCalibration()`` 的
+    ``$pair_ref->GetNetValue($strDate)`` 读的就是这一列，所以它必须是结算价，
+    否则 A 股商品基金的 cal 会按收盘价算、官方 EST 差 0.3%~0.6%。
     """
     written = 0
     for row in rows:
+        adjclose = row.get("adjclose")
+        if adjclose in (None, ""):
+            adjclose = row["close"]
         cursor.execute(
             "INSERT INTO stockhistory (stock_id, date, close, volume, adjclose) "
             "VALUES (%s, %s, %s, %s, %s) "
             "ON DUPLICATE KEY UPDATE close = VALUES(close), volume = VALUES(volume), "
             "adjclose = VALUES(adjclose)",
-            (stock_id, row["date"], row["close"], row.get("volume", 0), row["close"]),
+            (stock_id, row["date"], row["close"], row.get("volume", 0), adjclose),
         )
         written += 1
     return written

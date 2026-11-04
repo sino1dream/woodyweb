@@ -192,13 +192,28 @@ QDII_EST_CNY_SYMBOLS = {
 DEFAULT_QDII_CNY_SYMBOL = "USCNY"
 
 
-def qdii_est_cny_symbol(est_symbol: str | None) -> str:
+def qdii_est_cny_symbol(est_symbol: str | None) -> str | None:
     """est 标的对应的中间价符号（``USCNY`` / ``HKCNY`` / ``JPCNY`` / ``EUCNY``）。
 
     校准式子是 ``cal = est × cny ÷ 净值``，**汇率必须与 est 的地区一致**。
     港股指数配 ``USCNY`` 会把 ``cal`` 放大到大约 7.8 倍（港币/美元），
     页面上就变成"EST 差了一个数量级"。
+
+    **返回 ``None`` 表示"不需要汇率"**，目前只有国内商品期货（``nf_`` 前缀）
+    走这条路：``A股商品`` 那 6 只基金跟踪 ``AU0`` / ``AG0`` / ``M0``，
+    基金与标的同为人民币计价，乘任何汇率都是错的。PHP 里对应的是
+    ``fundpairref.php:17`` 那个**空分支**::
+
+        if ($this->pair_ref->IsSinaFutureCN())
+        {
+        }
+
+    —— ``cny_ref`` 保持 false、``GetDefaultCny()`` 返回 1.0。
+    退化成 :data:`DEFAULT_QDII_CNY_SYMBOL` 会让 ``cal`` 大 6.7 倍，
+    页面上的 EST 直接差一个数量级（与港股配美元的坑同族）。
     """
+    if est_symbol and str(est_symbol).lower().startswith("nf_"):
+        return None
     return QDII_EST_CNY_SYMBOLS.get(est_symbol or "", DEFAULT_QDII_CNY_SYMBOL)
 
 

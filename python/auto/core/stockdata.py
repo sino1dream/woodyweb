@@ -39,6 +39,12 @@ class DailyRecord:
     date: str
     close: float
     adjclose: float | None = None
+    #: 当日**均价**（VWAP）。只有国内商品期货有这一项 —— 新浪 ``nf_`` 行情的
+    #: 第 28 个字段（``_on_sina_future_cn`` 存进 ``str_vwap``）。商品期货基金的
+    #: 净值按当日均价算，PHP ``GetOfficialNetValue()`` 因此对它取
+    #: ``strVWAP`` 而不是现价（``fundpairref.php:242``），见
+    #: ``fundestcalc._official_est_value()``。股票/指数这类恒为 ``None``。
+    vwap: float | None = None
 
 
 @dataclass(frozen=True)
@@ -734,14 +740,49 @@ class MySqlFundDataSource:
         对应 PHP ``yahoostock.php`` 往 ``netvaluehistory`` 写的中间层序列，
         这里换成了独立的 ``estquote`` 表（见 ``dbtools/schema.sql`` 的说明）。
         表不存在或没有该符号时返回 ``None``，调用方回落到 ``netvaluehistory``。
+
+        ``vwap`` 只有国内商品期货（``nf_``）有值：那类标的的官方 EST 取
+        当日均价而不是现价。老库没有这一列时按 ``None`` 处理 —— 用
+        ``_fetchone`` 拿不到列会抛异常，所以先探测一次列是否存在，
+        不让"少一列"把整页估值打成 500。
         """
+        columns = "close, quote_date"
+        if self._estquote_has_vwap():
+            columns += ", vwap"
         row = self._fetchone(
-            "SELECT close, quote_date FROM estquote WHERE id = %s LIMIT 1",
+            "SELECT %s FROM estquote WHERE id = %%s LIMIT 1" % columns,
             (stock_id,),
         )
         if not row:
             return None
-        return DailyRecord(close=row["close"], date=str(row["quote_date"]))
+        vwap = row.get("vwap") if isinstance(row, dict) else None
+        try:
+            vwap_value = float(vwap) if vwap not in (None, "") else None
+        except (TypeError, ValueError):
+            vwap_value = None
+        return DailyRecord(close=row["close"], date=str(row["quote_date"]), vwap=vwap_value)
+
+    def _estquote_has_vwap(self) -> bool:
+        """``estquote.vwap`` 列存在吗（老库没有，补丁打过才有）。
+
+        结果缓存在实例上：这是每请求都要问一次的判定，
+        每次 ``SHOW COLUMNS`` 白白多一次往返。
+        """
+        cached = getattr(self, "_estquote_vwap_flag", None)
+        if cached is not None:
+            return cached
+        exists = False
+        try:
+            row = self._fetchone(
+                "SELECT COUNT(*) AS n FROM information_schema.COLUMNS "
+                "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'estquote' "
+                "AND COLUMN_NAME = 'vwap'"
+            )
+            exists = bool(row and int(row["n"]))
+        except Exception:
+            exists = False
+        self._estquote_vwap_flag = exists
+        return exists
 
     def get_fund_pair_id(self, stock_id: str) -> str | None:
         row = self._fetchone("SELECT stock_id FROM fundpair WHERE id = %s LIMIT 1", (stock_id,))

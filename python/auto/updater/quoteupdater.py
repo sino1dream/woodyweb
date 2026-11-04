@@ -74,6 +74,11 @@ class RecentQuote:
     # **空字典表示"这一次没有盘口信息"**（不是"盘口是空的"）—— 落库时写成 NULL，
     # 读回来也不会去覆盖引用对象上已有的内容。编解码见 ``quotestore``。
     orderbook: Dict[str, Any] = field(default_factory=dict)
+    #: 当日**均价**（VWAP）。只有国内商品期货（``nf_``）有 —— 新浪那一行的第
+    #: 28 个字段，``StockReference._on_sina_future_cn()`` 存进 ``str_vwap``。
+    #: 商品期货基金的净值按均价计，官方 EST 因此要用它而不是现价
+    #: （``fundpairref.php:242``）。其它符号恒为空串。
+    vwap: str = ""
 
     def has_order_book(self) -> bool:
         """这一条快照是否带了盘口。"""
@@ -141,7 +146,21 @@ def quote_from_reference(
         source=source_name,
         fetched_at=fetched_at,
         orderbook=order_book_from_reference(reference),
+        vwap=_vwap_text(reference),
     )
+
+
+def _vwap_text(reference: Any) -> str:
+    """从引用对象取当日均价，转成字符串（没有就是空串）。
+
+    ``str_vwap`` 只有国内期货（``nf_``）会被 ``_on_sina_future_cn()`` 赋值，
+    股票 / 指数 / 外汇那边一直是 ``None``。用 ``getattr`` 取是因为
+    ``StockReference`` 的子类不保证都有这个属性。
+    """
+    value = getattr(reference, "str_vwap", None)
+    if value in (None, ""):
+        return ""
+    return str(value)
 
 
 def order_book_from_reference(reference: Any, levels: int = None) -> dict:
@@ -269,6 +288,7 @@ def _quote_from_row(row: dict, symbol: str, fetched_epoch: float) -> "RecentQuot
         source=str(row.get("source") or ""),
         fetched_at=fetched_epoch,
         orderbook=decode_orderbook(row.get("orderbook")),
+        vwap=str(row.get("vwap") or ""),
     )
 
 
@@ -619,6 +639,7 @@ class QuotesUpdater:
                     quote.source,
                     quote.fetched_at,
                     quote.orderbook,
+                    getattr(quote, "vwap", "") or None,
                 )
             except Exception as exc:
                 # 写库失败不影响内存缓存可用，但要让调用方看得见
@@ -638,6 +659,7 @@ class QuotesUpdater:
                     quote.time,
                     quote.source,
                     quote.fetched_at,
+                    getattr(quote, "vwap", "") or None,
                 )
             except Exception as exc:
                 self.last_error = "写中间层数值失败：%s: %s" % (type(exc).__name__, exc)

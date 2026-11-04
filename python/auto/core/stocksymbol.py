@@ -1005,6 +1005,20 @@ class StockSymbol:
         if self.is_sina_forex():
             return self.str_symbol
 
+        # 国内商品期货（``nf_AU0`` / ``nf_AG0`` / ``nf_M0``）：新浪要的是
+        # **原样大写**的符号 —— 实测 ``list=nf_AU0`` 有数据，而 ``nf_au0``
+        # （小写）和 ``gb_nf_au0`` 都返回空串，一个字符都不能改。
+        #
+        # PHP 的 ``GetSinaSymbol()`` **没有这一支**，会一路退化成
+        # ``gb_nf_…``；但它那边期货行情走的是
+        # ``LoadSinaFutureData()`` → ``DebugGetSinaFileName(GetSymbol())``，
+        # 直接拿符号当缓存文件名，所以生产端没出问题。我们这条路径
+        # （``quoteupdater`` 收集抓取清单）共用 ``GetSinaSymbol()``，
+        # 不补这一支就永远抓到空串 —— 现象是 ``realtimequote`` 里
+        # 没有那一行，页面「参考数据」整行空白，不报错。
+        if self.is_sina_future_cn():
+            return self.str_symbol
+
         # PHP 先把 '.' 换成 '$'，再统一小写
         symbol = self.str_symbol.replace(".", "$")
         lower = symbol.lower()

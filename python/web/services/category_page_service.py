@@ -84,6 +84,8 @@ from core.stocksymbol import (  # noqa: E402
     get_over_night_symbol_array,
     get_qdii_gold_symbol_array,
     get_qdii_oil_symbol_array,
+    in_array_china_future,
+    in_array_china_index,
     qdii_eu_get_symbol_array,
     qdii_get_oil_etf_symbol_array,
     qdii_get_qqq_symbol_array,
@@ -98,7 +100,48 @@ from core.stocksymbol import (  # noqa: E402
     qdii_jp_get_symbol_array,
     qdii_mix_get_symbol_array,
 )
-from ref.refobj import MysqlReference, build_qdii_reference  # noqa: E402
+from ref.refobj import (  # noqa: E402
+    FundPairReference,
+    MysqlReference,
+    build_qdii_reference,
+)
+
+
+def build_fund_reference(symbol: str, source: Any = None) -> Any:
+    """按符号选基金引用类，对应 ``StockGetFundReference()``（``php/stock.php:317``）。
+
+    ```php
+    if ($ref = StockGetQdiiReference($strSymbol))                     return $ref;
+    else if (in_arrayQdiiMix($strSymbol))                             return new HoldingsReference($strSymbol);
+    else if (in_arrayChinaIndex($strSymbol) || in_arrayChinaFuture($strSymbol))  return new FundPairReference($strSymbol);
+    return new FundReference($strSymbol);
+    ```
+
+    ## 为什么这里非分派不可（A股商品 / A股指数 两族）
+
+    ``FundPairReference`` 与 ``QdiiReference`` 是**两套 EST 口径**，混用不会报错，
+    只会把数字算歪或者整段消失：
+
+    * ``FundPairReference`` 的官方 EST 直接拿**配对标的**算（``fundpairref.php:238``）：
+      商品期货（黄金除外）取当日**均价** ``strVWAP``，其它取该日**结算价**，
+      再 ``EstFromPair`` 除以校准值 —— 汇率引用为空时等于 1.0（本币计价）。
+    * ``QdiiReference`` 走 ``fundestcalc`` 的估算器，官方 EST 依赖"中间层净值 / 指数收盘"，
+      而且必须有汇率的收盘价才会算 —— 国内期货没有汇率，那条路直接折在
+      "汇率缺失"兜底里读 ``fundest`` 表，读不到就 ``None``，
+      于是分类页的「估值」表**整段不出现**（PHP 靠 ``GetFairNetValue()`` 的守卫跳过，
+      表现一样，只是本地原本连参考数据都不全）。
+
+    实测差异（2026-11-04 11:30，生产端 chinafuturecn.php 对照）：
+    走 ``QdiiReference`` 时 6 只全部 ``None``；走 ``FundPairReference`` 后
+    8.374 / 8.047 / 8.367 / 7.978 / 2.054 / 1.342 与生产端逐位一致。
+
+    ``qdii_mix`` 那一支（``HoldingsReference``）本模块不涉及 —— 分类页里的
+    QDII 混合组走的是 ``build_qdii_reference`` 里"持仓型"的既有分支，
+    挪过来会改变既有页面的口径，不做。
+    """
+    if in_array_china_index(symbol) or in_array_china_future(symbol):
+        return FundPairReference(symbol, source=source)
+    return build_qdii_reference(symbol, source=source)
 
 
 class CategoryNotFoundError(LookupError):
@@ -515,7 +558,7 @@ def classify_symbols(symbols: list, source: Any = None) -> tuple:
         if not ref.is_fund_a():
             continue
         try:
-            fund = build_qdii_reference(symbol, source=source)
+            fund = build_fund_reference(symbol, source=source)
         except Exception:
             # 官方净值这一档拿不到，PHP 的守卫 ``if ($fund->GetOfficialNetValue())``
             # 同样不会把它加进 $arFund；只是这里连对象都没建出来。

@@ -547,6 +547,28 @@ h2 {
   display: inline;
 }
 
+/* 后台「删除」按钮：与普通提交按钮区分开，避免手滑。禁用态（闸门挡住）
+   要看得出来是"不能点"而不是"点了没反应"。 */
+.danger-button {
+  padding: 4px 10px;
+  color: #a11;
+  background: #fff;
+  border: 1px solid #d99;
+  border-radius: 4px;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.danger-button:hover:enabled {
+  background: #fff2f2;
+}
+
+.danger-button:disabled {
+  color: #999;
+  border-color: #ddd;
+  cursor: not-allowed;
+}
+
 /* ---- 后台抓取工具页（submit_tools.html）--------------------------------
    三个 submit*.php 合并成的一张工具表：一个符号查询框 + 每行一个"执行"。
    `.data-table form` 已被 admin 那套设成 display:inline，这里的输入框要

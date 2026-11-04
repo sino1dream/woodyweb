@@ -2,6 +2,13 @@
 
 把 PHP 里"实时 EST = 参考 EST + 期货"这条路迁到 Python。
 
+> **国内商品期货（`nf_AU0` / `nf_AG0` / `nf_M0`）不在这条链路里** ——
+> 那一族走普通行情抓取 + `FundPairReference`，没有汇率、只有一层配对、
+> 官方 EST 取均价。见 `README_china_future_migration.md`。
+> 两族的区别只有一句话：`hf_` 是"指数 → 期货"的两层链路，`nf_` 是
+> "基金 → 期货"的一层链路（`futurespair` 表**不要**写 `nf_`，写进去会
+> 污染 `futurescli` 的反推名单）。
+
 | PHP | 本版 |
 | --- | --- |
 | `php/stock/stockref.php:447` `LoadSinaFutureData()` | `futuresquotes.SinaFuturesClient` |

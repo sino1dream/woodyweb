@@ -46,6 +46,36 @@ from calc.futurescalib import build_futures_calibrator
 # 真实净值与官方 EST 的偏差超过 1.0% 就 trigger_error 告警。
 ESTIMATE_ERROR_THRESHOLD = 1.0
 
+#: 国内商品期货的符号前缀（``nf_AU0`` / ``nf_AG0`` / ``nf_M0``）。
+#: 与 ``hf_``（外盘期货）是两族：``hf_`` 走 ``futurescli`` 抓、
+#: ``nf_`` 走普通新浪行情链路（``get_sina_symbol()`` 返回原样大写符号）。
+CN_FUTURE_PREFIX = "nf_"
+
+#: 均价口径**唯一**的例外：沪金 ``nf_AU0``。
+#: PHP ``IsSinaFutureExceptGoldCN()`` 就是"``nf_`` 且不是 ``AU0``"
+#: （``stocksymbol.php:820``）—— 黄金 ETF 的净值按收盘价计，用均价反而错。
+CN_FUTURE_VWAP_EXCLUDED = "NF_AU0"
+
+
+def is_cn_future_except_gold(symbol: Any) -> bool:
+    """这个标的的官方 EST 该不该用**当日均价**。
+
+    对应 PHP ``IsSinaFutureExceptGoldCN()``（``stocksymbol.php:820``）::
+
+        if ($str = $this->IsSinaFutureCN())
+        {
+            if ($str != 'AU0')  return true;
+        }
+        return false;
+
+    注意 PHP 的 ``StrHasPrefix`` 返回的是**去掉前缀后的剩余部分**，
+    所以那里比的是 ``'AU0'`` 而不是 ``'nf_AU0'``；这里比全符号，等价。
+    """
+    text = str(symbol or "")
+    if not text.lower().startswith(CN_FUTURE_PREFIX):
+        return False
+    return text.upper() != CN_FUTURE_VWAP_EXCLUDED
+
 
 class EstRecord:
     """一条官方 EST 记录。"""
@@ -159,13 +189,24 @@ class EstimateCalculator:
         from calc.fundcalc import qdii_est_cny_symbol
 
         cny_symbol = qdii_est_cny_symbol(est_symbol)
-        cny_id = self.source.get_stock_id(cny_symbol)
-        cny_date = self.source.get_latest_net_value_date(cny_id) if cny_id else None
-        cny_mid = self._net_value(cny_id, mid_date) if cny_id else None
-        cny_current = self._latest_net_value(cny_id) if cny_id else None
-        if cny_current is None:
-            # 汇率完全取不到就没法算任何一个 EST
-            return None
+        if cny_symbol is None:
+            #: **人民币计价，不乘汇率**：目前只有国内商品期货（``nf_AU0`` 这类）
+            #: 走到这里。基金与标的同币种，PHP 的 ``cny_ref`` 保持 false、
+            #: ``GetDefaultCny()`` 返回 1.0（``fundpairref.php:17`` 那个空分支）。
+            #: ``cny_date`` 必须留 ``None`` —— 下面 ``compute_fair()`` 用
+            #: "汇率日期 == 中间层日期"来隐藏参考 EST，填成 ``mid_date`` 会让
+            #: 白银 LOF（``SZ161226``）的参考 EST 整列消失，而生产端是有的。
+            cny_date = None
+            cny_mid = 1.0
+            cny_current = 1.0
+        else:
+            cny_id = self.source.get_stock_id(cny_symbol)
+            cny_date = self.source.get_latest_net_value_date(cny_id) if cny_id else None
+            cny_mid = self._net_value(cny_id, mid_date) if cny_id else None
+            cny_current = self._latest_net_value(cny_id) if cny_id else None
+            if cny_current is None:
+                # 汇率完全取不到就没法算任何一个 EST
+                return None
 
         cal_date = self._calibration_date_of(stock_id)
         est_ref_value, est_ref_date = self._est_quote_ref_with_date(
@@ -199,8 +240,11 @@ class EstimateCalculator:
             "cny_date": cny_date,
             "cny_mid": cny_mid,
             "cny_current": cny_current,
-            # 参考/实时 EST 该用的汇率（对应 ``GetForexRef()``：ETF 即期、LOF 中间价）
-            "cny_fair": self._fair_cny(symbol, cny_current, cny_symbol),
+            # 参考/实时 EST 该用的汇率（对应 ``GetForexRef()``：ETF 即期、LOF 中间价）。
+            # ``cny_symbol`` 为 None 时（国内商品期货）没有"即期/中间价"之分，
+            # 直接把 1.0 给它 —— 走 ``_fair_cny()`` 会因为取不到即期符号而炸。
+            "cny_fair": (1.0 if cny_symbol is None
+                         else self._fair_cny(symbol, cny_current, cny_symbol)),
         }
 
     # -- 单个基金 ---------------------------------------------------------
@@ -287,6 +331,16 @@ class EstimateCalculator:
         """
         ctx = self._resolve(symbol)
         if ctx is None:
+            return None
+
+        # 沪金（``nf_AU0``）没有参考 EST：它既不走均价（见
+        # :meth:`_official_est_value`），又不用汇率，所以"参考"与"官方"
+        # 的输入完全相同、值必然相等，摆出来只是重复一列。生产端
+        # ``sh518800cn.php`` 的 EST 表也确实只有「官方 EST / 日期 / 溢价」三列。
+        # 豆粕与白银（``nf_M0`` / ``nf_AG0``）官方走均价、参考走现价，
+        # 两者有差额，照常显示。
+        est_text = str(ctx["est_symbol"] or "")
+        if est_text.lower().startswith(CN_FUTURE_PREFIX) and not is_cn_future_except_gold(est_text):
             return None
 
         # LOF 才按"汇率日期 == 中间层日期"隐藏：那时参考 EST 与官方 EST 同为
@@ -482,7 +536,11 @@ class EstimateCalculator:
 
     def _fair_cny_label(self, symbol: str, ctx: dict) -> str:
         """参考/实时 EST 用的汇率口径（ETF 即期、LOF 中间价）。"""
-        cny_symbol = ctx.get("cny_symbol") or "USCNY"
+        cny_symbol = ctx.get("cny_symbol")
+        if cny_symbol is None:
+            # 国内商品期货：基金与标的本币，没有汇率这一档。
+            # 留空串让调用方跳过这句说明，比硬塞一个"USCNY 中间价"诚实。
+            return "人民币计价，不折汇率"
         if not ctx.get("is_etf"):
             return "%s 中间价 %s" % (cny_symbol, ctx["cny_date"])
         spot_symbol = self._spot_symbol_of(cny_symbol)
@@ -853,6 +911,11 @@ class EstimateCalculator:
         from calc.fundcalc import qdii_est_cny_symbol
 
         cny_symbol = qdii_est_cny_symbol(self._est_symbol(symbol))
+        if cny_symbol is None:
+            # 国内商品期货：没有汇率这一档，基准汇率就是 1.0。
+            # 日期留 None —— 它只用来在页面上标"这条汇率是哪天的"，
+            # 而这里压根没有汇率可取。
+            return 1.0, None
         cny_id = self.source.get_stock_id(cny_symbol)
         if cny_id is None:
             return None, None
@@ -1182,10 +1245,30 @@ class EstimateCalculator:
         if (method_exists($est_ref, 'GetHoldingsDate')) ...                    // 持仓型
         return $this->_getEstPrice($est_ref, $strDate);                        // 行情价
         ```
+
+        ## 国内商品期货的均价口子（照 ``FundPairReference`` 那份）
+
+        ``nf_`` 前缀（黄金 ``nf_AU0`` 除外）走的是 ``FundPairReference``
+        （``php/stock/fundpairref.php:242``）::
+
+            if ($this->pair_ref->IsSinaFutureExceptGoldCN())
+                $fEst = floatval($this->pair_ref->strVWAP);
+
+        **商品期货基金按当日均价计净值**，不是按收盘/现价。生产端实测
+        （2026-11-04 11:30，``sz159985cn.php``）：官方 EST 2.054 = 均价
+        3119.003 / cal 1518.7566，而参考 EST 2.049 = 现价 3112 / 同一 cal。
+        这里若也只取现价，两只非黄金品种会偏高 0.3% / 1.9%。
+
+        ``nf_AU0`` 故意**不**走这条 —— PHP 的 ``IsSinaFutureExceptGoldCN()``
+        就是把它排除掉的（``stocksymbol.php:820``）：黄金 ETF 的净值按收盘价
+        计，均价反而会错。所以只认 ``nf_`` 且不是 ``nf_AU0``。
         """
         est_id = self.source.get_stock_id(est_symbol)
         if est_id is None:
             return None
+        vwap = self._est_vwap(est_symbol, est_id, date)
+        if vwap is not None:
+            return vwap
         value = self._net_value(est_id, date)
         if value is not None:
             return value
@@ -1196,6 +1279,42 @@ class EstimateCalculator:
         # _getEstPrice()：用**当日行情价**（含退到上一交易日的兜底）。
         # 注意不要在这里用归一化净值 —— 它与行情价差 ``cal_m`` 倍（实测 749 倍）。
         return self._middle_day_quote(est_symbol, date, data or {})
+
+    def _est_vwap(self, est_symbol: str, est_id: Any, date: Any) -> Any:
+        """国内商品期货的**当日均价**；不适用 / 取不到返回 ``None``。
+
+        判据照 PHP ``IsSinaFutureExceptGoldCN()``（``stocksymbol.php:820``）：
+        ``nf_`` 前缀且不是 ``nf_AU0``。
+
+        **日期必须对得上**：``estquote`` 里存的是"最后一轮抓到的均价"，
+        如果它停在昨天（daemon 停了、或者今天还没开盘），拿它算今天的估值
+        就是拿昨天的均价配今天的净值 —— 与 ``cal`` 混日那类错误同族。
+        所以日期不等直接返回 ``None``，让调用方退回净值/行情价那条路。
+        """
+        if not is_cn_future_except_gold(est_symbol):
+            return None
+        reader = getattr(self.source, "get_est_quote", None)
+        if reader is None:
+            return None
+        try:
+            record = reader(est_id)
+        except Exception:
+            return None
+        if record is None:
+            return None
+        record_date = getattr(record, "date", None)
+        if date is not None and record_date is not None and str(record_date) != str(date):
+            return None
+        value = getattr(record, "vwap", None)
+        if value is None:
+            # 内存实现（测试替身）没有 vwap 属性时，``getattr`` 给的是 None；
+            # 走 ``DailyRecord`` 那条路时它是字段，默认也是 None。
+            return None
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return None
+        return number if number > 0 else None
 
     def _holdings_est_value(self, est_symbol: str, date: Any) -> Any:
         """持仓型中间层：``$est_ref->_estNetValue($strDate)``（``qdiiref.php:114``）。
@@ -1239,6 +1358,22 @@ class EstimateCalculator:
         if est_id is None:
             return None, None
         if cal_date is not None:
+            # 国内商品期货（``nf_``）：cal 是「**结算价** ÷ 净值」——
+            # PHP ``_updateStockHistory()`` 把 ``strSettlePrice`` 写进
+            # ``stockhistory.adjclose``（``mystockref.php:143``），
+            # ``DailyCalibration()`` 的 ``$pair_ref->GetNetValue($strDate)``
+            # 读的就是那一列。所以基准必须取 adjclose，不是收盘价：
+            # 两者在商品期货上能差 3%（白银 11655 vs 12013），
+            # 拿收盘价当基准会让 EST 系统性偏离。
+            if str(est_symbol).lower().startswith(CN_FUTURE_PREFIX):
+                reader = getattr(self.source, "get_history_adjclose", None)
+                if reader is not None:
+                    try:
+                        adjclose = reader(est_id, cal_date)
+                    except Exception:
+                        adjclose = None
+                    if adjclose not in (None, "", 0):
+                        return adjclose, cal_date
             value = self._net_value(est_id, cal_date)
             if value not in (None, ""):
                 return value, cal_date

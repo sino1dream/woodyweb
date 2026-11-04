@@ -247,6 +247,36 @@ class ClassifySymbolsTest(unittest.TestCase):
         self.assertEqual(3, len(refs))
         self.assertEqual(3, len(funds))
 
+    def test_china_future_fund_uses_fund_pair_reference(self):
+        """A 股商品 / A 股指数两族走 ``FundPairReference``（``php/stock.php:319``）。
+
+        这条分派是**必须**的，不是优化：``QdiiReference`` 的官方 EST 要靠汇率
+        收盘价才成立，国内期货没有汇率 → 三档全空 → 分类页的「估值」表整段
+        不出现（2026-11-04 实测：``/category/chinafuture`` 六只全 None）。
+        """
+        built = []
+
+        def pair_factory(symbol, source=None):
+            built.append(symbol)
+            return FakeRef(symbol, source=source, fund_a=True, official=2.054)
+
+        def qdii_factory(symbol, source=None):
+            # 真走这条路的话官方净值算不出来（没有汇率收盘价），funds 就会是 0
+            return FakeRef(symbol, source=source, fund_a=True, official=None)
+
+        ref_patch, qdii_patch = self._patch(
+            lambda symbol, source=None: FakeRef(symbol, source=source, fund_a=True),
+            qdii_factory,
+        )
+        with ref_patch, qdii_patch, mock.patch.object(
+                category_page_service, "FundPairReference", pair_factory):
+            refs, funds, skipped = classify_symbols(["SZ159985", "SH513100"])
+
+        # 两只都进了参考表；只有商品那只按配对引用建，"SH513100" 走 Qdii 分支会炸
+        self.assertEqual(["SZ159985"], built)
+        self.assertEqual(1, len(funds))
+        self.assertEqual([], skipped)
+
 
 class BuildQdiiPageTest(unittest.TestCase):
     """:func:`build_qdii_page` 的装配与服务调用。"""

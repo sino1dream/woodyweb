@@ -310,6 +310,8 @@ CREATE TABLE IF NOT EXISTS `realtimequote` (
   `fetched_at` datetime NOT NULL,
   -- 五档盘口（JSON 文本），**可为空** —— 见下面的专门说明
   `orderbook` text COLLATE utf8_unicode_ci,
+  -- 当日均价（VWAP）。只有国内商品期货（``nf_``）有值，见下面的专门说明
+  `vwap` varchar(32) COLLATE utf8_unicode_ci NOT NULL DEFAULT '',
   PRIMARY KEY (`id`),
   UNIQUE KEY `symbol` (`symbol`)
 ) ENGINE=MyISAM DEFAULT CHARSET=utf8 COLLATE=utf8_unicode_ci;
@@ -386,6 +388,10 @@ CREATE TABLE IF NOT EXISTS `estquote` (
   `quote_time` time NOT NULL,
   `source` varchar(32) CHARACTER SET latin1 COLLATE latin1_general_ci NOT NULL,
   `fetched_at` datetime NOT NULL,
+  -- 当日均价（VWAP）：只有国内商品期货（nf_）有，来自新浪行情的第 28 个字段。
+  -- 商品期货基金按均价计净值，官方 EST 取它而不是现价（fundpairref.php:242）；
+  -- 其他标的一律空串。老库用 dbtools/patch_estquote_vwap.py 补这一列。
+  `vwap` varchar(32) COLLATE utf8_unicode_ci NOT NULL DEFAULT '',
   PRIMARY KEY (`id`),
   UNIQUE KEY `symbol` (`symbol`)
 ) ENGINE=MyISAM DEFAULT CHARSET=utf8 COLLATE=utf8_unicode_ci;

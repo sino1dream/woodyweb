@@ -44,6 +44,13 @@ from typing import Any, Dict, List, Optional
 SINA_CN_DAILY_URL = ("https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/"
                      "CN_MarketData.getKLineData?symbol={code}&scale=240&ma=no&datalen={datalen}")
 
+#: 国内商品期货日线。**接口与 A 股基金完全不同**：走
+#: ``InnerFuturesNewService.getDailyKLine``，返回的是 **JSONP**（外面包一层
+#: ``var _AU0=(...)``），字段名也换成了 ``d/o/h/l/c/v`` 五个单字母。
+#: 符号要用**裸代码**（``nf_AU0`` → ``AU0``），不带 ``nf_`` 前缀。
+SINA_CN_FUTURE_DAILY_URL = ("https://stock.finance.sina.com.cn/futures/api/jsonp.php/"
+                            "var%20_{code}=/InnerFuturesNewService.getDailyKLine?symbol={code}")
+
 USER_AGENT = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
               "(KHTML, like Gecko) Chrome/122.0 Safari/537.36")
 REFERER = "https://finance.sina.com.cn/"
@@ -129,3 +136,110 @@ def _to_int(value: Any) -> int:
         return int(float(value))
     except (TypeError, ValueError):
         return 0
+
+
+# ---------------------------------------------------------------------------
+# 国内商品期货日线（``nf_AU0`` 这一类）
+# ---------------------------------------------------------------------------
+
+#: 期货符号 → 新浪要的裸代码。``nf_`` 是本地给"国内期货"加的前缀
+#: （``stocksymbol.SINA_CN_FUTURE_PREFIX``），新浪接口不认。
+CN_FUTURE_PREFIX = "nf_"
+
+
+def cn_future_code_of(symbol: str) -> str:
+    """``nf_AU0`` → ``AU0``；本来就没有前缀的符号原样（大写）返回。"""
+    text = str(symbol).strip()
+    if text.lower().startswith(CN_FUTURE_PREFIX):
+        text = text[len(CN_FUTURE_PREFIX):]
+    return text.upper()
+
+
+def parse_cn_future_response(text: str) -> List[Dict[str, Any]]:
+    """解析国内期货的 JSONP，返回**日期升序**的 ``[{date, close, volume}]``。
+
+    原文长这样（一行，外面包着注释与 ``var _AU0=``）::
+
+        /*<script>location.href='//sina.com';</script>*/
+        var _AU0=([{"d":"2026-11-02","o":"849.080","h":"849.280",
+                    "l":"831.000","c":"836.760","v":"325596","p":"170202",
+                    "s":"839.180"}, ...]);
+
+    用"第一个 ``[`` 到最后一个 ``]``"兜底解析，比抠 ``var`` 名字稳 ——
+    返回值的变量名带符号，而符号里可能有 ``0`` 这种容易踩正则的字符。
+
+    抓不到 / 格式不对返回空列表，与 :func:`parse_daily_response` 同款约定。
+    """
+    start = text.find("[")
+    end = text.rfind("]")
+    if start < 0 or end <= start:
+        return []
+    try:
+        rows = json.loads(text[start:end + 1])
+    except (ValueError, TypeError):
+        return []
+    if not isinstance(rows, list):
+        return []
+
+    result = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        date = row.get("d")
+        close = row.get("c")
+        if not date or close in (None, ""):
+            continue
+        try:
+            value = float(close)
+        except (TypeError, ValueError):
+            continue
+        if value <= 0:
+            continue
+        # 结算价（``s``）单独带上：PHP 的 ``_updateStockHistory()`` 把它写进
+        # ``stockhistory.adjclose``（``mystockref.php:143`` 的第 5 个参数），
+        # 而 ``FundPairReference::DailyCalibration()`` 的
+        # ``$pair_ref->GetNetValue($strDate)`` 读的正是那一条 ——
+        # 所以期货的 cal 是「**结算价** ÷ 净值」，不是收盘价。
+        settle = row.get("s")
+        try:
+            settle_value = float(settle) if settle not in (None, "") else None
+        except (TypeError, ValueError):
+            settle_value = None
+        result.append({
+            "date": str(date)[:10],
+            "close": value,
+            "volume": _to_int(row.get("v")),
+            "adjclose": settle_value if settle_value and settle_value > 0 else value,
+        })
+    return result
+
+
+def fetch_cn_future_history(symbol: str, limit: int = 0, timeout: float = DEFAULT_TIMEOUT,
+                            opener: Any = None) -> List[Dict[str, Any]]:
+    """抓国内商品期货日线，**日期升序**；``limit`` 是"最多保留最近多少条"。
+
+    这个接口**没有条数参数**，每次返回全部历史（实测 AU0 有 4582 条、
+    M0 有 5312 条，响应 400~600 KB），所以截断在本地做 —— 与
+    :func:`fetch_daily_history` 的 ``datalen`` 语义对齐，调用方不用关心差异。
+    """
+    code = cn_future_code_of(symbol)
+    url = SINA_CN_FUTURE_DAILY_URL.replace("{code}", code)
+    request = urllib.request.Request(url, headers={
+        "User-Agent": USER_AGENT,
+        "Referer": REFERER,
+    })
+    try:
+        if opener is not None:
+            text = opener(url)
+        else:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                # 期货接口声明 GB18030，实测 ASCII 内容两种编码都读得出；
+                # 用 replace 兜底，避免个别乱码字符让整批数据白跑。
+                text = response.read().decode("gb18030", errors="replace")
+    except Exception:
+        return []
+
+    rows = parse_cn_future_response(text)
+    if limit > 0 and len(rows) > limit:
+        rows = rows[-limit:]
+    return rows

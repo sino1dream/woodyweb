@@ -70,9 +70,13 @@ class DbError(Exception):
 
 
 class FakeCursor:
-    def __init__(self, rows=None, legacy=False):
+    def __init__(self, rows=None, legacy=False, missing=None):
         self.rows = rows or []
         self.legacy = legacy
+        #: 这一版库**缺哪几列**（``realtimequote`` 的两级可选列：``orderbook`` / ``vwap``）。
+        if missing is None:
+            missing = ("orderbook",) if legacy else ()
+        self.missing = set(missing)
         self.statements = []
         self.params = []
         self.closed = False
@@ -81,8 +85,9 @@ class FakeCursor:
         # 先记录再抛错：真实驱动也是"语句发出去了才知道列不存在"
         self.statements.append(sql)
         self.params.append(tuple(params))
-        if self.legacy and "orderbook" in sql:
-            raise DbError(ER_BAD_FIELD_ERROR, "Unknown column 'orderbook' in 'field list'")
+        for column in self.missing:
+            if column in sql:
+                raise DbError(ER_BAD_FIELD_ERROR, "Unknown column '%s' in 'field list'" % column)
 
     def fetchall(self):
         return list(self.rows)
@@ -95,8 +100,8 @@ class FakeCursor:
 
 
 class FakeConnection:
-    def __init__(self, rows=None, legacy=False):
-        self.cursor_obj = FakeCursor(rows, legacy)
+    def __init__(self, rows=None, legacy=False, missing=None):
+        self.cursor_obj = FakeCursor(rows, legacy, missing)
         self.rolled_back = False
 
     def cursor(self):
@@ -177,7 +182,20 @@ class RealtimeQuoteStoreTest(unittest.TestCase):
 
         sql = connection.cursor_obj.statements[0]
         self.assertIn("orderbook", sql)
-        self.assertEqual(decode_orderbook(connection.cursor_obj.params[0][-1]), book)
+        self.assertIn("vwap", sql)
+        # 参数顺序：… orderbook, vwap 在最后两位（新增列一律往后加）
+        self.assertEqual(decode_orderbook(connection.cursor_obj.params[0][-2]), book)
+        self.assertEqual(connection.cursor_obj.params[0][-1], "")
+
+    def test_save_writes_the_vwap(self):
+        """均价单独落到 ``vwap`` 列：``FundPairReference`` 的官方 EST 就取它。"""
+        connection = FakeConnection()
+
+        self.assertTrue(RealtimeQuoteStore(connection).save(
+            1, "nf_M0", "nf_M0", "3112", "3166", "豆粕连续",
+            "2026-11-04", "11:30:00", "sina", 0.0, None, "3119.003"))
+
+        self.assertEqual(connection.cursor_obj.params[0][-1], "3119.003")
 
     def test_save_without_orderbook_writes_null(self):
         connection = FakeConnection()
@@ -185,12 +203,12 @@ class RealtimeQuoteStoreTest(unittest.TestCase):
             1, "SZ161130", "sz161130", "4.796", "4.727", "纳指LOF",
             "2026-09-30", "15:00:00", "sina", 0.0)
 
-        self.assertIsNone(connection.cursor_obj.params[0][-1])
+        self.assertIsNone(connection.cursor_obj.params[0][-2])
         self.assertEqual(len(connection.cursor_obj.statements), 1)
 
-    def test_save_falls_back_when_column_missing(self):
-        """老库没打补丁：退回十个字段的写法，**价格照写**，不能静默失败。"""
-        connection = FakeConnection(legacy=True)
+    def test_save_falls_back_when_only_vwap_missing(self):
+        """只缺 ``vwap``：退一级，盘口照写。"""
+        connection = FakeConnection(missing=("vwap",))
         book = orderbook_from_lists(["4.790"], ["1200"], ["4.800"], ["900"])
 
         self.assertTrue(RealtimeQuoteStore(connection).save(
@@ -199,9 +217,26 @@ class RealtimeQuoteStoreTest(unittest.TestCase):
 
         statements = connection.cursor_obj.statements
         self.assertEqual(len(statements), 2)
+        self.assertIn("vwap", statements[0])
+        self.assertNotIn("vwap", statements[1])
+        self.assertEqual(decode_orderbook(connection.cursor_obj.params[1][-1]), book)
+
+    def test_save_falls_back_when_column_missing(self):
+        """老库两级可选列都没有：退回十个字段的写法，**价格照写**，不能静默失败。"""
+        connection = FakeConnection(missing=("orderbook", "vwap"))
+        book = orderbook_from_lists(["4.790"], ["1200"], ["4.800"], ["900"])
+
+        self.assertTrue(RealtimeQuoteStore(connection).save(
+            1, "SZ161130", "sz161130", "4.796", "4.727", "纳指LOF",
+            "2026-09-30", "15:00:00", "sina", 0.0, book))
+
+        statements = connection.cursor_obj.statements
+        self.assertEqual(len(statements), 3)
         self.assertIn("orderbook", statements[0])
-        self.assertNotIn("orderbook", statements[1])
-        self.assertEqual(len(connection.cursor_obj.params[1]), 10)
+        self.assertIn("vwap", statements[0])
+        self.assertNotIn("vwap", statements[1])
+        self.assertNotIn("orderbook", statements[2])
+        self.assertEqual(len(connection.cursor_obj.params[2]), 10)
 
     def test_save_reports_failure_on_other_errors(self):
         """不是"列不存在"的错必须照常报失败 —— 回退只认 1054。"""

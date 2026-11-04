@@ -291,10 +291,20 @@ class CategoryRouteTest(unittest.TestCase):
             "build_qdii_reference",
             lambda symbol, source=None: FakeRef(symbol, source=source, official=1.5),
         )
+        # A股指数 / A股商品走 ``FundPairReference``（``php/stock.php:319``），
+        # 不换成假类就会去读真库 —— 测试里没有库，官方净值恒空，
+        # chinaindex / chinafuture 两个分类会缺「估值」表。
+        self._pair_patch = mock.patch.object(
+            category_page_service,
+            "FundPairReference",
+            lambda symbol, source=None: FakeRef(symbol, source=source, official=1.5),
+        )
         self._ref_patch.start()
         self._qdii_patch.start()
+        self._pair_patch.start()
         self.addCleanup(self._ref_patch.stop)
         self.addCleanup(self._qdii_patch.stop)
+        self.addCleanup(self._pair_patch.stop)
 
         # 符号清单收窄到两只，免得 17 个数组 × 几十只基金拖慢测试
         self.app = create_app(

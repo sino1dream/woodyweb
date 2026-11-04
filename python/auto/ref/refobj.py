@@ -1777,6 +1777,8 @@ class QdiiReference(FundReference):
         self.set_forex(self.cny_symbol)
 
         est_symbol = self._est_symbol_of(self.get_symbol(), region)
+        if not est_symbol:
+            est_symbol = self._est_symbol_from_profile(self.get_symbol())
         if est_symbol:
             #: ``qdiiref.php:245`` —— 持仓型标的一律走 ``HoldingsReference``
             self.set_est_ref(build_est_reference(est_symbol, self.source))
@@ -1796,6 +1798,43 @@ class QdiiReference(FundReference):
         if region == "eu":
             return qdii_eu_est_symbol(symbol)
         return qdii_est_symbol(symbol)
+
+    def _est_symbol_from_profile(self, symbol: str) -> Any:
+        """库里 ``fundpair`` 的中间层符号 —— 硬编码表没覆盖时的兜底。
+
+        取法与 ``calc.fundestcalc._est_symbol`` / ``fund_list_service`` 的
+        「跟踪代码」完全一致（``est_symbol or pair_symbol``），同一个语义只
+        在一处定义过的话反而是三份，所以这里照抄取法而不是另建一套。
+
+        ## 为什么需要这一支
+
+        ``qdii_est_symbol()`` 对应 PHP 的 ``QdiiGetEstArray()`` —— 那张表**只列
+        美股那 33 只**。A 股商品（``nf_AU0`` / ``nf_AG0`` / ``nf_M0``）根本不
+        在表里，于是 ``est_ref`` 建不出来 → ``est_net_value()`` 第一行就
+        ``return`` → 三档 EST 全空，分类页连「估值」表都不出现（PHP 那边靠
+        ``GetFairNetValue()``/``GetOfficialNetValue()`` 的守卫把整段跳过）。
+        这是**静默**的：不报错，只是整张表没了。
+
+        ## 为什么排在硬编码表之后
+
+        硬编码表是 PHP 的既定口径（QDII 那批的 est 是指数 ``^NDX``，与
+        ``fundpair`` 里的 pair 是同一个符号，两处一致）。先查表再兜底，
+        保证既有 QDII 的行为一个字节都不变 —— 只有原先**彻底没有** est 的
+        符号会走到这里。
+
+        持仓型（``SZ163208`` / ``SZ160644`` 那批）也走这条路：``fundpair``
+        里没有它们的行，取不到就仍然是 ``None``，与迁移前的"整组空"一致。
+        """
+        reader = getattr(self.source, "get_fund_profile", None)
+        if reader is None:
+            return None
+        try:
+            profile = reader(symbol)
+        except Exception:
+            return None
+        if profile is None:
+            return None
+        return getattr(profile, "est_symbol", None) or getattr(profile, "pair_symbol", None)
 
     def _estimator(self) -> Any:
         """取估算器：优先注入的，否则按数据源现场建一个。
@@ -1902,6 +1941,24 @@ class QdiiReference(FundReference):
         date = getattr(est_ref, "get_date", lambda: None)()
         cny_ref = self.get_cny_ref()
         official_cny = cny_ref.get_close(date) if cny_ref is not None else None
+
+        #: **本币计价**的那一类（国内商品期货）没有汇率引用 —— PHP
+        #: ``fundpairref.php:17`` 的 ``if ($this->pair_ref->IsSinaFutureCN()) {}``
+        #: 是空分支，``GetDefaultCny()`` 返回 1.0。这里必须同样按 1.0 走
+        #: "正常计算"分支，不能落进下面的"汇率缺失"兜底：那条路读的是
+        #: ``fundest`` 表里**历史上算过的**官方 EST，而这些基金从来没算过，
+        #: 于是 ``official_net_value`` 恒为 ``None``，EST 表整段不出现。
+        #: 判据只看**标的**是不是 ``nf_``，**不看** ``cny_ref`` 是否为 ``None`` ——
+        #: ``QdiiReference.__init__`` 会无条件 ``set_forex(cny_symbol)``（默认
+        #: ``USCNY``），所以本币标的也拿得到一份汇率引用，只是那份引用里没有
+        #: 这些标的日的收盘价。要求 ``cny_ref is None`` 会让这个分支永远走不到。
+        est_symbol = getattr(est_ref, "get_symbol", lambda: None)()
+        is_cn_future = (
+            _ref_flag(est_ref, "is_sina_future_cn")
+            or str(est_symbol or "").lower().startswith("nf_")
+        )
+        if is_cn_future and official_cny is None:
+            official_cny = 1.0
 
         if official_cny:
             self.official_cny = official_cny

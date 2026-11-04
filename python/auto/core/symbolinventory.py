@@ -63,6 +63,18 @@ FOREX_SYMBOLS = ("USCNY", "HKCNY", "EUCNY", "JPCNY")
 #: 黄金基金 → GLD → hf_GC），不是配在指数上。
 FUTURES_SYMBOLS = ("hf_NQ", "hf_ES", "hf_CL", "hf_NK", "hf_HSI", "hf_GC")
 
+#: 国内商品期货（``nf_`` 前缀）。**与 ``hf_`` 那族不是一回事**：
+#: ``hf_`` 是外盘（纽约金 / 恒指 / 日经），走 ``futurescli``；
+#: ``nf_`` 是**国内**商品期货，行情直接来自 ``hq.sinajs.cn/list=nf_AU0``，
+#: 与 A 股基金同一条链路（``get_sina_symbol()`` 返回原样大写符号）。
+#:
+#: 它们是「A股商品」那 6 只基金的估值标的（``fundpair`` 里指向它们，
+#: 不是 ``futurespair``），所以必须进 :func:`est_symbols` ——
+#: 否则 daemon 抓了行情只写 ``realtimequote``，``fundestcalc._middle_quote()``
+#: 读 ``estquote`` 落空，官方 EST 退到 ``stockhistory`` 的**昨收**，
+#: 页面上永远是昨天的估值（不报错，只是差一天）。
+CHINA_FUTURE_SYMBOLS = ("nf_AU0", "nf_AG0", "nf_M0")
+
 #: 即期外汇（参考数据表用，``refobj.QDII_REGIONS`` 引用）。
 SPOT_FOREX_SYMBOLS = ("fx_susdcny", "fx_shkdcny", "fx_sjpycny", "fx_seurcny")
 
@@ -107,8 +119,13 @@ def fund_pairs() -> List[Tuple[str, str]]:
 
 
 def est_symbols() -> List[str]:
-    """全部 est 中间层符号（去重、按字母序）—— 都要在 ``stock`` 表里。"""
-    return sorted({est for _, est in fund_pairs()})
+    """全部 est 中间层符号（去重、按字母序）—— 都要在 ``stock`` 表里。
+
+    除 QDII 那批，还要并入 :data:`CHINA_FUTURE_SYMBOLS`：A股商品基金的
+    估值标的是国内商品期货，它们不在 ``fund_pairs()`` 里（``est_symbol_of``
+    只查 QDII 那四张表），漏掉就写不进 ``estquote``。
+    """
+    return sorted({est for _, est in fund_pairs()} | set(CHINA_FUTURE_SYMBOLS))
 
 
 def required_stock_symbols() -> List[str]:

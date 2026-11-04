@@ -32,6 +32,16 @@ INVALID_FIELD_VALUES = ("", "N/A")
 #: 盘口列名。
 ORDERBOOK_COLUMN = "orderbook"
 
+#: 当日均价列名（只有国内商品期货 ``nf_`` 有值）。
+#:
+#: PHP 侧 ``strVWAP`` 是**同一个行情对象**上的字段（``_onSinaFutureCN()`` 从新浪
+#: 第 28 个字段填），``fundpairref.php:242`` 的官方 EST 取的就是它。本项目把快照
+#: 拆成"价格"（本表）与"估值层数值"（``estquote``）两张表，但均价属于**行情**本身，
+#: 所以放回本表 —— 否则 ``FundPairReference.get_official_net_value()`` 里那句
+#: ``getattr(pair_ref, "str_vwap", None)`` 永远拿不到值，商品期货基金的官方 EST
+#: 会退回结算价（实测豆粕 2.0846 vs 生产端 2.054，差 1.5%）。
+VWAP_COLUMN = "vwap"
+
 #: 盘口的四个平行列表，顺序与 PHP 的数组一一对应（买价、买量、卖价、卖量）。
 ORDERBOOK_KEYS = ("bid_price", "bid_quantity", "ask_price", "ask_quantity")
 
@@ -323,14 +333,27 @@ class MemoryQuoteStore(QuoteStore):
         return True
 
 
-#: 建库时就有的一列不缺；``orderbook`` 是后来加的（``dbtools/patch_realtimequote_orderbook.sql``）。
+#: 建库时就有的一列不缺；``orderbook`` / ``vwap`` 是后来加的
+#: （``dbtools/patch_realtimequote_orderbook.sql`` / ``patch_realtimequote_vwap.py``）。
 _LEGACY_COLUMNS = ("symbol", "source_symbol", "price", "prev_price", "name",
                    "quote_date", "quote_time", "source", "fetched_at")
-_ALL_COLUMNS = _LEGACY_COLUMNS + (ORDERBOOK_COLUMN,)
+_BOOK_COLUMNS = _LEGACY_COLUMNS + (ORDERBOOK_COLUMN,)
+_ALL_COLUMNS = _BOOK_COLUMNS + (VWAP_COLUMN,)
 
-_SELECT_SQL_WITH_BOOK = "SELECT %s FROM realtimequote" % ", ".join(_ALL_COLUMNS)
+_SELECT_SQL_WITH_BOOK_VWAP = "SELECT %s FROM realtimequote" % ", ".join(_ALL_COLUMNS)
+_SELECT_SQL_WITH_BOOK = "SELECT %s FROM realtimequote" % ", ".join(_BOOK_COLUMNS)
 _SELECT_SQL_LEGACY = "SELECT %s FROM realtimequote" % ", ".join(_LEGACY_COLUMNS)
 
+_INSERT_SQL_WITH_BOOK_VWAP = (
+    "INSERT INTO realtimequote (id, symbol, source_symbol, price, prev_price, name, "
+    "quote_date, quote_time, source, fetched_at, orderbook, vwap) "
+    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
+    "ON DUPLICATE KEY UPDATE symbol = VALUES(symbol), source_symbol = VALUES(source_symbol), "
+    "price = VALUES(price), prev_price = VALUES(prev_price), name = VALUES(name), "
+    "quote_date = VALUES(quote_date), quote_time = VALUES(quote_time), "
+    "source = VALUES(source), fetched_at = VALUES(fetched_at), orderbook = VALUES(orderbook), "
+    "vwap = VALUES(vwap)"
+)
 _INSERT_SQL_WITH_BOOK = (
     "INSERT INTO realtimequote (id, symbol, source_symbol, price, prev_price, name, "
     "quote_date, quote_time, source, fetched_at, orderbook) "
@@ -360,19 +383,31 @@ def _error_code(exc: BaseException) -> Any:
 
 
 def _select_snapshots(cursor: Any, where: str = "", params: Any = ()) -> list:
-    """读 ``realtimequote``；老库没有 ``orderbook`` 列时自动退回不带列的写法。
+    """读 ``realtimequote``；老库缺列时**逐级退让**。
 
-    回退后给每行补一个 ``orderbook=None``，这样上层只看这一个 key 就够了，
+    两级可选列（``orderbook``、``vwap``）各有"打过补丁 / 没打过"两种库，
+    所以按 ``全列 → 只有盘口 → 老结构`` 依次尝试；靠 MySQL 的 1054
+    （Unknown column）来判断"这一版能不能用"，不必自己查 ``information_schema``。
+
+    退让后给每行补上缺列（值为 ``None``），这样上层只看这几个 key 就够了，
     不必到处判断"这次到底有没有读到那一列"。
     """
-    try:
-        cursor.execute(_SELECT_SQL_WITH_BOOK + where, params)
-        return [dict(row) for row in cursor.fetchall()]
-    except Exception as exc:
-        if _error_code(exc) != ER_BAD_FIELD_ERROR:
-            raise
-        cursor.execute(_SELECT_SQL_LEGACY + where, params)
-        return [dict(row, **{ORDERBOOK_COLUMN: None}) for row in cursor.fetchall()]
+    attempts = (
+        (_SELECT_SQL_WITH_BOOK_VWAP, {}),
+        (_SELECT_SQL_WITH_BOOK, {VWAP_COLUMN: None}),
+        (_SELECT_SQL_LEGACY, {ORDERBOOK_COLUMN: None, VWAP_COLUMN: None}),
+    )
+    for index, (sql, defaults) in enumerate(attempts):
+        try:
+            cursor.execute(sql + where, params)
+            break
+        except Exception as exc:
+            if _error_code(exc) != ER_BAD_FIELD_ERROR or index == len(attempts) - 1:
+                raise
+    rows = [dict(row) for row in cursor.fetchall()]
+    if defaults:
+        rows = [dict(row, **defaults) for row in rows]
+    return rows
 
 
 class RealtimeQuoteStore:
@@ -392,12 +427,14 @@ class RealtimeQuoteStore:
     def save(self, stock_id: Any, symbol: str, source_symbol: str, price: Any,
              prev_price: Any = "", name: Any = "", quote_date: Any = None,
              quote_time: Any = None, source: str = "sina", fetched_at: Any = None,
-             orderbook: Any = None) -> bool:
+             orderbook: Any = None, vwap: Any = None) -> bool:
         """写入/更新一只符号的最新快照（按主键 UPSERT，一个符号只留一行）。
 
-        ``orderbook`` 是 :func:`orderbook_from_lists` 形状的字典（五档买卖挂单）。
-        老库还没有 ``orderbook`` 列时自动退回不带该列的写法 —— 盘口是附加信息，
-        不该让"价格写不进去"这种事发生。
+        ``orderbook`` 是 :func:`orderbook_from_lists` 形状的字典（五档买卖挂单），
+        ``vwap`` 是当日均价（只有国内商品期货 ``nf_`` 有值）。
+
+        两级可选列都可能还没打补丁，所以按 ``全列 → 只有盘口 → 老结构`` 逐级退让：
+        盘口与均价都是附加信息，不该让"价格写不进去"这种事发生。
         """
         if not stock_id:
             return False
@@ -413,15 +450,21 @@ class RealtimeQuoteStore:
             source or "",
             _coerce_datetime(fetched_at),
         )
+        book = encode_orderbook(orderbook)
+        attempts = (
+            (_INSERT_SQL_WITH_BOOK_VWAP, params + (book, "" if vwap in (None, "") else str(vwap))),
+            (_INSERT_SQL_WITH_BOOK, params + (book,)),
+            (_INSERT_SQL_LEGACY, params),
+        )
         cursor = self.connection.cursor()
         try:
-            try:
-                cursor.execute(_INSERT_SQL_WITH_BOOK, params + (encode_orderbook(orderbook),))
-            except Exception as exc:
-                if _error_code(exc) != ER_BAD_FIELD_ERROR:
-                    raise
-                # 列不存在（还没打补丁）：照旧写十个字段，盘口这次丢掉
-                cursor.execute(_INSERT_SQL_LEGACY, params)
+            for index, (sql, args) in enumerate(attempts):
+                try:
+                    cursor.execute(sql, args)
+                    break
+                except Exception as exc:
+                    if _error_code(exc) != ER_BAD_FIELD_ERROR or index == len(attempts) - 1:
+                        raise
         except Exception:
             # 快照写失败不应影响页面可用性：页面会退回 stockhistory 的收盘价
             try:
@@ -503,35 +546,90 @@ class EstQuoteStore:
 
     def __init__(self, connection: Any):
         self.connection = connection
+        #: ``estquote.vwap`` 列是否存在（老库没有，``patch_estquote_vwap.py``
+        #: 打过才有）。懒探测一次就缓存 —— daemon 每轮都要写，不能每次问库。
+        self._vwap_column = None
+
+    def has_vwap_column(self) -> bool:
+        """``estquote`` 有没有 ``vwap`` 列。"""
+        if self._vwap_column is not None:
+            return self._vwap_column
+        exists = False
+        cursor = self.connection.cursor()
+        try:
+            cursor.execute(
+                "SELECT COUNT(*) AS n FROM information_schema.COLUMNS "
+                "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'estquote' "
+                "AND COLUMN_NAME = 'vwap'"
+            )
+            row = cursor.fetchone()
+            exists = bool(row and int(row["n"]))
+        except Exception:
+            exists = False
+        finally:
+            cursor.close()
+        self._vwap_column = exists
+        return exists
 
     def save(self, stock_id: Any, symbol: str, source_symbol: str, close: Any,
              prev_close: Any = "", quote_date: Any = None, quote_time: Any = None,
-             source: str = "sina", fetched_at: Any = None) -> bool:
-        """写入/更新一个中间层标的的最新数值（一符号一行）。"""
+             source: str = "sina", fetched_at: Any = None, vwap: Any = None) -> bool:
+        """写入/更新一个中间层标的的最新数值（一符号一行）。
+
+        ``vwap`` 是**当日均价**，只有国内商品期货（``nf_``）才有值：商品期货
+        基金的净值按均价计，PHP ``GetOfficialNetValue()`` 因此对它取
+        ``strVWAP``（``fundpairref.php:242``）。其它符号留空串。
+        """
         if not stock_id:
             return False
         cursor = self.connection.cursor()
         try:
-            cursor.execute(
-                "INSERT INTO estquote "
-                "(id, symbol, source_symbol, close, prev_close, quote_date, quote_time, source, fetched_at) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) "
-                "ON DUPLICATE KEY UPDATE symbol = VALUES(symbol), source_symbol = VALUES(source_symbol), "
-                "close = VALUES(close), prev_close = VALUES(prev_close), "
-                "quote_date = VALUES(quote_date), quote_time = VALUES(quote_time), "
-                "source = VALUES(source), fetched_at = VALUES(fetched_at)",
-                (
-                    stock_id,
-                    symbol,
-                    source_symbol or "",
-                    str(close or ""),
-                    str(prev_close or ""),
-                    _coerce_date(quote_date),
-                    _coerce_time(quote_time),
-                    source or "",
-                    _coerce_datetime(fetched_at),
-                ),
-            )
+            if self.has_vwap_column():
+                cursor.execute(
+                    "INSERT INTO estquote "
+                    "(id, symbol, source_symbol, close, prev_close, quote_date, quote_time, "
+                    "source, fetched_at, vwap) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
+                    "ON DUPLICATE KEY UPDATE symbol = VALUES(symbol), "
+                    "source_symbol = VALUES(source_symbol), "
+                    "close = VALUES(close), prev_close = VALUES(prev_close), "
+                    "quote_date = VALUES(quote_date), quote_time = VALUES(quote_time), "
+                    "source = VALUES(source), fetched_at = VALUES(fetched_at), "
+                    "vwap = VALUES(vwap)",
+                    (
+                        stock_id,
+                        symbol,
+                        source_symbol or "",
+                        str(close or ""),
+                        str(prev_close or ""),
+                        _coerce_date(quote_date),
+                        _coerce_time(quote_time),
+                        source or "",
+                        _coerce_datetime(fetched_at),
+                        "" if vwap in (None, "") else str(vwap),
+                    ),
+                )
+            else:
+                cursor.execute(
+                    "INSERT INTO estquote "
+                    "(id, symbol, source_symbol, close, prev_close, quote_date, quote_time, source, fetched_at) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) "
+                    "ON DUPLICATE KEY UPDATE symbol = VALUES(symbol), source_symbol = VALUES(source_symbol), "
+                    "close = VALUES(close), prev_close = VALUES(prev_close), "
+                    "quote_date = VALUES(quote_date), quote_time = VALUES(quote_time), "
+                    "source = VALUES(source), fetched_at = VALUES(fetched_at)",
+                    (
+                        stock_id,
+                        symbol,
+                        source_symbol or "",
+                        str(close or ""),
+                        str(prev_close or ""),
+                        _coerce_date(quote_date),
+                        _coerce_time(quote_time),
+                        source or "",
+                        _coerce_datetime(fetched_at),
+                    ),
+                )
         except Exception:
             try:
                 self.connection.rollback()
@@ -542,14 +640,18 @@ class EstQuoteStore:
             cursor.close()
         return True
 
+    def _select_columns(self) -> str:
+        columns = ("symbol, source_symbol, close, prev_close, quote_date, quote_time, "
+                   "source, fetched_at")
+        if self.has_vwap_column():
+            columns += ", vwap"
+        return columns
+
     def load_all(self) -> list:
         """读出全部中间层数值。"""
         cursor = self.connection.cursor()
         try:
-            cursor.execute(
-                "SELECT symbol, source_symbol, close, prev_close, quote_date, quote_time, "
-                "source, fetched_at FROM estquote"
-            )
+            cursor.execute("SELECT %s FROM estquote" % self._select_columns())
             return [dict(row) for row in cursor.fetchall()]
         finally:
             cursor.close()
@@ -559,8 +661,7 @@ class EstQuoteStore:
         cursor = self.connection.cursor()
         try:
             cursor.execute(
-                "SELECT symbol, source_symbol, close, prev_close, quote_date, quote_time, "
-                "source, fetched_at FROM estquote WHERE symbol = %s LIMIT 1",
+                "SELECT %s FROM estquote WHERE symbol = %%s LIMIT 1" % self._select_columns(),
                 (symbol,),
             )
             row = cursor.fetchone()
