@@ -159,7 +159,7 @@ function _RealtimeCallback() {
 curl -s http://127.0.0.1:5000/fund/SZ161226 | grep -o "纽约白银\|31.1035"
 
 # 三档估值（实时 EST 必须 ≠ 参考 EST）
-python -B auto/cli/futurescli.py --est SZ161226
+python -B auto/cli/futurescli.py --est --symbol SZ161226
 
 # 份额表（10 行，除今天那行的数量外应与生产端逐位相同）
 curl -s http://127.0.0.1:5000/history/shareshistory/SZ161226
