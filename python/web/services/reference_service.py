@@ -365,13 +365,20 @@ def reference_symbols_for_fund(symbol: str, source: Any = None) -> list:
     :func:`quote_state_of` 在页面上标成「库里无此符号」，比悄悄少一行更诚实。
 
     顺序按生产端：基金 → 估值标的 → 实时标的 → 杠杆标的 → 外汇 → 中间价。
+    **A股商品（``nf_`` 那一族）例外，配对标的排在基金前面** ——
+    见 :func:`_pair_goes_first`。
     """
     symbols = [symbol]
     if source is None:
         return symbols
 
     est_symbol, forex_symbol, cny_symbol = _fund_reference_symbols(symbol, source)
-    _append(symbols, est_symbol)
+    if _pair_goes_first(est_symbol):
+        symbols = []
+        _append(symbols, est_symbol)
+        symbols.append(symbol)
+    else:
+        _append(symbols, est_symbol)
     _append(symbols, _realtime_symbol(est_symbol, source))
     for leverage in _leverage_symbols(est_symbol, source):
         _append(symbols, leverage)
@@ -380,6 +387,28 @@ def reference_symbols_for_fund(symbol: str, source: Any = None) -> list:
     _append(symbols, forex_symbol)
     _append(symbols, cny_symbol)
     return symbols
+
+
+#: A股商品期货的符号前缀（``nf_AG0`` 沪银 / ``nf_AU0`` 沪金 / ``nf_M0`` 豆粕）。
+CN_FUTURE_PREFIX = "nf_"
+
+
+def _pair_goes_first(est_symbol: Any) -> bool:
+    """这一族要不要把配对标的排在基金前面。
+
+    PHP ``woody/res/php/_chinafuture.php:47`` 与其它基金页的装配顺序相反：
+
+    ```php
+    $this->CreateGroup(array($this->ref->GetPairRef(), $this->ref));   // 配对在前
+    ```
+
+    ``_qdiigroup.php`` 那边是 ``array($stock_ref, $est_ref)``（基金在前）。
+    生产端 ``sz161226cn.php`` 的参考数据表因此是 ``AG0 / SZ161226 / SI / USDCNH``，
+    而本地此前一直是"基金在前"，纯展示差异。
+
+    只对 ``nf_`` 这一族生效：其它基金的顺序已与生产端一致，动它们没有依据。
+    """
+    return bool(est_symbol) and str(est_symbol).lower().startswith(CN_FUTURE_PREFIX)
 
 
 #: 离岸人民币。PHP ``_qdii.php:13`` 里 ``$strCNH = 'fx_susdcnh';`` 是**写死的**，
@@ -460,6 +489,17 @@ def _fund_reference_symbols(symbol: str, source: Any) -> tuple:
         forex_symbol = getattr(ref, "forex_symbol", None)
     except Exception:
         pass
+
+    if est_symbol and str(est_symbol).lower().startswith(CN_FUTURE_PREFIX):
+        # A股商品（``nf_``）**没有汇率这一档**：PHP ``fundpairref.php:17`` 的
+        # ``IsSinaFutureCN()`` 是空分支，``cny_ref`` 保持 false，
+        # ``GetDefaultCny()`` 返回 1.0 —— 参考数据表里也就不该有
+        # 「USDCNY 即期 / USCNY 中间价」两行。生产端 ``sz161226cn.php`` 实测
+        # 只有 4 行（``AG0 / SZ161226 / SI / USDCNH``），那行 ``USDCNH``
+        # 是页面级的 ``fx_susdcnh``（见 :func:`_cnh_and_oil_symbols`），
+        # 与地区表无关。
+        forex_symbol = None
+        cny_symbol = None
     return est_symbol, forex_symbol, cny_symbol
 
 

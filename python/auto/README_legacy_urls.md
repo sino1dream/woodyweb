@@ -75,13 +75,24 @@ require('../../php/ui/_dispcn.php');
 PHP 那边 `_chinafuture.php` 直接用 `new FundPairReference($strSymbol)`，配对标的由
 它自己查 `fundpair`，所以生产端有那一行。补一条 `fundpair` 兜底后本地对齐。
 
-## 六、仍然没对齐的三处（都在这一页上）
+## 六、最初没对齐的三处（2026-11-05 已全部补齐）
 
-| 缺口 | 原因 | 要不要补 |
+对照生产端 `sz161226cn.php` 时列过三处差异，都在同一天补完，
+细节见 `README_silver_si_migration.md`：
+
+| 缺口 | 原因 | 结果 |
 |---|---|---|
-| 参考数据的 `SI`（纽约白银）行 | PHP 对 `SZ161226` 挂了一条专用回调：`hf_SI` × `fx_susdcnh` ÷ 31.1035 → 元/千克，既进参考数据、也当「实时 EST」用（生产端 1.282 vs 参考 1.442）。本地没有 `hf_SI` 这一路行情与配对，实时 EST 目前等于参考 EST | 要补就得接 `hf_SI` + `fx_susdcnh` 这条链路（`futurespair` + 回调），不是页面问题 |
-| 「基金场内份额」表 | 段落的代码在（`detail_sections.build_shares` / `history_service` 的 `shareshistory`），但 `shareshistory` 表里没有 `SZ161226` 的行 —— 取不到记录就整段不出现（PHP 同款守卫） | 数据缺口。生产端这一页公开可见，可以照抄 10 行做种子；现有 `dbtools/_seed_shares_sample.py` 只给了 `SZ162411` |
-| 参考数据的行序 | PHP 是 `CreateGroup(array($pair, $ref))` → **配对标的在前**；本地统一是"基金在前" | 纯展示差异，没改（改就得按分组判断，收益不值） |
+| 参考数据的 `SI`（纽约白银）行 + 实时 EST | PHP 对 `SZ161226` 挂了一条专用回调：`hf_SI × fx_susdcnh × 1000 ÷ 31.1035` → 元/千克，既进参考数据、也当实时 EST 用 | **已补**：`stock` 加 `hf_SI`、`fundpair` / `futurespair` 加 `nf_AG0 → hf_SI`，换算写在 `calc/futurescalib.FUTURES_VALUE_TRANSFORMS`。生产端实时 EST 1.285，本地 1.286（净值日差一天） |
+| 「基金场内份额」表 | `shareshistory` 里没有 `SZ161226` 的行，取不到记录就整段不出现（PHP 同款守卫） | **已补**：`dbtools/patch_shares_sz161226.py` 照抄生产端 10 行；只剩今天那行的「数量」待日线归档（见该 README §五） |
+| 参考数据的行序 | PHP 是 `CreateGroup(array($pair, $ref))` → **配对标的在前** | **已改**：`reference_service._pair_goes_first()` 只对 `nf_` 一族生效 |
+
+顺带修掉的两处：
+
+* 参考数据里多出的 `fx_susdcny` / `USCNY` 两行 —— A股商品没有汇率这一档
+  （PHP `fundpairref.php:17` 是空分支），现在不给了；
+* 「算法说明」里官方 EST 的汇率口径印成 `None 中间价 2026-11-05`
+  —— `fundestcalc._official_cny_label()` 对 `cny_symbol is None` 给出
+  「人民币计价，不折汇率」。
 
 ## 七、复核方式
 

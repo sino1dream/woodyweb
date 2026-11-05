@@ -180,3 +180,11 @@ cd python/auto && D:/python/python.exe -B cli/quoteupdatercli.py --once
 3. **`nf_` 五个以上品种**：目前只有黄金/白银/豆粕三只（`ChinaFutureGetSymbolArray()`
    就这六只基金）。新浪内盘期货的符号列表（`nf_XX0` 连续合约）没有枚举文档，
    新增品种要人工确认代码。
+
+## 八、白银那一条的例外：它还有一层外盘期货
+
+其余五只的估值只到"基金 ← 国内期货"为止。`SZ161226` 不一样：生产端
+`_chinafuture.php` 还挂了一条**外盘**实时链路 `hf_SI`（纽约白银），
+换算要过汇率与"盎司→千克"，所以它既有 `nf_AG0`（估值标的）也有
+`hf_SI`（实时 EST 的来源）。两条链路的差别、为什么换算不能塞进 `cal`、
+以及这一页的场内份额数据来源，见 `README_silver_si_migration.md`。

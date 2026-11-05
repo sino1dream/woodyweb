@@ -16,6 +16,7 @@ import unittest
 from calc.futurescalib import (
     FALLBACK_FUTURES,
     FALLBACK_PROXIES,
+    FUTURES_VALUE_TRANSFORMS,
     FuturesCalibrator,
     FuturesPairStore,
     build_futures_calibrator,
@@ -650,6 +651,96 @@ class RealtimeSourceValueTest(unittest.TestCase):
         calibrator = self._calibrator()
         quote = FuturesQuote("hf_NQ", "hf_NQ", price="abc")
         self.assertIsNone(calibrator.realtime_source_value("^NDX", quote))
+
+
+class SilverTransformTest(unittest.TestCase):
+    """``nf_AG0 ← hf_SI``：**要单位换算**的那一族。
+
+    PHP ``woody/res/php/_chinafuture.php:6-13``（只挂在 ``SZ161226`` 上）::
+
+        return 1000.0 * $realtime_ref->GetVal() * $cnh_ref->GetVal() / 31.1035;
+
+    与 ``^NDX ← hf_NQ`` 的区别：那条两端同量纲，换算只有 ``÷ cal``；
+    这条是**美元/盎司 → 元/千克**，汇率与单位塞不进 ``cal``
+    （``cal`` 是校准历史里的死数，汇率一动它就得重算）。
+
+    下面这组数取自生产端 2026-11-05 的实测页（``sz161226cn.php``）：
+    ``SI 53.29 / USDCNH 6.6677 / AG0 12898``，页面实时 EST 1.285。
+    """
+
+    FUTURE_PRICE = 53.29
+    FX = 6.6677
+    AG_PRICE = 12898.0
+    EXPECTED = FUTURE_PRICE * FX * 1000.0 / 31.1035      # ≈ 11423.9 元/千克
+
+    #: ``_calibrator()`` 的"没传"标记（``None`` 在这里是**有意义的输入**：
+    #: "这条取不到"，不能兼作默认值）
+    _UNSET = object()
+
+    class Source:
+        """只提供三样东西：符号 id、两条快照（汇率 / AG0）、没有净值。
+
+        ``fx`` / ``ag`` 传 ``None`` 表示"这一条取不到"，用来验网关。
+        """
+
+        def __init__(self, fx=None, ag=None):
+            self._ids = {"nf_AG0": 287, "hf_SI": 301, "fx_susdcnh": 180}
+            self.fx = fx
+            self.ag = ag
+
+        def get_stock_id(self, symbol):
+            return self._ids.get(symbol)
+
+        def get_stored_quote(self, symbol):
+            if symbol == "fx_susdcnh" and self.fx is not None:
+                return FuturesQuote(symbol, symbol, price=str(self.fx))
+            if symbol == "nf_AG0" and self.ag is not None:
+                return FuturesQuote(symbol, symbol, price=str(self.ag))
+            return None
+
+        def get_latest_net_value(self, stock_id):
+            return None
+
+    def _calibrator(self, fx=_UNSET, ag=_UNSET):
+        source = self.Source(
+            fx=self.FX if fx is self._UNSET else fx,
+            ag=self.AG_PRICE if ag is self._UNSET else ag,
+        )
+        return FuturesCalibrator(source, connection=None)
+
+    def test_future_symbol_does_not_need_the_table(self):
+        """``futurespair`` 少一行也要能配到 —— 参数就写在换算表里。"""
+        self.assertEqual(self._calibrator().future_symbol_of("nf_AG0"), "hf_SI")
+        self.assertEqual(FUTURES_VALUE_TRANSFORMS["nf_AG0"].future_symbol, "hf_SI")
+
+    def test_value_is_converted_to_yuan_per_kg(self):
+        """换算结果必须落在**沪银**的量级（一万上下），不是 53 美元。"""
+        quote = FuturesQuote("hf_SI", "hf_SI", price=str(self.FUTURE_PRICE))
+        value = self._calibrator().realtime_source_value("nf_AG0", quote)
+
+        self.assertIsNotNone(value)
+        self.assertAlmostEqual(value, self.EXPECTED, places=6)
+        self.assertGreater(value, 10000)
+
+    def test_missing_fx_is_none_not_one(self):
+        """缺汇率时**不能**按 1.0 算 —— 漏乘 6.7 倍的值照样能显示出来。
+
+        这里的构造办法是把汇率快照与净值都拿掉：``Source(fx=None)``
+        两条取数路径都返回 ``None``。
+        """
+        quote = FuturesQuote("hf_SI", "hf_SI", price=str(self.FUTURE_PRICE))
+        self.assertIsNone(self._calibrator(fx=None).realtime_source_value("nf_AG0", quote))
+
+    def test_scale_guard_still_applies(self):
+        """换算完离 AG0 快照价太远（这里 10 倍）就拒收，让调用方回落快照。"""
+        quote = FuturesQuote("hf_SI", "hf_SI", price=str(self.FUTURE_PRICE))
+        self.assertIsNone(self._calibrator(ag=1289.0).realtime_source_value("nf_AG0", quote))
+
+    def test_label_only_for_transformed_pairs(self):
+        """「算法说明」只给需要换算的那一族加算式，别给美股也加上。"""
+        calibrator = self._calibrator()
+        self.assertIn("31.1035", calibrator.value_transform_label("nf_AG0"))
+        self.assertIsNone(calibrator.value_transform_label("^NDX"))
 
 
 if __name__ == "__main__":

@@ -37,7 +37,8 @@ for _path in (AUTO_DIR, PYTHON_DIR):
         sys.path.insert(0, _path)
 
 from calc.fundestcalc import build_estimate_calculator  # noqa: E402
-from calc.futurescalib import FALLBACK_FUTURES, build_futures_calibrator, check_adjust_time  # noqa: E402
+from calc.futurescalib import (FALLBACK_FUTURES, FUTURES_VALUE_TRANSFORMS,
+                               build_futures_calibrator, check_adjust_time)  # noqa: E402
 from source.futuresquotes import FUTURES_NAMES, SinaFuturesClient  # noqa: E402
 from sql.historytable import CalibrationSql, format_hm  # noqa: E402
 from core.stockdata import MySqlFundDataSource  # noqa: E402
@@ -48,8 +49,12 @@ def _source():
 
 
 def _future_symbols(source) -> list:
-    """要抓的期货符号：``futurespair`` 里的 + 内置兜底里的。"""
+    """要抓的期货符号：``futurespair`` 里的 + 内置兜底里的 + 需换算那一族。"""
     symbols = set(FALLBACK_FUTURES.values())
+    #: 需要单位换算的配对（``nf_AG0 ← hf_SI``）不在 ``FALLBACK_FUTURES`` 里，
+    #: 只填在表里就会因为"表里少一行"而停抓。这条兜底保证 ``hf_SI`` 的
+    #: 快照始终有人刷新 —— 它一旦停更，实时 EST 会静默回落到 AG0 快照。
+    symbols.update(transform.future_symbol for transform in FUTURES_VALUE_TRANSFORMS.values())
     connection = getattr(source, "connection", None)
     if connection is not None:
         cursor = connection.cursor()
@@ -72,8 +77,14 @@ def _index_future_pairs(source) -> dict:
     原实现只遍历 ``FALLBACK_FUTURES``（美股两对），于是港股 / 日经即使把
     配对写进了表里，刷新快照与校准两段也永远走不到它们。表里的一律以表为准
     （表可覆盖兜底），兜底兜住"表里少一行"的静默失效。
+
+    ``nf_AG0 ← hf_SI`` 也在这里 —— 它虽然要单位换算，但"刷新指数快照 +
+    试着校准"这两步与其它配对一样跑；时刻永远对不齐（沪银 15:00 收、
+    纽约白银按美东时间），所以那一步只会打印"不可校准"，不写库。
     """
     pairs = dict(FALLBACK_FUTURES)
+    for index_symbol, transform in FUTURES_VALUE_TRANSFORMS.items():
+        pairs.setdefault(index_symbol, transform.future_symbol)
     connection = getattr(source, "connection", None)
     if connection is None:
         return pairs

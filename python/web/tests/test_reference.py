@@ -496,6 +496,49 @@ class ReferenceSymbolsTest(unittest.TestCase):
         self.assertIn("hf_CL", reference_symbols_for_fund("SZ162411", source))
 
 
+class CnFutureReferenceOrderTest(unittest.TestCase):
+    """A股商品（``nf_``）那一族的参考数据：顺序与"没有汇率行"两条都与别族相反。
+
+    生产端 ``sz161226cn.php`` 实测 4 行::
+
+        AG0 / SZ161226 / SI / USDCNH
+
+    两个反直觉点：
+
+    1. **配对标的在前** —— ``_chinafuture.php:47`` 是
+       ``CreateGroup(array($this->ref->GetPairRef(), $this->ref))``，
+       而 ``_qdiigroup.php`` 是 ``array($stock_ref, $est_ref)``（基金在前）；
+    2. **没有即期/中间价两行** —— ``fundpairref.php:17`` 的
+       ``IsSinaFutureCN()`` 是空分支，``cny_ref`` 保持 false；
+       那行 ``USDCNH`` 是页面级的 ``fx_susdcnh``，与地区表无关。
+    """
+
+    #: ``SZ161226 → nf_AG0``（基金跟踪沪银）与 ``nf_AG0 → hf_SI``（沪银配纽约白银）
+    STOCK_IDS = {"SZ161226": 294, "nf_AG0": 287, "hf_SI": 301}
+    ROWS = [(294, 287), (287, 301)]
+
+    def _symbols(self):
+        return reference_symbols_for_fund("SZ161226", PairSource(self.ROWS, self.STOCK_IDS))
+
+    def test_pair_comes_first_then_the_fund(self):
+        self.assertEqual(self._symbols()[:2], ["nf_AG0", "SZ161226"])
+
+    def test_realtime_symbol_is_the_new_york_silver(self):
+        """第 3 行是 ``hf_SI`` —— 来自 fundpair 的"我跟踪谁"。"""
+        self.assertEqual(self._symbols()[2], "hf_SI")
+
+    def test_no_forex_or_middle_rate_rows(self):
+        """``fx_susdcny`` / ``USCNY`` 不该出现；``fx_susdcnh`` 是页面级标的。"""
+        symbols = self._symbols()
+        self.assertNotIn("fx_susdcny", symbols)
+        self.assertNotIn("USCNY", symbols)
+        self.assertIn("fx_susdcnh", symbols)
+
+    def test_full_row_set_matches_production(self):
+        """整张表就是生产端那 4 行。"""
+        self.assertEqual(self._symbols(), ["nf_AG0", "SZ161226", "hf_SI", "fx_susdcnh"])
+
+
 class FakePairCursor:
     """内存版 ``fundpair`` 查询。
 

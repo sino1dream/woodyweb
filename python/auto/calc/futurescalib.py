@@ -34,7 +34,7 @@ return true;
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, NamedTuple
 
 from calc.fundcalc import qdii_get_calibration
 from sql.historytable import CalibrationSql, format_hm
@@ -199,7 +199,21 @@ class FuturesCalibrator:
             symbol = self.store.get_future_symbol(index_id)
             if symbol:
                 return symbol
+        transform = FUTURES_VALUE_TRANSFORMS.get(index_symbol)
+        if transform is not None:
+            # 单位换算那一族不走 ``futurespair`` 也能工作（表里少一行不至于
+            # 让实时 EST 整列消失），换算参数就写在 :data:`FUTURES_VALUE_TRANSFORMS` 里
+            return transform.future_symbol
         return FALLBACK_FUTURES.get(index_symbol)
+
+    def value_transform_label(self, index_symbol: str) -> Any:
+        """该配对的**换算算式**文本；不需要换算的返回 ``None``。
+
+        只服务页面「算法说明」那一行 —— 数值一律走
+        :meth:`realtime_source_value`，两处共用同一张表，不会各说各话。
+        """
+        transform = FUTURES_VALUE_TRANSFORMS.get(index_symbol)
+        return transform.note if transform is not None else None
 
     # -- 校准 -------------------------------------------------------------
     def calc_factor(self, future_price: Any, index_price: Any, cny: Any) -> Any:
@@ -551,18 +565,35 @@ class FuturesCalibrator:
         中间层快照（值是对的，只是不带期货信息）。
         这把尺子同时能抓住上面那个 bug 的变体：767 对 7690 偏离 90%，
         一测就出来。
+
+        ## 两条分支：``÷ cal`` 与**单位换算**
+
+        绝大多数配对两端同量纲（NQ 期货 ≈ ^NDX 点位），换算只有 ``÷ cal``。
+        ``nf_AG0 ← hf_SI`` 是例外 —— 美元/盎司 与 元/千克 之间的汇率和单位
+        塞不进 ``cal``（见 :data:`FUTURES_VALUE_TRANSFORMS` 的说明），
+        所以那一条走"期货价 × 汇率 × 系数"，**不除 cal**：
+        换出来的值已经与 ``est_cal``（AG0 的结算价）同空间。
         """
         if future_quote is None:
-            return None
-        factor = self._calibration_of(index_symbol)
-        if not factor:
             return None
         try:
             price = float(getattr(future_quote, "price", None))
         except (TypeError, ValueError):
             return None
 
-        index_price = price / float(factor)                     # 期货 -> 指数点位
+        transform = FUTURES_VALUE_TRANSFORMS.get(index_symbol)
+        if transform is None:
+            factor = self._calibration_of(index_symbol)
+            if not factor:
+                return None
+            index_price = price / float(factor)                 # 期货 -> 指数点位
+        else:
+            fx = self._fx_value(transform.fx_symbol)
+            if fx is None:
+                # 缺汇率就**不要**猜 1.0：漏乘 6.7 倍的值照样能显示在页面上，
+                # 只是错的。宁可让调用方回落到中间层快照。
+                return None
+            index_price = price * fx * transform.factor
 
         reference = self._index_reference_price(index_symbol)
         try:
@@ -573,6 +604,43 @@ class FuturesCalibrator:
             # 量级不对就别用 —— 详见上面"2026-10-20 修过一次"
             return None
         return index_price
+
+    def _fx_value(self, symbol: str) -> Any:
+        """外汇当前值（``fx_susdcnh``），只服务 :data:`FUTURES_VALUE_TRANSFORMS`。
+
+        取数与 ``fundestcalc._spot_cny()`` 一致：**行情快照优先**（daemon 写的，
+        角色同 PHP 的 sinajs 缓存），再退净值表 —— 即期外汇正常情况下只有快照。
+        """
+        reader = getattr(self.source, "get_stored_quote", None)
+        if reader is not None:
+            try:
+                quote = reader(symbol)
+            except Exception:
+                quote = None
+            price = getattr(quote, "price", None) if quote is not None else None
+            if price not in (None, ""):
+                try:
+                    return float(price)
+                except (TypeError, ValueError):
+                    pass
+
+        stock_id = self.source.get_stock_id(symbol)
+        if stock_id is None:
+            return None
+        reader = getattr(self.source, "get_latest_net_value", None)
+        if reader is None:
+            return None
+        try:
+            record = reader(stock_id)
+        except Exception:
+            return None
+        value = getattr(record, "close", None) if record is not None else None
+        if value in (None, ""):
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
 
     def _index_reference_price(self, index_symbol: str) -> Any:
         """指数自身的实时快照价（量级保险的尺子），没有返回 ``None``。
@@ -631,6 +699,10 @@ class FuturesCalibrator:
 #: 新浪期货只提供 ``hf_HSI`` / ``hf_NK``，``hf_HSTECH`` / ``hf_HSCEI`` /
 #: ``hf_HTI`` / ``hf_HHI`` 全部返回空串（实测），生产端 ``sh513010cn.php``
 #: 与 ``sh510900cn.php`` 也确实没有实时 EST 列 —— 这是数据源缺，不是漏配。
+#:
+#: **需要单位换算的那条不在这里**（``nf_AG0 ← hf_SI``），
+#: 见 :data:`FUTURES_VALUE_TRANSFORMS` —— 它多了汇率与"盎司→千克"两件事，
+#: 不能只靠 ``÷ cal`` 一步完成。
 FALLBACK_FUTURES = {
     "^NDX": "hf_NQ",
     "^GSPC": "hf_ES",
@@ -641,6 +713,49 @@ FALLBACK_FUTURES = {
     # ``futurespair`` 里的"指数"角色），所以 ``cal`` 是 GC/GLD 的**单位换算**
     # （≈10.94，黄金按美元/盎司、GLD 按 1/10 盎司份额），不是常见的 ≈1.0。
     "GLD": "hf_GC",
+}
+
+class FuturesValueTransform(NamedTuple):
+    """一条"期货价 → 中间层数值"的**单位换算**说明。
+
+    ``factor`` 乘在 ``期货价 × 汇率`` 上，换算完的值必须直接落在
+    **指数（中间层）空间** —— 与 ``est_cal`` 同尺度，中间不再除任何 ``cal``。
+    """
+
+    future_symbol: str
+    fx_symbol: str
+    factor: float
+    #: 给页面「算法说明」用的算式文本（含符号名，能直接照着手算）
+    note: str
+
+
+#: 需要**单位换算**的期货配对：``指数 -> FuturesValueTransform``。
+#:
+#: 只有 ``nf_AG0`` 一条，但它和 ``FALLBACK_FUTURES`` 里那五条不是一回事：
+#: 那五条两端同量纲（期货≈指数），换算只有 ``÷ cal``；这一条的期货是
+#: **纽约白银（美元/盎司）**，指数是 **沪银连续（元/千克）**，中间的
+#: 汇率与单位换算无法塞进 ``cal``（``cal`` 是"期货/指数"的比值，
+#: 若把汇率算进去，汇率一动 cal 就得跟着重算，而 cal 是校准历史里的死数）。
+#:
+#: 换算照抄 PHP ``woody/res/php/_chinafuture.php:6-13``：
+#:
+#: ```php
+#: function _RealtimeCallback() {
+#:     return 1000.0 * $realtime_ref->GetVal() * $cnh_ref->GetVal() / 31.1035;
+#: }
+#: ```
+#:
+#: ``1000`` 是"克 → 千克"（沪银按元/千克报价），``31.1035`` 是金衡盎司的克数，
+#: ``fx_susdcnh`` 是离岸人民币（生产端这一条用的就是它，不是 ``USCNY`` 中间价）。
+#: 生产端 2026-11-05 实测：``53.29 × 6.6677 × 1000 ÷ 31.1035 = 11424`` 元/千克，
+#: 对 AG0 结算价 12013 得 0.951，再乘净值 1.3529 = 实时 EST 1.285（页面同值）。
+FUTURES_VALUE_TRANSFORMS = {
+    "nf_AG0": FuturesValueTransform(
+        future_symbol="hf_SI",
+        fx_symbol="fx_susdcnh",
+        factor=1000.0 / 31.1035,
+        note="hf_SI × fx_susdcnh × 1000 ÷ 31.1035",
+    ),
 }
 
 #: 指数 → 中间层 ETF 的兜底映射（反推指数点位用）。

@@ -453,9 +453,7 @@ class EstimateCalculator:
         official_est = self._official_est_value(est_symbol, mid_date, data)
         official_label = self._official_est_label(est_symbol, mid_date, data)
         official_cny = ctx["cny_mid"] if ctx["cny_mid"] is not None else ctx["cny_current"]
-        official_cny_label = ("%s 中间价 %s" % (ctx["cny_symbol"], mid_date) if ctx["cny_mid"] is not None
-                              else "%s 中间价 %s（最新，%s 无报价）" % (
-                                  ctx["cny_symbol"], ctx["cny_date"], mid_date))
+        official_cny_label = self._official_cny_label(ctx, mid_date)
 
         fair_est = ctx["day_quote"]
         fair_label = "%s %s 当日收盘价" % (est_symbol, mid_date)
@@ -534,6 +532,21 @@ class EstimateCalculator:
             return "%s %s 持仓加权估值" % (est_symbol, date)
         return "%s %s 行情价" % (est_symbol, date)
 
+    def _official_cny_label(self, ctx: dict, mid_date: Any) -> str:
+        """官方 EST 用的汇率口径说明（``cny_cal`` 那两格）。
+
+        ``cny_symbol`` 为 ``None`` 的是**国内商品期货**那一族（``nf_``）：
+        基金与标的本币，压根没有汇率。**必须在这里挡掉** —— 直接用
+        ``"%s 中间价" % None`` 会在页面上印出字面的 ``None``
+        （2026-11-05 在 ``/fund/SZ161226`` 的「算法说明」里实测到）。
+        """
+        cny_symbol = ctx.get("cny_symbol")
+        if cny_symbol is None:
+            return "人民币计价，不折汇率"
+        if ctx["cny_mid"] is not None:
+            return "%s 中间价 %s" % (cny_symbol, mid_date)
+        return "%s 中间价 %s（最新，%s 无报价）" % (cny_symbol, ctx["cny_date"], mid_date)
+
     def _fair_cny_label(self, symbol: str, ctx: dict) -> str:
         """参考/实时 EST 用的汇率口径（ETF 即期、LOF 中间价）。"""
         cny_symbol = ctx.get("cny_symbol")
@@ -558,10 +571,26 @@ class EstimateCalculator:
         if value is not None:
             future_symbol = self._future_symbol_of(ctx)
             index_symbol = self._index_symbol(ctx)
+            note = self._futures_transform_note(index_symbol)
+            if note:
+                # 需要单位换算的配对（nf_AG0 ← hf_SI）：把算式显出来，
+                # 否则用户按 "hf_SI 期货实时价" 直接对 AG0 的价会差 10 倍。
+                return value, "%s → %s 同口径" % (note, index_symbol)
             return value, "%s 期货实时价 → %s 同口径" % (future_symbol or "期货", index_symbol or "标的")
         if ctx.get("realtime_quote") is not None:
             return ctx["realtime_quote"], "%s 实时快照价" % ctx["est_symbol"]
         return None, None
+
+    def _futures_transform_note(self, index_symbol: Any) -> Any:
+        """该配对要不要单位换算；要就返回算式文本，不用换算返回 ``None``。"""
+        calibrator = getattr(self, "futures_calibrator", None)
+        reader = getattr(calibrator, "value_transform_label", None)
+        if reader is None or not index_symbol:
+            return None
+        try:
+            return reader(index_symbol)
+        except Exception:
+            return None
 
     def _future_symbol_of(self, ctx: dict) -> Any:
         """该基金配对的期货符号（只为说明文字服务）。"""
