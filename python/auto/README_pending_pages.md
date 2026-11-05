@@ -1,7 +1,7 @@
 # 剩余未迁页面清单（"生产端未展示页面"及其它）
 
-> 复核日期：2026-11-02
-> 判定依据：`woody/res/*.php` 全量清点 + Flask `url_map` 57 条路由 + 真库/测试客户端实测
+> 复核日期：2026-11-05
+> 判定依据：`woody/res/*.php` 全量清点 + Flask `url_map` 63 条路由 + 真库/测试客户端实测
 > 本文只记**现状与缺口**，已完成项的细节见各自的 `README_*_migration.md`
 
 ## 一、这一批指什么
@@ -20,7 +20,15 @@
 | 分类页 | 16 | `biotechcn.php` 一族 4 行壳子，**已全部迁掉**（一个注册表 + 一个视图），见 `README_category_pages_migration.md`；2026-11-01 又补上 `lofcn.php` / `overnightcn.php` 两个同构页（注册表 17 → 19） |
 | 其它 | 34 | 分组页 / 历史页 / 账号页 / 工具页 |
 
-Flask 侧现有 **57 条路由**（`create_app().url_map`，含 `/static/<path>` 一条）。
+Flask 侧现有 **63 条路由**（`create_app().url_map`，含 `/static/<path>` 一条）。
+
+**旧地址已接上（2026-11-05）**：生产端"文件名就是地址"，本地换成了按功能分组的
+路径，于是 195 个 `*cn.php` 全部 404（用户按生产端习惯敲
+`/woody/res/sz161226cn.php` 撞到的就是这个）。现在
+`GET /woody/res/<path:page>` 统一 302 过去，206 个页面里 **196 个能跳、10 个
+明确没有对应**（404 + 原因）。映射表在 `web/services/legacy_urls.py`，**分类页从
+`CATEGORY_PAGES` 反推、edit 族从 `STOCK_OPTIONS` 生成**，不另抄清单。
+见 `README_legacy_urls.md`。
 
 ## 二、已迁的部分（16 个入口）
 
@@ -124,6 +132,7 @@ require('../../php/ui/_editcn.php');
 | `deletesymbol.php` | 删标的（`php/deletestock.php`，先查五道闸门再连锁删） | **已迁** | `GET/POST /stock/<symbol>/delete`（先预览再执行），见 `README_deletesymbol_migration.md` |
 | ~~后台符号管理~~ | `stock` 表的增 / 删 / 改名 | **本地新增（PHP 没有这一页）** | `GET /admin/symbols`、`/admin/symbol/new`、`/admin/symbol/<symbol>`（关联数据 + 删除确认）、`POST /admin/symbol/submit`、`POST /admin/symbol/<symbol>/delete`。PHP 那边三件事是散的：改名在 `editstock.php`、删除在 `deletesymbol.php`、「新增」只是访问页面时 `StockGetReference` 的副作用。删除口径全部复用 `auto/deletesymbol.py`（闸门 + 6 张主表 + 可选残留表）。起因：`/category/chinafuture` 六只基金全显示「库里无此符号」，而本地没有那个"顺手入库"的副作用，缺一个显式入口 |
 | ~~后台控制台~~ | 把本节这些"只能手敲 URL"的页面收成一个入口 | **本地新增（PHP 没有这一页）** | `GET /admin`（2026-11-04 起；之前 302 跳 `/admin/groups`）。分三类列：① 生产端只能手敲 URL 的（16 项 `edit*.php` 从 `STOCK_OPTIONS` 生成 + 删标的 / 分组 / 交易 / 抓取）；② 生产端根本没有的（符号管理 / 索引页 / 登出 / 状态页 / JSON API）；③ 生产端有、本地未迁（`uploadfile.php` / `debugcn.php`）。符号相关的 18 个链接共用一个输入框（`__SYMBOL__` 占位 + `data-symbol-href`）。清单定义在 `web/services/admin_console.py`，见 `README_admin_console.md` |
+| ~~旧地址兼容层~~ | `woody/res/*.php` 这 206 个地址 | **本地新增（生产端不需要：文件名本身就是地址）** | `GET /woody/res/<path:page>` → 302 到对应本地路径，196 个能跳 / 10 个明确没有对应（404 + 原因）。分类页从 `CATEGORY_PAGES` 反推、edit 族从 `STOCK_OPTIONS` 生成。见 `README_legacy_urls.md` |
 | `uploadfile.php` | 上传 Yahoo 历史行情 CSV 到 `stockhistory` | 未迁 | 低优先（本地用 `dbtools/seed_*` 顶替） |
 | `debugcn.php` | 访问日志/恶意 IP 统计页（依赖 nginx 日志） | 未迁 | **不建议迁**，PHP 专属运维页 |
 

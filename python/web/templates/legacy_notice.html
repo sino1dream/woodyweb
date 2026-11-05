@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}{{ page }} - Palmmicro Python Web{% endblock %}
+{% block content %}
+  {# 打开 old-style URL（woody/res/*.php）时的落点。两种情况共用一个模板：
+     需要符号（摆一个输入框）与本地没有对应页（写明原因）。
+     不要在路由里猜一个相近路径跳过去 —— 跳到错的页面比 404 更难排查。 #}
+  <h1>{% if need_symbol %}这一页需要符号{% else %}本地没有这一页{% endif %}</h1>
+  <p class="hint">
+    你打开的是生产端的地址 <code>/woody/res/{{ page }}</code>。本地把
+    <code>woody/res/</code> 下 206 个 PHP 页面收成了按功能分组的路径
+    （<code>/fund/&lt;symbol&gt;</code>、<code>/category/&lt;name&gt;</code>、
+    <code>/stock/&lt;symbol&gt;/edit/&lt;option&gt;</code>），旧地址由一层映射跳过去。
+  </p>
+
+  {% if need_symbol %}
+    <p class="hint">
+      这一页在 PHP 那边从查询串取符号（<code>{{ page }}?symbol=…</code>），
+      本地需要同样的参数才能定位。填一个再试：
+    </p>
+    <form method="get" action="{{ url_for('legacy.legacy_page', page=page) }}" class="submit-lookup">
+      <label for="symbol">符号</label>
+      <input id="symbol" name="symbol" value="{{ symbol }}" placeholder="SZ161226 / SH518800"
+             autocomplete="off" size="14">
+      <button type="submit">打开</button>
+      <span class="hint">A 股 / 场内基金用大写（<code>SZ161226</code>）。</span>
+    </form>
+  {% else %}
+    <p class="hint">
+      {% if reason %}{{ reason }}{% else %}
+        文件名不在映射表里：要么它根本不在迁移范围（站点内容 / 运维页），
+        要么是还没迁的新页面。映射表见
+        <code>web/services/legacy_urls.py</code>。
+      {% endif %}
+    </p>
+  {% endif %}
+
+  <p class="table-note">
+    找不到想要的页面时：
+    <a href="{{ url_for('admin.admin_index') }}">后台控制台</a>（生产端未展示的入口清单）
+    · <a href="{{ url_for('main.index') }}">首页</a>
+    · <a href="{{ url_for('status.status_page') }}">状态</a>
+  </p>
+{% endblock %}

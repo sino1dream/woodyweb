@@ -443,6 +443,15 @@ def _fund_reference_symbols(symbol: str, source: Any) -> tuple:
         except Exception:
             est_symbol = None
 
+    if not est_symbol:
+        # 那四张硬编码表只覆盖美股 / 港股 / 日股 / 欧股。**A股商品（`nf_`）与
+        # A股指数**这两族的估值标的只写在 `fundpair` 里，所以这里退一步查配对表。
+        # PHP 依据：`woody/res/php/_chinafuture.php` 直接用
+        # `new FundPairReference($strSymbol)`，配对标的由它自己查 `fundpair` ——
+        # 所以生产端 `sz161226cn.php` 的参考数据表里有 `AG0` 那一行，而本地
+        # 漏了它（2026-11-05 对照时发现）。
+        est_symbol = _realtime_symbol(symbol, source)
+
     forex_symbol = None
     cny_symbol = None
     try:

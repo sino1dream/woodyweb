@@ -13,6 +13,7 @@ from web.routes.group import group_bp
 from web.routes.health import health_bp
 from web.routes.history import history_bp
 from web.routes.holdings import holdings_bp
+from web.routes.legacy import legacy_bp
 from web.routes.main import main_bp
 from web.routes.overnight import overnight_bp
 from web.routes.portfolio import portfolio_bp
@@ -63,3 +64,7 @@ def register_blueprints(app: Flask) -> None:
     # 拖拉机自动化说明页（woody/res/autotractorcn.php）—— 纯图文内容页，
     # 没有符号也没有参数。见 web/routes/autotractor.py
     app.register_blueprint(autotractor_bp)
+    # 旧地址兼容层（/woody/res/sz161226cn.php 一族）—— 生产端的 206 个页面
+    # 靠"文件名即地址"，本地换成按功能分组的路径后旧地址全 404。这一层只做
+    # 302，映射表见 web/services/legacy_urls.py
+    app.register_blueprint(legacy_bp)
