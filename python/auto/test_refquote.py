@@ -220,6 +220,35 @@ class ApplyNetworkTest(unittest.TestCase):
 
         self.assertIs(ref.quote_loader, original)
 
+    def test_dispatches_china_future_to_the_future_parser(self):
+        """``nf_AG0`` 必须走**内盘期货**解析。
+
+        原来这里一律调 ``load_sina_data()``（普通股票/指数那一支），它落到
+        "字段数 >= 29 就算美股"，拿第 26 个字段当日期；内盘期货的日期在第 18 个，
+        那里是空串 → ``ValueError: 无法解析时间字符串``。调用点都用
+        ``try/except`` 兜着，所以这个错是**静默**的（``?live=1`` 什么也补不到）。
+        """
+        from ref.stockref import StockReference
+
+        line = ("白银连续,110852,12530.000,12928.000,12395.000,0.000,12858.000,"
+                "12859.000,12858.000,0.000,12029.000,3,4,235533.000,437670,沪,"
+                "白银,2026-11-05,1,,,,,,,,,12608.098,12857.000,3,12856.000,2,"
+                "12855.000,60,12854.000,53,12860.000,11,12861.000,5,12862.000,"
+                "7,12863.000,14")
+
+        ref = StockReference("nf_AG0")
+        self.assertTrue(apply_network(ref, FakeNetwork(line)))
+        self.assertEqual(ref.get_price(), "12858")
+        self.assertEqual(ref.str_date, "2026-11-05")
+        self.assertEqual(ref.str_time, "11:08:52", "时间在第 2 个字段的 HHMMSS 里")
+        self.assertEqual(ref.str_vwap, "12608.098", "均价在第 28 个字段")
+
+    def test_falls_back_to_plain_parser_without_future_methods(self):
+        """只有 ``load_sina_data`` 的对象（替身 / 老实现）仍然能装填。"""
+        ref = FakeRef()
+        self.assertTrue(apply_network(ref, FakeNetwork("9.99,2026-01-01")))
+        self.assertEqual(ref.loaded, 1)
+
     def test_no_sina_symbol_returns_false(self):
         network = FakeNetwork()
         self.assertFalse(apply_network(FakeRef(sina_symbol=None), network))

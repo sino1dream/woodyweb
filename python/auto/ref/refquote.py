@@ -242,6 +242,43 @@ def apply_order_book(ref: Any, book: Any) -> bool:
     return written
 
 
+def _parse_quote_text(ref: Any) -> None:
+    """按符号类型分派解析 —— PHP ``MyStockReference::LoadData()`` 的三分支。
+
+    :func:`apply_network` 原来一律调 ``load_sina_data()``，那是"普通股票/指数"
+    那一支，而外汇与期货的字段布局完全不同：
+
+    * ``nf_AG0`` 会落到"字段数 >= 29 就算美股"，拿第 26 个字段当日期 ——
+      内盘期货的日期在第 18 个，那里是空串，于是
+      ``ValueError: 无法解析时间字符串：''``（2026-11-05 实测）；
+    * ``fx_susdcnh`` 会被判成"没数据"，页面上整行空格子。
+
+    两个调用点（``routes/fund.py`` / ``routes/stock.py`` 的 ``_fill_order_book``）
+    都用 ``try/except`` 兜着，所以这类失败是**静默**的：``?live=1`` 什么也没补到，
+    却不报错。分派照抄 ``stockref.StockReference.load_data()``。
+    """
+    symbol = None
+    for name in ("get_symbol", "str_symbol"):
+        value = getattr(ref, name, None)
+        symbol = value() if callable(value) else value
+        if symbol:
+            break
+
+    parser = None
+    try:
+        from core.stocksymbol import StockSymbol
+
+        stock_symbol = StockSymbol(symbol) if symbol else None
+    except Exception:
+        stock_symbol = None
+    if stock_symbol is not None:
+        if stock_symbol.is_sina_future() and hasattr(ref, "load_sina_future_data"):
+            parser = ref.load_sina_future_data
+        elif stock_symbol.is_sina_forex() and hasattr(ref, "load_sina_forex_data"):
+            parser = ref.load_sina_forex_data
+    (parser or ref.load_sina_data)()
+
+
 def apply_network(ref: Any, network: NetworkQuoteSource = None) -> bool:
     """联网兜底：抓原始文本，交给 ``stockref`` 既有解析器装填。
 
@@ -268,7 +305,7 @@ def apply_network(ref: Any, network: NetworkQuoteSource = None) -> bool:
     loader = getattr(ref, "quote_loader", None)
     ref.quote_loader = lambda _file_name, _text=text: _text
     try:
-        ref.load_sina_data()
+        _parse_quote_text(ref)
     finally:
         ref.quote_loader = loader
     return bool(getattr(ref, "has_data", False))

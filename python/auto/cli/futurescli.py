@@ -78,9 +78,9 @@ def _index_future_pairs(source) -> dict:
     配对写进了表里，刷新快照与校准两段也永远走不到它们。表里的一律以表为准
     （表可覆盖兜底），兜底兜住"表里少一行"的静默失效。
 
-    ``nf_AG0 ← hf_SI`` 也在这里 —— 它虽然要单位换算，但"刷新指数快照 +
-    试着校准"这两步与其它配对一样跑；时刻永远对不齐（沪银 15:00 收、
-    纽约白银按美东时间），所以那一步只会打印"不可校准"，不写库。
+    ``nf_AG0 ← hf_SI`` 也在返回值里 —— ``--show`` 要能看到这一对。
+    但它的"刷新指数快照 + 校准"两步会被 :func:`_calibratable_pairs` 滤掉，
+    理由见那里。
     """
     pairs = dict(FALLBACK_FUTURES)
     for index_symbol, transform in FUTURES_VALUE_TRANSFORMS.items():
@@ -102,6 +102,30 @@ def _index_future_pairs(source) -> dict:
     finally:
         cursor.close()
     return pairs
+
+
+def _calibratable_pairs(pairs: dict) -> dict:
+    """从 :func:`_index_future_pairs` 的结果里挑出**能刷新快照并校准**的那些。
+
+    换算族（``FUTURES_VALUE_TRANSFORMS``，目前只有 ``nf_AG0 ← hf_SI``）
+    必须排除，两条理由：
+
+    1. **校准对它没有意义**。PHP ``MyPairReference::__construct`` 只在
+       ``IsSinaFutureUS()`` 时才调 ``AverageCalibraion()``
+       （``php/stock/fundpairref.php:160``），国内期货那一支走净值日线的
+       ``DailyCalibration()``。硬算得到的是"纽约银价 ÷ 沪银价" ≈ 0.004 ——
+       ``--apply`` 一跑就往 ``calibrationhistory`` 里叠一个错量级的值。
+    2. **刷新快照会抹掉两列**。``RealtimeQuoteStore.save`` 是整行 UPSERT，
+       不给 ``vwap`` / ``orderbook`` 就写成空串 / NULL；而 ``realtimequote.vwap``
+       正是商品期货基金「官方 EST」取均价的来源（``fundpairref.php:242``），
+       抹掉之后官方 EST **静默**退回结算价（豆粕 2.0846 vs 2.054 那种差）。
+       这类符号的快照本来就由 ``quoteupdater`` 守护进程维护。
+    """
+    return {
+        index_symbol: future_symbol
+        for index_symbol, future_symbol in pairs.items()
+        if index_symbol not in FUTURES_VALUE_TRANSFORMS
+    }
 
 
 def _store_futures_quote(source, quote) -> bool:
@@ -139,6 +163,13 @@ def _refresh_index_snapshot(source, index_symbol: str) -> bool:
     本命令原来的做法是拿"刚抓的期货"跟"库里昨天的指数快照"比，
     结构性地不可能对齐。所以这里先把指数刷一遍，
     两个行情就都是"这一分钟"的了。
+
+    **解析要走 ``load_data()`` 而不是 ``load_sina_data()``**：后者只认普通
+    股票/指数（``_on_sina_data_cn`` / ``_hk`` / ``_us``），把它用在 ``nf_``
+    上会落到"字段数 >= 29 就算美股"那一支，拿第 26 个字段当日期 ——
+    内盘期货的日期在第 18 个，于是 ``ValueError: 无法解析时间字符串：''``
+    （2026-11-05 实测 ``nf_AG0``）。分派在 PHP 里属于
+    ``MyStockReference::LoadData()``，``stockref.load_data()`` 是同一层。
     """
     from source.sinaquotes import SinaQuoteClient
 
@@ -161,7 +192,7 @@ def _refresh_index_snapshot(source, index_symbol: str) -> bool:
     reference = StockReference(index_symbol, quote_loader=lambda _name: line)
     reference.file_name = sina_quote_file_name(sina_symbol)
     try:
-        reference.load_sina_data()
+        reference.load_data()
     except Exception:
         return False
     if not reference.has_quote_data():
@@ -194,8 +225,14 @@ def cmd_fetch(args) -> int:
 
     # 先把指数快照刷到"此刻"：PHP 里期货与指数是同批抓的，时刻天然相同；
     # 拿刚抓的期货去比昨天的指数快照，结构性地永远对不齐。
+    pairs = _index_future_pairs(source)
+    calibratable = _calibratable_pairs(pairs)
     print("刷新指数快照（让两边的时刻可比）：")
-    for index_symbol in sorted(_index_future_pairs(source)):
+    for index_symbol in sorted(pairs):
+        if index_symbol not in calibratable:
+            print("  %-8s 跳过（换算族 %s：快照归行情守护进程，也不做期货校准）"
+                  % (index_symbol, pairs[index_symbol]))
+            continue
         print("  %-8s %s" % (index_symbol, "已刷新" if _refresh_index_snapshot(source, index_symbol) else "刷新失败"))
     print("")
 
@@ -222,7 +259,7 @@ def cmd_fetch(args) -> int:
     # 尝试校准：需要**指数**的行情时刻与期货一致
     print("")
     print("=== 尝试校准（需要期货与指数时刻对齐）===")
-    for index_symbol, future_symbol in sorted(_index_future_pairs(source).items()):
+    for index_symbol, future_symbol in sorted(calibratable.items()):
         quote = quotes.get(future_symbol)
         if quote is None:
             continue
@@ -461,6 +498,11 @@ PHP 的 `GetSinaSymbol()` 有同样的兜底，所以它的期货取数走的是
 
 `--apply` 才真正写 `calibrationhistory`；不带它只算给你核对。
 **「时刻对齐」看的是 HH:MM**：期货 tick 与指数快照差几秒没问题，跨分钟就得重跑。
+
+**换算族不参与校准**（`nf_AG0 ← hf_SI`）：两端量纲不同（美元/盎司 vs 元/千克），
+比值本身没有意义；PHP 的 `AverageCalibraion()` 也只对 `IsSinaFutureUS()` 触发
+（`fundpairref.php:160`），国内期货那一支走净值日线的 `DailyCalibration()`。
+这一族的校准值来自生产端「基金指数对照表」的 cal（见 `patch_china_future.py`）。
 
 ## 两个符号的时区例外
 

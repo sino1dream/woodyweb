@@ -743,5 +743,41 @@ class SilverTransformTest(unittest.TestCase):
         self.assertIsNone(calibrator.value_transform_label("^NDX"))
 
 
+class CalibratablePairsTest(unittest.TestCase):
+    """``futurescli`` 只给"两端同量纲"的配对刷新快照、试着校准。
+
+    换算族（``nf_AG0 ← hf_SI``）必须排除，两条理由：
+
+    1. 两端量纲不同（美元/盎司 vs 元/千克），"期货 ÷ 现货"没有意义。
+       PHP 的 ``AverageCalibraion()`` 也只对 ``IsSinaFutureUS()`` 触发
+       （``fundpairref.php:160``），国内期货那一支走净值日线的 ``DailyCalibration()``。
+    2. 刷新快照会抹掉 ``vwap`` / ``orderbook`` —— ``RealtimeQuoteStore.save``
+       是整行 UPSERT，不给这两列就写空值，而 ``realtimequote.vwap`` 正是
+       商品期货基金「官方 EST」取均价的来源，抹掉后官方 EST 静默退回结算价。
+    """
+
+    PAIRS = {"^NDX": "hf_NQ", "nf_AG0": "hf_SI", "GLD": "hf_GC"}
+
+    def _calibratable(self):
+        from cli.futurescli import _calibratable_pairs
+
+        return _calibratable_pairs(self.PAIRS)
+
+    def test_transform_pair_is_excluded(self):
+        pairs = self._calibratable()
+        self.assertNotIn("nf_AG0", pairs)
+        self.assertIn("^NDX", pairs, "同量纲的那几对要留下来")
+        self.assertIn("GLD", pairs)
+
+    def test_kept_pairs_never_appear_in_the_transform_table(self):
+        for index_symbol in self._calibratable():
+            self.assertNotIn(index_symbol, FUTURES_VALUE_TRANSFORMS)
+
+    def test_does_not_mutate_the_input(self):
+        """``--show`` 还要能列出这一对，别把源字典就地删了。"""
+        self._calibratable()
+        self.assertIn("nf_AG0", self.PAIRS)
+
+
 if __name__ == "__main__":
     unittest.main()

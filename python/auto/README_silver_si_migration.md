@@ -100,12 +100,57 @@ function _RealtimeCallback() {
   所以它补不了这一列。
 * **`nf_AG0` 的 `calibrationhistory` 有一行 274905.673758**，口径不明
   （不是"期货 / 基金净值"的 8868，也不是"期货 / 指数"的 ≈1.0）。
-  换算分支不读它，所以不影响本页；但 `futurescli` 若哪天成功给
-  `nf_AG0 ← hf_SI` 校准（沪银 15:00 收、纽约白银按美东时间，实际对不齐），
-  会往这行上再叠一个平均。留给"理顺 `nf_` 的 cal 语义"那一轮处理。
-* `futurescli` 的"刷新指数快照"对 `nf_AG0` 报**刷新失败**
-  （2026-11-05 实测），其余五个指数都成功。快照本身由 `quoteupdater`
-  从 `stockhistory` 反推的符号集覆盖，不影响实时 EST；失败原因未查。
+  换算分支不读它，所以不影响本页；`futurescli` 现在也**不会再往它上面叠**
+  （见 §九 与 `README_futures_migration.md` §3.4）。留给"理顺 `nf_` 的 cal
+  语义"那一轮处理。
+* ~~`futurescli` 的"刷新指数快照"对 `nf_AG0` 报刷新失败~~ —— 2026-11-05
+  查清并修掉，两个错叠在一起，见 §九。
+
+## 九、`futurescli` 对 `nf_AG0` 报"刷新失败"：两个错（2026-11-05 修）
+
+**症状**：`futurescli` 开头那张"刷新指数快照"表里，`nf_AG0` 是唯一一个
+"刷新失败"，其余五个指数都"已刷新"。
+
+**第一层：为什么失败。** `_refresh_index_snapshot()` 直接调
+`StockReference.load_sina_data()` —— 那是"普通股票/指数"那一支
+（`_on_sina_data_cn` / `_hk` / `_us`）。这个分派在 PHP 里属于
+`MyStockReference::LoadData()`（`php/stock/mystockref.php:117`）。
+`nf_AG0` 既不是 A 股也不是港股符号，于是落到"字段数 >= 29 就算美股"，
+拿第 26 个字段（`gb_*` 的日期时间）当日期 —— 内盘期货的日期在第 18 个、
+时刻在第 2 个（`HHMMSS`），那里是空串：
+
+    ValueError: 无法解析时间字符串：''
+
+改法：走 `load_data()`（与 `quoteupdater.parse_symbol()` 同一套三分支）。
+
+**第二层：修好反而更糟，所以整对跳过。** 就算解析对了，这一对也不该进
+这两个循环：
+
+* `RealtimeQuoteStore.save()` 是**整行 UPSERT**，不给 `vwap` / `orderbook`
+  就写成空串 / NULL —— `realtimequote.vwap` 正是商品期货基金「官方 EST」
+  取均价的来源（`fundpairref.php:242`，豆粕 2.0846 vs 2.054 那件事）。
+  刷一次快照就把官方 EST **静默**打回结算价。
+* 校准对它没有意义：两端量纲不同，PHP `MyPairReference::__construct`
+  也只在 `IsSinaFutureUS()` 时才调 `AverageCalibraion()`
+  （`fundpairref.php:160`）。硬算得到"纽约银价 ÷ 沪银价" ≈ 0.004，
+  `--apply` 一跑就往 `calibrationhistory` 里叠一个错量级的值。
+
+所以 `futurescli._calibratable_pairs()` 把换算族整对滤掉，两个循环都只走
+"同量纲"的配对；`nf_AG0` 仍留在 `_index_future_pairs()` 里，`--show`
+照样列得出来。现在的输出：
+
+    刷新指数快照（让两边的时刻可比）：
+      GLD      已刷新
+      ^GSPC    已刷新
+      ^HSI     已刷新
+      ^NDX     已刷新
+      nf_AG0   跳过（换算族 hf_SI：快照归行情守护进程，也不做期货校准）
+      znb_NKY  已刷新
+
+**同一个坑的第二个入口**：`refquote.apply_network()` 原来也一律调
+`load_sina_data()`。两个调用点（`routes/fund.py` / `routes/stock.py` 的
+`_fill_order_book`，`?live=1` 触发）都用 `try/except` 包着，所以对 `nf_` /
+`fx_` 符号是**静默**失败 —— 现在按符号类型分派（`_parse_quote_text()`）。
 
 ## 六、复核
 

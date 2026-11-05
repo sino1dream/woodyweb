@@ -165,6 +165,22 @@ GLD     -> hf_GC    金价ETF       → 纽约黄金      （2026-11-03 补，**
 自洽性检查：`期货价 / 校准值 = 反推指数点位` ✓
 （`31365.06 / 0.37090433 = 84562`，与 84605.91 的差异来自两次抓取之间的价格变动。）
 
+### 3.4 例外：换算族（`nf_AG0 ← hf_SI`）**不进**这两个循环
+
+`FUTURES_VALUE_TRANSFORMS` 里的配对两端**量纲不同**（美元/盎司 vs 元/千克），
+`期货 / 指数` 没有意义：
+
+* **校准不做**：PHP `MyPairReference::__construct` 只在 `IsSinaFutureUS()` 时调
+  `AverageCalibraion()`（`fundpairref.php:160`），国内期货那一支走净值日线的
+  `DailyCalibration()`。硬算得到 ≈0.004，`--apply` 一跑就污染 `calibrationhistory`。
+* **快照也不刷**：`RealtimeQuoteStore.save()` 是整行 UPSERT，不给 `vwap` /
+  `orderbook` 就写空值 —— 而 `realtimequote.vwap` 是商品期货基金「官方 EST」
+  取均价的来源（`fundpairref.php:242`）。这类符号的快照归 `quoteupdater` 守护进程。
+
+`futurescli._calibratable_pairs()` 负责这个过滤；`_index_future_pairs()` 仍然
+包含它（`--show` 要能看到这一对）。成因与实测见
+`README_silver_si_migration.md` §九。
+
 ## 四、量纲坑（本轮踩到并修掉）
 
 **把期货价直接当"中间层值"用，实时 EST 会大 100 倍**：
