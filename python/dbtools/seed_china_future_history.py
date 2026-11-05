@@ -20,8 +20,11 @@
 
 ## 写什么、不写什么
 
-* 只写 ``stockhistory``（``adjclose`` 取 ``close``）——
-  期货没有除权，也不需要复权；
+* 只写 ``stockhistory`` —— ``close`` 是收盘价、``adjclose`` 是**结算价**
+  （JSONP 的 ``s`` 字段，缺失才回落收盘价）。**不是"adjclose 取 close"**：
+  ``DailyCalibration()`` 的 ``GetNetValue()`` 读的就是 ``adjclose``，
+  PHP ``_updateStockHistory()`` 传的也是 ``strSettlePrice``（``mystockref.php:143``），
+  写成收盘价会让这些基金的官方 EST 系统性偏低（AG0 实测差 3%）；
 * **不写 EMA**：均线段用的是"估值标的"（``AU0``）自己的 EMA 表，
   本项目该段还没迁（见 ``README_pending_pages.md``），先不铺数据；
 * **不写净值**：期货没有净值，``netvaluehistory`` 不能塞收盘价，

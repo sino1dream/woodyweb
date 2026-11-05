@@ -159,6 +159,29 @@ class RoutesTest(unittest.TestCase):
             except Exception as exc:  # pragma: no cover - 失败时打出来
                 self.fail("%s -> %s 没有路由：%s" % (page, target, exc))
 
+    def test_every_real_php_page_is_accounted_for(self):
+        """拿生产端那 206 个文件名逐个过一遍：要么有目标，要么写清了原因。
+
+        上面那条只走"表里已有的页面"，漏掉的是"表里压根没有的" ——
+        2026-11-05 就有两个（``btbond.php`` / ``cateyes.php``）无目标也无原因，
+        用户拿到的是一句笼统的"不认识"。这条钉住覆盖率。
+        """
+        root = ROOT_DIR / "woody" / "res"
+        if not root.is_dir():  # pragma: no cover - 只在本仓库内跑
+            self.skipTest("没有 woody/res 目录")
+
+        unexplained = []
+        for path in sorted(root.glob("*.php")):
+            page = path.name
+            try:
+                target = legacy_urls.resolve(page)
+            except legacy_urls.SymbolRequired:
+                continue          # 要符号才跳，属于有对应页
+            if target is None and not legacy_urls.missing_reason(page):
+                unexplained.append(page)
+
+        self.assertEqual([], unexplained, "这些页面没有对应页，也没写原因：%s" % unexplained)
+
 
 if __name__ == "__main__":
     unittest.main()
