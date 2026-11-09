@@ -294,3 +294,49 @@ focus 的值取 `number_format($fVal, 2)` 之后的两位串转 float（PHP 的
 4. **"最小值"标注用真实最小值**：PHP 用夹 0 后的 `$fMinY`（恒 0.0），
    `array_search(0.0)` 找不到日期，页面实际显示成"最小值： 0.00"。
    本版用真实最小值（见 `text_lines()` docstring）。
+
+## 7. 运维侧：净值 / 仓位 / 持仓是三张表（2026-11-09）
+
+完整口径写在 `.dsh/skills/palmmicro-ops/SKILL.md` §8.7，但 **`.dsh/` 被
+`.gitignore` 排除**，所以把会反复用到的结论在这里就地留一份。
+
+**「混合 QDII」是本项目的估值分类，不是监管的混合型基金**：
+`GetLofMixSymbolArray()`（`php/stock/stocksymbol.php:339`）那 14 只同时持有
+美股、港股、A股成分股、没有单一跟踪标的，必须走 `HoldingsReference` 按持仓
+加权。按证监会分类它们是股票型 / 指数型 / 商品型 QDII-LOF。生产端
+`/qdiimixcn.php` 的分类页口径更小（15 只），`SH501312` / `SZ163208` /
+`SZ160216` 已划到美股 QDII 页 —— 问「是不是混合」要先确认口径。
+
+| 词 | 表 | 谁在写 | 说明 |
+| --- | --- | --- | --- |
+| 净值 | `netvaluehistory` | `navcli`（只写最新一条）/ `backfill_nav_history.py`（回填历史） | 每天一条 |
+| 仓位 | `fundposition` | 管理员 `--admin --fundposition` | **缺行回落 `IsLofA() ? 0.95 : 1.0`**（`php/stock/stocksymbol.php:1003`），不是手工设过的值。生产端是逐只回归的实测值：`SH501225=0.93`、`SZ164824=0.89`、`SH501018=0.90`、`SZ161815=0.89` |
+| 持仓明细 | `holdings` | **只能管理员按季报手工提交** | PHP `_qdiimix.php::_updateStockHoldings()` 对 `in_arrayLofMix` 族只 `WriteDate`，交易所不公布申赎清单；只有 QDII-ETF 支线才自动下载并整份替换 |
+| 持仓日 | `holdingsdate` | 自动推进到净值日 | 生产端「基金持仓更新于 2026-11-05」指的就是它，不代表明细重录 |
+
+因此 **`holdingscli.py --apply` 不会生成明细**（dry-run 直接打印「holdings
+表里没有明细，不建账」）。`count_holdings()==0` 时 `refobj` 静默退化成
+`EstReference`，页面照样 200，但估值不走持仓加权 —— 要启用得先按季报建档，
+之后季度级维护。
+
+**净值断档比持仓更常见**：`/fund/qdiilof` 的「溢价率」是
+`场内价 / netvaluehistory 最新一条 − 1`（`quotestore.get_premium_rate`），
+分母停在旧净值就会算出假溢价。2026-11-09 修的那 10 只 LOF 混合
+（`SH501225` `SH501312` `SZ160644` `SZ164824` `SZ163208` `SH501018`
+`SZ160723` `SZ161129` `SZ160216` `SZ161815`）净值停在 10-12~10-30，
+补 **115 行**到 11-05 后，全库停在 10 月的基金 55 → 45 只。生产端单只页
+净值记录也是 11-05；分类页「EST 日期 11-06」是估值日不是净值日。
+
+回填顺序（**两段式 + 先备份**）：
+
+```text
+python -B dbtools\backup_db.py                  # 锁表全库 → E:\mysqldata
+python -B dbtools\backfill_nav_history.py --symbols <10只> --days 40
+python -B dbtools\backfill_nav_history.py --symbols <10只> --days 40 --apply --skip-backup
+```
+
+`--apply` 内置的备份走 `--single-transaction`，演示库多数是 MyISAM、
+事务快照无效，所以先跑 `backup_db.py` 再 `--skip-backup`。该脚本默认
+**只补 `SZ161125`**，必须 `--symbols` 点名；`--days 40` 实测东财接口每页
+只返回约 20 条。已有日期不覆盖，重跑预演会显示「会补 0 天」。
+本次备份：`E:\mysqldata\stock_data_20261109_110029.sql`（2.70 MB / 35 张表）。
