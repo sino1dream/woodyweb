@@ -26,10 +26,13 @@
 
 ## 符号占位符
 
-需要一只标的才有意义的入口（16 项 edit + 删标的）用 :data:`SYMBOL_PLACEHOLDER`
-占位，页面上的输入框通过 ``data-symbol-link`` 属性统一改写 —— 这样 20 个链接
-共用一次输入，不用为每条挂一个表单。没有 JS 时这些链接指向占位符本身（404），
-所以模板另外给了一个"打开索引页"的显式链接兜底。
+需要一只标的才有意义的入口（15 项 edit + 删标的 + 可编辑项索引）用
+:data:`SYMBOL_PLACEHOLDER` 占位，页面上的输入框通过 ``data-symbol-link``
+属性统一改写 —— 这样 17 个链接共用一次输入，不用为每条挂一个表单。
+**第 16 项 edit「修改季报持仓」是例外**：它指到 ``/holdings/quarter``
+索引页自己列基金代码，不需要符号（见 :func:`stock_option_entries`）。
+没有 JS 时那些带占位符的链接指向占位符本身（404），所以模板另外给了一个
+"打开索引页"的显式链接兜底。
 """
 
 from __future__ import annotations
@@ -79,27 +82,49 @@ def _entry(title: str, php: str, href: str, note: str = "",
 # 生产端只能手敲 URL
 # ---------------------------------------------------------------------------
 
+#: 2026-11-09 起这一项改成「先挑基金、再进编辑页」的两级入口。
+#: 它仍然留在 ``STOCK_OPTIONS`` 里（``/stock/<symbol>/edit`` 索引页还要用
+#: ``spec.route`` 指到专门页），只是控制台这一处不再要符号。
+QUARTER_REPORT_OPTION_KEY = "editquarterreport"
+
+
 def stock_option_entries(url_for: Callable[..., str]) -> List[dict]:
     """16 个 ``edit*.php`` → ``/stock/<symbol>/edit/<option>``。
 
     两项有专门页（季报 / 持仓）直接指过去 —— 与 ``/stock/<symbol>/edit``
     索引页同一个取舍：不在两处各写一份写入口。
+
+    **「修改季报持仓」是唯一的例外**（2026-11-09）：季报是按季报逐只手工录
+    ``quarterreport`` 的，需要先看到"哪些基金要录"。原先这一项也带
+    ``__SYMBOL__`` 占位符，等于要求管理员先背出 ``SZ161815`` 这类符号；
+    现在指到 ``/holdings/quarter`` 索引页（32 只持仓型 QDII），点基金代码
+    再进 ``/holdings/quarter/<symbol>``。因此它 ``needs_symbol=False``，
+    模板也不会给它挂 ``data-symbol-link`` —— 否则前端会拿符号输入框去改写
+    一个没有占位符的静态链接。
     """
     entries = []
     for spec in STOCK_OPTIONS:
-        if spec.route:
-            href = url_for(spec.route, symbol=SYMBOL_PLACEHOLDER)
+        if spec.key == QUARTER_REPORT_OPTION_KEY:
+            href = url_for("holdings.quarter_report_index")
+            note = ("先到 /holdings/quarter 列出 32 只持仓型 QDII，点基金代码进"
+                    " /holdings/quarter/<symbol> 改当季持仓编码串。")
+            needs_symbol = False
         else:
-            href = url_for("stock.stock_option_edit",
-                           symbol=SYMBOL_PLACEHOLDER, option=spec.key)
+            if spec.route:
+                href = url_for(spec.route, symbol=SYMBOL_PLACEHOLDER)
+            else:
+                href = url_for("stock.stock_option_edit",
+                               symbol=SYMBOL_PLACEHOLDER, option=spec.key)
+            note = spec.memo
+            needs_symbol = True
         entries.append(_entry(
             title=spec.submit,
             php=spec.key + "cn.php",
             href=href,
-            note=spec.memo,
+            note=note,
             # PHP 这一族除了"基金申购金额"都要求 IsAdmin()，见各 spec 的 note
             access=ACCESS_MEMBER if spec.member_level else ACCESS_ADMIN,
-            needs_symbol=True,
+            needs_symbol=needs_symbol,
         ))
     return entries
 

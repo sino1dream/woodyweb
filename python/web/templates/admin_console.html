@@ -39,10 +39,13 @@
       <p class="console-note">{{ section.note }}</p>
 
       {% if section.layout == 'grid' %}
-        {# 16 项 edit*.php 都要一只标的才有意义，所以共用一个输入框：
-           下面的 chip 全带 data-symbol-link，输入变了就集体改写 href。
-           没有 JS 时 chip 指向占位符（404），所以右边另给一个服务端生成的
-           显式索引链接兜底。 #}
+        {# 16 项 edit*.php 里 15 项都要一只标的才有意义，共用一个输入框：
+           带 data-symbol-link 的 chip 随输入集体改写 href。
+           「修改季报持仓」是例外 —— 它指 /holdings/quarter 索引页，
+           清单自己列基金代码，不需要符号，也不挂 data-symbol-link
+           （挂了会被 JS 拿去改写一个没有占位符的链接）。
+           没有 JS 时其余 chip 指向占位符（404），所以右边另给一个
+           服务端生成的显式索引链接兜底。 #}
         <div class="symbol-picker">
           <label for="symbol-input">符号</label>
           <input id="symbol-input" name="symbol" type="text" size="12"
@@ -54,7 +57,7 @@
         <div class="option-grid">
           {% for entry in section.entries %}
             <a class="option-chip" href="{{ entry.href }}"
-               data-symbol-link data-symbol-href="{{ entry.href }}"
+               {% if entry.needs_symbol %}data-symbol-link data-symbol-href="{{ entry.href }}"{% endif %}
                title="{{ entry.note }}">
               <span class="option-chip-title">{{ entry.title }}</span>
               <span class="option-chip-php">{{ entry.php }}</span>
@@ -113,7 +116,8 @@
   </p>
 
   <script>
-    // 16 项 edit 链接共用一个符号输入框。规则与后端 _normalize_symbol 一致：
+    // 带 data-symbol-link 的 edit 链接共用一个符号输入框（季报那一项是
+    // 索引页，不在这里）。规则与后端 _normalize_symbol 一致：
     // 没有下划线就大写（新浪的 nf_AU0 大小写敏感，大写后行情会失踪）。
     (function () {
       var input = document.getElementById('symbol-input');

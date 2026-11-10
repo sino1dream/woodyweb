@@ -46,19 +46,27 @@ php/ woody/ --include=*.php` 零命中；`GetStockOptionArray()` 的 16 个页�
 不给 `<option>` 链接 —— 与 `/stock/<symbol>/edit` 索引页同一个取舍：不在两处
 各写一份写入口。
 
+**2026-11-09 例外**：`editquarterreport` 在**控制台**这一处改成两级入口 ——
+先到 `/holdings/quarter` 索引页挑基金代码，再进 `/holdings/quarter/<symbol>`。
+它仍留在 `STOCK_OPTIONS` 里（`/stock/<symbol>/edit` 索引页还要用 `spec.route`
+指到专门页），只是 `stock_option_entries()` 给它的 `href` 不带符号、
+`needs_symbol=False`。理由见第九节。
+
 ## 四、符号占位符与那 40 行 JS
 
-18 个链接（16 项 + 删标的 + 可编辑项索引）都要一只标的才有意义。三种做法：
+17 个链接（15 项 edit + 删标的 + 可编辑项索引）都要一只标的才有意义
+（第 16 项季报是索引页，见第九节）。三种做法：
 
 | 做法 | 问题 |
 |---|---|
-| 每条挂一个 `<form>` | 18 个输入框，填 18 次 |
+| 每条挂一个 `<form>` | 17 个输入框，填 17 次 |
 | 一条 `/admin/goto?symbol=X&target=Y` 路由 | 纯服务端，但每个动作要多一个按钮 + 一次 302；`target` 还得自己维护白名单 |
-| 一个输入框 + 前端改写 `href` | **选它**。一次输入，18 个链接跟着走 |
+| 一个输入框 + 前端改写 `href` | **选它**。一次输入，17 个链接跟着走 |
 
 实现：service 生成 `href` 时把符号位写成 `__SYMBOL__`（`SYMBOL_PLACEHOLDER`），
-模板同时输出 `data-symbol-href`（原始模板）与 `data-symbol-link`（可改写标记），
-内联脚本监听 input，把 18 个 `href` 一起替换。
+模板**只在 `entry.needs_symbol` 为真时**输出 `data-symbol-href`（原始模板）与
+`data-symbol-link`（可改写标记），内联脚本监听 input，把带标记的链接一起替换。
+季报那个 chip 没标记 —— 挂上就会被 JS 拿去改写一个没有占位符的静态链接。
 
 三个细节：
 
@@ -93,7 +101,7 @@ php/ woody/ --include=*.php` 零命中；`GetStockOptionArray()` 的 16 个页�
 | 区块 | 形态 | 为什么 |
 |---|---|---|
 | 三张入口卡 | `grid` 三列、整卡可点 | 这是进后台最常干的三件事 |
-| 16 项 `edit*.php` | chip 网格（`auto-fill, minmax(200px, 1fr)`） | 都是"给某只标的打开一个表单"，一屏扫完比逐行读表格快；说明放 `title` 悬停 |
+| 16 项 `edit*.php` | chip 网格（`auto-fill, minmax(200px, 1fr)`） | 15 项是"给某只标的打开一个表单"，一屏扫完比逐行读表格快；说明放 `title` 悬停。季报那一项是静态索引链接，形状相同但不随符号变 |
 | 其余三块 | 表格 | 需要读说明，chip 装不下 |
 | 未迁那一段 | 表格 + 暖色分隔线 + 「结论」列 | 性质与上面两段相反（不能用 vs 能用），不该长得一样 |
 
@@ -121,10 +129,36 @@ php/ woody/ --include=*.php` 零命中；`GetStockOptionArray()` 的 16 个页�
 `/admin/groups`（`site_links.local_links()` 的管理员段，与登录身份无关，
 测试 `test_site_links.py` 会断言它在不在）。
 
-## 九、验收
+## 九、季报持仓索引页（2026-11-09 新增）
 
-- `web` 1370 条全绿（新增 `tests/test_admin_console.py` 18 条）；
+`/admin` 里点「修改季报持仓」现在先到 **`GET /holdings/quarter`**，列出待维护的
+基金代码，点代码（如 `161815`、`160216`）进
+`GET/POST /holdings/quarter/SZ161815`。路由与取数都在
+`web/routes/holdings.py`（`quarter_report_index` / `_quarter_report_targets`），
+模板 `web/templates/quarter_report_index.html`，测试
+`web/tests/test_quarter_report_index.py`。
+
+| 决定 | 理由 |
+|---|---|
+| 清单取 `updater.holdingsupdater.qdiimix_holdings_symbols()`（**32 只**） | 这 32 个详情页 `require _qdiimix.php`，季报持仓要逐只维护；与 `holdingscli` 同源。**不是**分类页 `qdiimixcn.php` 那 15 只 —— 用它当待办清单会静默漏 17 只 |
+| 不从 `quarterreport` 反推清单 | 演示库该表**一条记录都没有**（2026-11-09 实测）。这是"还没录"的待办清单，不是"录了什么"的报表 |
+| 名称 / 最新季报日期只是附加列 | 两条 SELECT 各自 try/except；库挂了照常列全 32 个代码。后台索引页不该因一条查询 500 |
+| 这一页不判权限 | 只是导航 + 只读概览；真正闸门在编辑页的 POST（`admin_auth.is_admin()`） |
+| 写入口仍只有 `/holdings/quarter/<symbol>` 一处 | 索引页不重复实现表单；`/stock/<symbol>/edit` 索引页的 `spec.route` 也仍指专门页 |
+
+代码列剥掉 `SH`/`SZ` 前缀显示 6 位数字（`SZ161815` → `161815`），
+旁边保留完整库内符号，避免"代码"与"符号"两个口径混在一起。
+`test_quarter_report_index.py` 钉住 32 个链接、库挂了的降级、以及从
+`/admin` 那个 chip 点进去确实是 200。
+
+## 十、验收
+
+- `web` 全量测试全绿（新增 `tests/test_admin_console.py` 与
+  `tests/test_quarter_report_index.py`）；
 - `/admin`、`/admin/`、`/admin?symbol=nf_AU0` 均 200，默认值 / 兜底索引链接正确；
-- 页面含 16 个 chip、4 张三表条目、6 条本地新增、2 条未迁；
+- 页面含 16 个 chip（其中 15 个带 `__SYMBOL__` 占位符）、4 张三表条目、
+  6 条本地新增、2 条未迁；
+- `/holdings/quarter` 200 + 32 个基金代码；点 `161815` 到
+  `/holdings/quarter/SZ161815` 200；
 - `test_admin.py` 原来那条 `test_bare_admin_redirects_to_groups` 改成
   `test_bare_admin_renders_console`（302 → 200）。

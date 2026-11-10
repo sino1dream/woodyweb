@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{# 季报持仓索引页 —— 本版新增，PHP 没有对应页面。
+
+   生产端的 editquarterreportcn.php 是「通用股票选项表单」的一张皮，必须
+   先知道 ?symbol= 才能打开，于是「哪些基金要按季报录持仓」只能靠人记。
+   这里把那份清单摆出来，点基金代码进既有的 /holdings/quarter/<symbol>。
+
+   清单数据来自 web/routes/holdings.py::_quarter_report_targets（32 只
+   持仓型 QDII），模板只管排布，不另抄一份。 #}
+{% block title %}修改季报持仓 - 基金估值{% endblock %}
+{% block content %}
+  <h1>修改季报持仓</h1>
+
+  <p class="console-lead">
+    下面 <strong>{{ total }}</strong> 只是 <code>_qdiimix.php</code> 覆盖的
+    <strong>持仓型 QDII</strong>：它们的详情页要摆持仓明细，季报披露后得逐只把
+    <code>quarterreport</code> 里的编码串改成新一季的比例。
+    点<strong>基金代码</strong>进该基金的编辑页（<code>/holdings/quarter/&lt;symbol&gt;</code>）。
+    {% if admin %}
+      <span class="console-identity console-identity-ok">当前身份：管理员</span>
+    {% else %}
+      <span class="console-identity console-identity-warn">当前不是管理员 —— 编辑页只能查看不能写</span>
+    {% endif %}
+  </p>
+
+  <p class="table-note">
+    清单取 <code>updater.holdingsupdater.qdiimix_holdings_symbols()</code>
+    （32 只），与 <code>holdingscli</code> 的持仓更新覆盖面同源；
+    <strong>不是</strong>分类页 <code>qdiimixcn.php</code> 那 15 只 ——
+    分类页数组 2026-10-30 收窄过，用它当待办清单会静默漏掉 17 只。
+    「最新季报日期」来自 <code>quarterreport</code>，没录过就留空，
+    属于<strong>待办</strong>而不是错误。
+  </p>
+
+  <table class="data-table console-table">
+    <thead>
+      <tr>
+        <th style="width: 120px;">基金代码</th>
+        <th style="width: 130px;">库内符号</th>
+        <th>名称</th>
+        <th style="width: 140px;">最新季报日期</th>
+        <th style="width: 80px;">记录数</th>
+        <th style="width: 110px;">操作</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in rows %}
+        <tr>
+          <td><a href="{{ row.href }}"><strong>{{ row.code }}</strong></a></td>
+          <td><code>{{ row.symbol }}</code></td>
+          <td>
+            {% if row.name %}
+              {{ row.name }}
+            {% elif not row.in_stock %}
+              <span class="hint">stock 表里没有这个符号，先补符号再录季报</span>
+            {% else %}
+              <span class="hint">—</span>
+            {% endif %}
+          </td>
+          <td>{{ row.latest or '—' }}</td>
+          <td>{{ row.rows }}</td>
+          <td><a href="{{ row.href }}">编辑季报 →</a></td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <p class="table-note">
+    值的写法是 <code>"符号":百分比</code> 的编码串（例如 <code>"GLD":100</code>），
+    与生产端 <code>editquarterreportcn.php</code> 一致；清空输入或填
+    <code>0</code> 表示删除那一天的季报记录（PHP <code>empty('0')</code> 的口径）。
+  </p>
+
+  <p><a href="{{ admin_href }}">← 返回后台控制台</a></p>
+{% endblock %}

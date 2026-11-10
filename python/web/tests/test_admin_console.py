@@ -11,8 +11,9 @@
 1. 16 项 chip **从 ``STOCK_OPTIONS`` 生成**，不是另抄一份 —— 数量、key、
    会员级标记都跟着那份定义走；
 2. 需要符号的链接带 ``__SYMBOL__`` 占位符 + ``data-symbol-href``（前端逐个改写，
-   20 个链接共用一次输入）；
-3. 季报 / 持仓两项指向各自的专门页，不给 ``<option>`` 链接（不在两处写入口）；
+   17 个链接共用一次输入）；「修改季报持仓」是静态索引链接，不带这两样；
+3. 季报指向 ``/holdings/quarter`` 索引页、持仓指向专门页，都不给 ``<option>``
+   链接（不在两处写入口）；
 4. 未迁清单只有「结论 + 说明」，不给 href —— 不能点进去的地方不该长得像能点；
 5. 计数拿不到（表不存在 / 连接断了）时页面仍然 200，只是卡片没有数字。
 """
@@ -73,15 +74,26 @@ class BuildSectionsTest(unittest.TestCase):
                          [entry["title"] for entry in entries])
 
     def test_option_hrefs_use_the_symbol_placeholder(self):
-        for entry in section_of(self.sections, "hand-url")["entries"]:
-            self.assertIn(admin_console.SYMBOL_PLACEHOLDER, entry["href"])
-            self.assertTrue(entry["needs_symbol"])
+        """除季报索引页外，15 项都要符号。"""
+        entries = section_of(self.sections, "hand-url")["entries"]
+        for entry in entries:
+            if entry["title"] == "修改季报持仓":
+                continue
+            self.assertIn(admin_console.SYMBOL_PLACEHOLDER, entry["href"],
+                          entry["title"])
+            self.assertTrue(entry["needs_symbol"], entry["title"])
 
-    def test_report_and_holdings_point_at_their_own_pages(self):
-        """这两项有专门页：给专门页链接，不给 ``<option>`` 链接。"""
+    def test_report_points_at_the_index_and_holdings_at_its_own_page(self):
+        """季报先进索引页（挑基金），持仓仍直接进专门页（要符号）。"""
         entries = {e["title"]: e for e in section_of(self.sections, "hand-url")["entries"]}
-        self.assertIn("holdings.quarter_report_page", entries["修改季报持仓"]["href"])
-        self.assertIn("holdings.exhaustive_holdings_page", entries["修改持仓"]["href"])
+        quarter = entries["修改季报持仓"]
+        self.assertIn("holdings.quarter_report_index", quarter["href"])
+        self.assertNotIn(admin_console.SYMBOL_PLACEHOLDER, quarter["href"])
+        self.assertFalse(quarter["needs_symbol"])
+        self.assertIn("/holdings/quarter", quarter["note"])
+        holdings = entries["修改持仓"]
+        self.assertIn("holdings.exhaustive_holdings_page", holdings["href"])
+        self.assertTrue(holdings["needs_symbol"])
         # 其余 14 项走通用编辑页
         self.assertIn("option=editcalibration", entries["手工校准值"]["href"])
 
@@ -234,12 +246,15 @@ class ConsoleRouteTest(unittest.TestCase):
         html = self._client(ConsoleSource()).get("/admin").get_data(as_text=True)
         chips = re.findall(r'<a class="option-chip" href="([^"]+)"', html)
         self.assertEqual(len(STOCK_OPTIONS), len(chips))
-        for href in chips:
-            self.assertIn(admin_console.SYMBOL_PLACEHOLDER, href)
-        # 表格里另有两条也要跟着符号走（删标的 / 可编辑项索引），所以 +2。
+        # 季报那一项是索引页，静态链接；其余 15 项要符号。
+        with_placeholder = [href for href in chips
+                            if admin_console.SYMBOL_PLACEHOLDER in href]
+        self.assertEqual(len(STOCK_OPTIONS) - 1, len(with_placeholder))
+        self.assertIn('href="/holdings/quarter"', html)
+        # 表格里另有两条也要跟着符号走（删标的 / 可编辑项索引）。
         # 数"属性对"而不是只数 data-symbol-link：后者在脚本的
         # querySelectorAll 里还会再出现一次。
-        self.assertEqual(len(STOCK_OPTIONS) + 2,
+        self.assertEqual(len(STOCK_OPTIONS) + 1,
                          html.count("data-symbol-link data-symbol-href"))
 
     def test_admin_identity_is_shown(self):

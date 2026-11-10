@@ -359,6 +359,110 @@ QUARTER_REPORT_SAMPLE = '"AAA":"60","BBB":"40"'
 QUARTER_REPORT_MEMO = "清空输入删除对应日期季报数据。"
 
 
+# ---------------------------------------------------------------------------
+# 季报持仓索引页（本版新增，PHP 没有"列出要维护哪些基金"的页面）
+# ---------------------------------------------------------------------------
+
+def _quarter_fund_code(symbol: str) -> str:
+    """库内符号 -> 页面上点得动的基金代码（``SZ161815`` -> ``161815``）。
+
+    只剥 ``SH`` / ``SZ`` 两个交易所前缀；清单里 32 只全是 A 股场内基金，
+    所以这个转换不需要考虑 ``^NDX`` / ``hf_SI`` 之类的中间层符号。
+    """
+    text = str(symbol).strip()
+    return text[2:] if text[:2].upper() in ("SH", "SZ") and len(text) > 2 else text
+
+
+def _quarter_report_targets(source) -> list:
+    """索引页的行：32 只持仓型 QDII + 库里的名称 / 季报最新日期。
+
+    ## 清单只有一个出处
+
+    ``updater.holdingsupdater.qdiimix_holdings_symbols()`` →
+    ``core.stocksymbol.qdii_mix_holdings_symbol_array()``（**32 只**）。
+    这 32 个符号详情页 ``require`` 了 ``_qdiimix.php``，页面要摆持仓明细，
+    所以后台必须按季报逐只维护 ``quarterreport`` 表。**别用**
+    ``qdii_mix_get_symbol_array()``：那是分类页 ``qdiimixcn.php`` 的数组，
+    2026-10-30 起已收窄到 15 只，混用会静默漏掉 17 只。
+
+    ## 为什么不查 quarterreport 反推清单
+
+    演示库里 ``quarterreport`` 一条记录都没有（2026-11-09 实测）。季报是
+    "还没录"也要能看见的待办清单，不是"已经录了什么"的报表 —— 反推会
+    得到空页。名称 / 最新日期只是**附加信息**，两条查询各自 try/except，
+    库挂了也照常把这 32 个代码列出来（后台索引页不该因为一条 SELECT 打不开）。
+    """
+    from updater.holdingsupdater import qdiimix_holdings_symbols
+
+    symbols = list(qdiimix_holdings_symbols())
+    ids, names, reports = {}, {}, {}
+    connection = getattr(source, "connection", None)
+    if connection is not None and symbols:
+        cursor = None
+        try:
+            cursor = connection.cursor()
+            cursor.execute(
+                "SELECT id, symbol, name FROM stock WHERE symbol IN (%s)"
+                % ",".join(["%s"] * len(symbols)), tuple(symbols))
+            for record in cursor.fetchall():
+                symbol = str(record["symbol"])
+                ids[symbol] = str(record["id"])
+                names[symbol] = str(record.get("name") or "")
+            cursor.execute(
+                "SELECT stock_id, MAX(date) AS latest, COUNT(*) AS cnt "
+                "FROM quarterreport GROUP BY stock_id")
+            for record in cursor.fetchall():
+                reports[str(record["stock_id"])] = (
+                    str(record.get("latest") or ""), int(record.get("cnt") or 0))
+        except Exception:
+            # 表不存在 / 连接断了 —— 名称与日期留空，代码清单照给
+            pass
+        finally:
+            close = getattr(cursor, "close", None)
+            if close:
+                close()
+
+    rows = []
+    for symbol in symbols:
+        date_text, count = reports.get(ids.get(symbol, ""), ("", 0))
+        rows.append({
+            "symbol": symbol,
+            "code": _quarter_fund_code(symbol),
+            "name": names.get(symbol, ""),
+            "in_stock": symbol in ids,
+            "latest": date_text,
+            "rows": count,
+        })
+    return rows
+
+
+@holdings_bp.route("/holdings/quarter")
+def quarter_report_index():
+    """「修改季报持仓」的入口：列出要按季报维护的基金代码，点代码进编辑页。
+
+    PHP 没有这一层：``editquarterreportcn.php`` 是**通用股票选项表单**的一张皮，
+    必须先知道 ``?symbol=`` 才能打开，于是"哪些基金该录季报"只能靠人记。
+    本版补一张索引，从后台控制台直接进；每行的代码链到既有的
+    ``/holdings/quarter/<symbol>``，写入口只有那一处（不重复实现）。
+
+    这一页**不判权限**：只是导航 + 只读概览，真正的闸门在编辑页的 POST。
+    """
+    try:
+        source = _source()
+    except Exception:
+        source = None
+    rows = _quarter_report_targets(source)
+    for row in rows:
+        row["href"] = url_for("holdings.quarter_report_page", symbol=row["symbol"])
+    return render_template(
+        "quarter_report_index.html",
+        rows=rows,
+        total=len(rows),
+        admin=is_admin(),
+        admin_href=url_for("admin.admin_index"),
+    )
+
+
 def _quarter_report_context(symbol: str) -> dict:
     """季报编辑页要的取数：当前最新日期 / 该日期的值 / 错误说明。
 

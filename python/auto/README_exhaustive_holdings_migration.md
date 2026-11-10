@@ -3,8 +3,8 @@
 > 对应 PHP：`woody/res/exhaustiveholdingscn.php`（375 行）+
 > `editquarterreportcn.php`（写入口）+ `submitholdings.php`（管理员写回）+
 > `_stockaccount.php::EchoLinks()`（页脚）
-> 本地路由：`/holdings/exhaustive/<symbol>`、`/holdings/quarter/<symbol>`、
-> `POST /holdings/submit`
+> 本地路由：`/holdings/exhaustive/<symbol>`、`/holdings/quarter`（2026-11-09
+> 新增的季报索引页，PHP 没有）、`/holdings/quarter/<symbol>`、`POST /holdings/submit`
 > 生产端参照：`https://palmmicro.com/woody/res/exhaustiveholdingscn.php?symbol=SZ164701`
 > 完成日期：2026-10-26（写入口 / 权限闸门 / 页脚同日增补）
 
@@ -48,10 +48,11 @@ updater/holdingsupdater.py                 process_admin_holdings（带 admin �
 web/services/exhaustive_holdings_service.py 四张表的装配与列定义
 web/services/admin_auth.py                 谁是管理员（IsAdmin 的单点）
 web/services/site_links.py                 页脚 EchoLinks 的数据表
-web/routes/holdings.py                     /holdings/exhaustive/<symbol>、/holdings/quarter/<symbol>、
-                                           POST /holdings/submit
+web/routes/holdings.py                     /holdings/exhaustive/<symbol>、/holdings/quarter（索引）、
+                                           /holdings/quarter/<symbol>、POST /holdings/submit
 web/templates/exhaustive_holdings.html     渲染
 web/templates/quarter_report.html          季报写入口
+web/templates/quarter_report_index.html    季报索引页（32 只基金代码，本版新增）
 ```
 
 PHP 用两个 `static $arEq` 跨行累积，本版收进
@@ -201,6 +202,7 @@ cd python/web && python -B -m unittest tests.test_quarter_report
 | `/holdings/exhaustive/SH513050` | 1 张表（current）+ "超过 4 只"提示 |
 | `/holdings/exhaustive/NOPE999` | 200 + "取不到该基金的持仓数据" |
 | `/fund/qdiilof/SZ164701` | 说明行里 `穷举持仓比例` 是链接，指向 `/holdings/exhaustive/SZ164701` |
+| `/holdings/quarter` | 200 + 32 只持仓型 QDII 的基金代码（如 `161815`），点代码进编辑页；从 `/admin` 的「修改季报持仓」也能进 |
 | `/holdings/quarter/SZ164701` | 200 + 日期/值两个框（值回填样例串或库里最新一条） |
 | `/holdings/quarter/NOPE999` | 200 + "没有符号"，**不摆表单**（POST 那支会 400） |
 

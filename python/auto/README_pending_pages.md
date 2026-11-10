@@ -34,7 +34,7 @@ Flask 侧现有 **63 条路由**（`create_app().url_map`，含 `/static/<path>`
 
 | PHP 页面 | Python | 备注 |
 |---|---|---|
-| `editquarterreportcn.php` | `GET/POST /holdings/quarter/<symbol>` | `QuarterReportSql(DailyStringSql)`，填 `0` = 删除 |
+| `editquarterreportcn.php` | `GET /holdings/quarter`（本版新增的基金代码索引）+ `GET/POST /holdings/quarter/<symbol>` | `QuarterReportSql(DailyStringSql)`，填 `0` = 删除；索引页清单 32 只，见 §五 |
 | `editstockgroupcn.php` | `/admin/groups`、`/admin/group/<id>`、`POST /admin/group/submit` | 账号认证 2026-11-02 已接上（`/account/login`），但这一组页面仍固定演示成员 `DEMO_MEMBER_ID`；要按登录会员取分组得等 §八 第 1 项 |
 | `editstocktransactioncn.php` | `GET /transactions/edit` | `core/edittransactionform.py` |
 | **edit 族 14 项** | `GET|POST /stock/<symbol>/edit/<option>` | 一个路由顶 14 个页面（另 2 项 302 到季报/持仓的专门页），**索引页** `GET /stock/<symbol>/edit`（PHP 没有），见 `README_stock_option_edit_migration.md` |
@@ -131,7 +131,8 @@ require('../../php/ui/_editcn.php');
 |---|---|---|---|
 | `deletesymbol.php` | 删标的（`php/deletestock.php`，先查五道闸门再连锁删） | **已迁** | `GET/POST /stock/<symbol>/delete`（先预览再执行），见 `README_deletesymbol_migration.md` |
 | ~~后台符号管理~~ | `stock` 表的增 / 删 / 改名 | **本地新增（PHP 没有这一页）** | `GET /admin/symbols`、`/admin/symbol/new`、`/admin/symbol/<symbol>`（关联数据 + 删除确认）、`POST /admin/symbol/submit`、`POST /admin/symbol/<symbol>/delete`。PHP 那边三件事是散的：改名在 `editstock.php`、删除在 `deletesymbol.php`、「新增」只是访问页面时 `StockGetReference` 的副作用。删除口径全部复用 `auto/deletesymbol.py`（闸门 + 6 张主表 + 可选残留表）。起因：`/category/chinafuture` 六只基金全显示「库里无此符号」，而本地没有那个"顺手入库"的副作用，缺一个显式入口 |
-| ~~后台控制台~~ | 把本节这些"只能手敲 URL"的页面收成一个入口 | **本地新增（PHP 没有这一页）** | `GET /admin`（2026-11-04 起；之前 302 跳 `/admin/groups`）。分三类列：① 生产端只能手敲 URL 的（16 项 `edit*.php` 从 `STOCK_OPTIONS` 生成 + 删标的 / 分组 / 交易 / 抓取）；② 生产端根本没有的（符号管理 / 索引页 / 登出 / 状态页 / JSON API）；③ 生产端有、本地未迁（`uploadfile.php` / `debugcn.php`）。符号相关的 18 个链接共用一个输入框（`__SYMBOL__` 占位 + `data-symbol-href`）。清单定义在 `web/services/admin_console.py`，见 `README_admin_console.md` |
+| ~~后台控制台~~ | 把本节这些"只能手敲 URL"的页面收成一个入口 | **本地新增（PHP 没有这一页）** | `GET /admin`（2026-11-04 起；之前 302 跳 `/admin/groups`）。分三类列：① 生产端只能手敲 URL 的（16 项 `edit*.php` 从 `STOCK_OPTIONS` 生成 + 删标的 / 分组 / 交易 / 抓取）；② 生产端根本没有的（符号管理 / 索引页 / 登出 / 状态页 / JSON API）；③ 生产端有、本地未迁（`uploadfile.php` / `debugcn.php`）。符号相关的 17 个链接共用一个输入框（`__SYMBOL__` 占位 + `data-symbol-href`）；2026-11-09 起「修改季报持仓」改成静态链接指 `/holdings/quarter` 索引页，不带占位符。清单定义在 `web/services/admin_console.py`，见 `README_admin_console.md` |
+| ~~季报持仓索引页~~ | 列出要按基金季报手工维护持仓的基金代码 | **本地新增（PHP 没有这一页）** | `GET /holdings/quarter`（2026-11-09 起）。32 只持仓型 QDII 来自 `qdiimix_holdings_symbols()`，点 `161815` → `/holdings/quarter/SZ161815`。PHP 那边 `editquarterreportcn.php` 必须先知道 `?symbol=` 才能打开，"哪些基金要录"全靠人记。见 `README_admin_console.md` §九 |
 | ~~旧地址兼容层~~ | `woody/res/*.php` 这 206 个地址 | **本地新增（生产端不需要：文件名本身就是地址）** | `GET /woody/res/<path:page>` → 302 到对应本地路径，196 个能跳 / 10 个明确没有对应（404 + 原因）。分类页从 `CATEGORY_PAGES` 反推、edit 族从 `STOCK_OPTIONS` 生成。见 `README_legacy_urls.md` |
 | `uploadfile.php` | 上传 Yahoo 历史行情 CSV 到 `stockhistory` | 未迁 | 低优先（本地用 `dbtools/seed_*` 顶替） |
 | `debugcn.php` | 访问日志/恶意 IP 统计页（依赖 nginx 日志） | 未迁 | **不建议迁**，PHP 专属运维页 |
