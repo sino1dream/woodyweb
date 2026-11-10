@@ -251,6 +251,16 @@ PHP 那边对应 `$acct->EchoLinks($strPage)`。对应地
 `qdiihk` 新增的 9 只反而**不缺行**：它们原先在 `qdii_mix` 里，本来就在
 `fund_symbols()` 的并集里。
 
+> **2026-11-10 状态更新（本节上面是当时的历史快照）**：
+> `chinaindex` 的 `stock` 行缺口已由
+> `dbtools/patch_china_index_symbols.py` 补齐 26 行（`SZ160632` 原有），
+> 27 只现在都能摆出名称，不再显示「库里无此符号」；随后
+> `dbtools/patch_china_index_fund_data.py` 给 `SZ160632` 补齐净值/日线/
+> 实时快照/五档盘口。其余 26 只**仍只有 `stock` 行**，页面显示
+> 「无行情快照」是预期（用户只要求增加符号）。估值段整段不摆的根因是
+> A 股指数配对链路（基金 → 中证指数 + 校准）尚未迁移，不是数据缺口。
+> 详见 `README_china_index_symbols_migration.md`。
+
 ## 九、单测
 
 `web/tests/test_category_pages.py`（19 个），分三段：

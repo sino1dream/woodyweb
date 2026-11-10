@@ -182,6 +182,71 @@ class ReportTest(unittest.TestCase):
         self.assertIn("断档 1 只", text)
 
 
+class NavSymbolsTest(unittest.TestCase):
+    """2026-11-10：``--all-nav`` 的 109 只边界与商品基金的可发现性。
+
+    ``fund_symbols()`` 只管 QDII 行情/归档（102 只），不含 A 股商品基金。
+    净值链路更宽：``navcli`` 的 ``collect_targets()`` 取 ``stock`` 表里所有
+    6 位代码，6 只商品基金都在里面。2026-11-10 之前 ``--all-funds`` /
+    ``--report`` 只认 102 只，这 6 只停在 11-03 却报「断档 0 只」。
+    当天又补了第 109 只 ``SZ160632``（A 股指数 LOF），见
+    ``dbtools/patch_china_index_fund_data.py``。
+    """
+
+    COMMODITY = ("SH518800", "SH518880", "SZ159934", "SZ159937",
+                 "SZ159985", "SZ161226")
+
+    def test_nav_symbols_is_109_and_extends_fund_symbols(self):
+        from core.symbolinventory import fund_symbols, nav_symbols
+
+        funds = fund_symbols()
+        nav = nav_symbols()
+        self.assertEqual(len(funds), 102)
+        self.assertEqual(len(nav), 109)
+        self.assertEqual(len(set(nav)), 109)
+        self.assertEqual(nav[:len(funds)], funds)
+        for symbol in self.COMMODITY:
+            self.assertIn(symbol, nav)
+            self.assertNotIn(symbol, funds)
+        # 补齐净值链路的那一只必须在，否则它会停在补齐当天。
+        self.assertIn("SZ160632", nav)
+        self.assertNotIn("SZ160632", funds)
+        self.assertEqual(backfill.fund_code_of("SZ160632"), "160632")
+
+    def test_other_china_index_symbols_stay_out_of_report(self):
+        """分类页其余 26 只只有 stock 行，纳入会把空壳全报成断档。"""
+        from core.symbolinventory import nav_symbols
+        from core.stocksymbol import china_index_get_symbol_array
+
+        nav = set(nav_symbols())
+        others = [s for s in china_index_get_symbol_array() if s != "SZ160632"]
+        self.assertEqual(len(others), 26)
+        for symbol in others:
+            self.assertNotIn(symbol, nav, symbol)
+
+    def test_all_nav_resolves_the_109_symbol_list(self):
+        self.assertEqual(len(backfill.resolve_symbols(None, False, True)), 109)
+        self.assertEqual(len(backfill.resolve_symbols(None, True, True)), 109)
+        self.assertEqual(len(backfill.resolve_symbols(None, True, False)), 102)
+
+    def test_every_nav_symbol_maps_to_a_six_digit_code(self):
+        for symbol in backfill.resolve_symbols(None, False, True):
+            self.assertEqual(len(backfill.fund_code_of(symbol)), 6, symbol)
+
+    def test_report_flags_a_stale_commodity_fund(self):
+        source = _Source({"SZ161125": (date(2026, 11, 9), 10),
+                          "SH518800": (date(2026, 11, 3), 20)})
+        output = io.StringIO()
+        with redirect_stdout(output):
+            backfill.print_report(source, tuple(sorted(source.states)), 5)
+        text = output.getvalue()
+        self.assertIn("基金最新净值日 2026-11-09", text)
+        self.assertIn("SH518800", text)
+        self.assertIn("2026-11-03  落后  6 天", text)
+        self.assertIn("断档 1 只", text)
+        self.assertIn("--symbols SH518800 --days 40 --apply", text)
+
+
 class BackupDbEnvKeyTest(unittest.TestCase):
     """内置备份必须与 ``core.stockdata`` 认同一个库名键。"""
 

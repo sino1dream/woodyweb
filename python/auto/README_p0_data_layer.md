@@ -842,10 +842,23 @@ CK6 是"让 `/fund/SZ161125` 与生产端 `sz161125cn.php` 逐段对齐"。前�
 种子、12 只停在 10-29/10-30）用 `--symbols <清单> --days 40 --apply` 补
 **304 行**，内置备份 `E:\mysqldata\stock_data_20261110_112353.sql`。
 复跑同清单全部「会补 0 天」，`--report` 报断档 0 只。
-**边界**：`--all-funds` / `--report` 只覆盖 `fund_symbols()` 的 102 只；
-`SH518800` `SH518880` `SZ159934` `SZ159937` `SZ159985` `SZ161226` 这 6 只
-黄金/白银商品 ETF 不在清单里（净值停在 11-03），由另一条链路维护，
-别用「断档 0 只」推断它们已补齐。
+**清单边界（2026-11-10 再修）**：`fund_symbols()` 是 QDII 行情/归档口径
+（102 只），不含 `china_future_get_symbol_array()` 的 6 只商品基金
+（`SH518800` `SH518880` `SZ159934` `SZ159937` `SZ159985` `SZ161226`）。
+但它们**有净值**：`navcli` 的 `NavUpdater.collect_targets()` 取 `stock` 表
+所有 6 位代码（实测 109 只），这 6 只都在；库里存的是真实单位净值，
+`historytable.CALIBRATION_HEDGE_MULTIPLIERS` 的 1000/10/15 只作用于
+「校准记录对冲值」显示，不是净值量纲。旧例程只跑 `--all-funds`、
+`navcli` 又不单独跑 → 它们停在 11-03 而 `--report` 还报「断档 0 只」。
+现在新增 `symbolinventory.nav_symbols()` = 102 + 6 + 1 = **109 只**，
+`--all-nav` 取它做每日回填、`--report` 默认体检 109 只；
+`--all-funds` 保留作 102 只子集。2026-11-10 已把这 6 只补 **24 行**
+到 11-09（备份 `E:\mysqldata\stock_data_20261110_113723.sql`）。
+同日稍晚补齐 `SZ160632`（酒LOF）的净值/日线/快照后把它列为第 109 只
+（见 `README_china_index_symbols_migration.md`），否则它会停在补齐当天、
+重演「净值停在旧月份」。A 股指数分类页其余 26 只**故意不纳入**：
+它们只有 `stock` 行，净值/日线全空，纳入会让 `--report` 把空壳一起
+误报成断档。
 
 ### 9.5 剩下的断档：是 `fundest` 的**日期口径**，不是渲染
 
@@ -1014,16 +1027,19 @@ SH513350 −2.73%、SZ159502 +3.22%、SZ159518 −2.73%）：四条全部
 两个窗口，顺序即依赖关系。**净值清单不再手写**：2026-11-09 之前这里是
 33 只美股族的逗号串，加上运维 skill 里另一条 28 只港股族，合计只覆盖
 **61 / 102 只**；其余 41 只的净值永远停在 10 月（溢价率拿旧净值当分母）。
-现在统一用 `--all-funds` 取 `core.symbolinventory.fund_symbols()`，
-与凌晨 `--all-qdii` 同一份清单。
+现在统一用 `--all-nav` 取 `core.symbolinventory.nav_symbols()`
+（109 只 = 102 QDII + 6 只 A 股商品基金 + `SZ160632`；
+`--all-funds` 保留作 102 只子集）。
+`fund_symbols()` 仍是行情/归档口径，与凌晨 `--all-qdii` 同源 —— **净值清单
+比它宽 7 只**，原因见 §9.4 与 `README_china_index_symbols_migration.md`。
 
 **晚间（nav 公布后约 20:00，务必在美股开盘 21:30 前）**：
 
 ```bash
-# 1) 全部 102 只基金净值（只补不覆盖；--days 3 足够覆盖周末/假期断档）
+# 1) 全部 109 只需要净值的基金（102 QDII + 6 商品基金 + SZ160632；只补不覆盖）
 #    内置备份走 backup_db.py --lock-tables，MyISAM 安全，不必再 --skip-backup
-python -B dbtools/backfill_nav_history.py --all-funds --days 3 --apply
-# 1b) 每周一次只读体检：打印断档基金与可粘贴的补数清单（不联网、不写库）
+python -B dbtools/backfill_nav_history.py --all-nav --days 3 --apply
+# 1b) 每周一次只读体检：默认体检 109 只，打印断档与可粘贴清单（不联网、不写库）
 python -B dbtools/backfill_nav_history.py --report
 # 1c) 估值标的日线（**必须在校准之前**）：八个指数 + GLD
 #     GLD 是四只黄金基金（SZ160719/SZ161116/SZ164701/SZ165513）的 est 标的，
@@ -1039,8 +1055,8 @@ python -B auto/cli/forexcli.py --backfill
 
 `--funds` 覆盖 **73 只**"有 est 映射、需要校准"的基金：硬编码地区数组
 69 只（美股 33 + 港股 28 + 日股 5 + 欧股 3），加 `fundestmap` 表动态注入的
-4 只黄金（→ `GLD`）。与净值回填的 102 只**故意不相等**：另外 29 只不做校准，
-但一样要有净值来算溢价。断档追补用
+4 只黄金（→ `GLD`）。与净值回填的 109 只**故意不相等**：另外 36 只不做校准，
+但一样要有净值来算溢价（含 6 只商品基金与 `SZ160632`）。断档追补用
 `--symbols <--report 输出的清单> --days 40 --apply`（东财一次最多回
 20 个交易日），详见 §9.4。
 

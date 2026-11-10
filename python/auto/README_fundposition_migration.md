@@ -348,8 +348,10 @@ python -B dbtools\backfill_nav_history.py --symbols <10只> --days 40 --apply
 2026-11-09 那次用的还是旧两步顺序，备份为
 `E:\mysqldata\stock_data_20261109_110029.sql`（2.70 MB / 35 张表）。
 
-**日常别再手写清单**：`--all-funds` 取
-`core.symbolinventory.fund_symbols()` 的 102 只（与 `quotecli --all-qdii`
-同源），`--report` 是只读断档体检。详见 `README_p0_data_layer.md` §9.4
+**日常别再手写清单**：`--all-nav` 取
+`core.symbolinventory.nav_symbols()` 的 109 只（102 只 QDII + 6 只商品基金
++ `SZ160632`），`--all-funds` 是 102 只子集；`--report` 默认体检这 109 只、
+是只读断档体检。
+详见 `README_p0_data_layer.md` §9.4
 与运维 skill §10.1。`--days 40` 实测东财 `pageSize` 上限 20 条，
 约覆盖最近 20 个交易日；已有日期不覆盖，重跑预演显示「会补 0 天」。

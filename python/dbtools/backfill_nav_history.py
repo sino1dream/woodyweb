@@ -35,11 +35,33 @@ QDII 基金的净值表是断的 —— 实测 SZ161125 只有 09-29 / 09-30 / 1
 ``--report`` 是只读体检：列出每只基金的最新净值日、按落后天数标出断档，
 并给出可直接粘进 ``--symbols`` 的补数清单（不联网、不写库）。
 
+## 清单边界：102 只不够（2026-11-10）
+
+``fund_symbols()`` 是 **QDII 行情/归档**口径（与 ``--all-qdii`` 同源），不含
+A 股商品基金。但净值链路比它宽：``navcli`` 的
+``NavUpdater.collect_targets()`` 从 ``stock`` 表取所有 6 位代码（实测 109 只），
+其中就有 ``china_future_get_symbol_array()`` 的 6 只
+（4 只黄金 ETF + 豆粕 ``SZ159985`` + 白银 ``SZ161226``）。它们一样有
+``netvaluehistory``，且库里存的是**真实单位净值**（8.3693 / 1.3546 这种，
+``historytable.CALIBRATION_HEDGE_MULTIPLIERS`` 的 1000/10/15 只作用于
+「校准记录对冲值」的显示，不是净值量纲）。
+
+2026-11-10 之前日常例程只跑 ``--all-funds``（102 只），``navcli`` 又不
+单独跑，这 6 只停在 11-03 而 ``--report`` 还报「断档 0 只」。现在用
+``--all-nav``（``nav_symbols()`` = 102 + 6 + 1 = **109 只**）做每日回填，
+``--report`` 默认也体检这 109 只。``--all-funds`` 保留作 QDII 子集。
+
+第 109 只是 ``SZ160632``（酒LOF）：``patch_china_index_fund_data.py`` 给它
+补齐了净值/日线/快照后纳入清单，否则它只会停在补齐当天。A 股指数分类页
+其余 26 只仍**不在**清单里 —— 它们只有 ``stock`` 行、净值/日线全空，
+纳入会把空壳一起误报成断档。
+
 用法::
 
-    python -B dbtools\\backfill_nav_history.py --report             # 只读断档体检
-    python -B dbtools\\backfill_nav_history.py --all-funds --days 3 --apply   # 每日
-    python -B dbtools\\backfill_nav_history.py --all-funds --days 40 --apply  # 断档追补
+    python -B dbtools\\backfill_nav_history.py --report                      # 只读体检（109 只）
+    python -B dbtools\\backfill_nav_history.py --all-nav --days 3 --apply    # 每日（推荐）
+    python -B dbtools\\backfill_nav_history.py --all-nav --days 40 --apply   # 断档追补
+    python -B dbtools\\backfill_nav_history.py --all-funds --days 3 --apply  # 只补 102 只 QDII
     python -B dbtools\\backfill_nav_history.py --symbols SZ161125 --days 40   # 预演
 """
 
@@ -62,14 +84,14 @@ _REAL_STDOUT = sys.stdout
 sys.stdout = io.StringIO()
 
 from core.stockdata import MySqlFundDataSource  # noqa: E402
-from core.symbolinventory import fund_symbols  # noqa: E402
+from core.symbolinventory import fund_symbols, nav_symbols  # noqa: E402
 from source.navsource import EastmoneyNavSource  # noqa: E402
 
 sys.stdout = (io.TextIOWrapper(_REAL_STDOUT.buffer, encoding="utf-8", errors="replace")
               if hasattr(_REAL_STDOUT, "buffer") else _REAL_STDOUT)
 
 #: 不点名时的兜底清单（CK6 要对齐的是 ``/fund/SZ161125`` 那一页）。
-#: **日常别靠它** —— 用 ``--all-funds``。
+#: **日常别靠它** —— 用 ``--all-nav``。
 DEFAULT_SYMBOLS = ("SZ161125",)
 
 #: 默认往回取多少条净值记录。
@@ -100,15 +122,26 @@ def _arg_int(name: str, fallback: int) -> int:
         return fallback
 
 
-def resolve_symbols(raw_symbols: str | None, all_funds: bool = False):
-    """把 ``--symbols`` 与 ``--all-funds`` 合成去重、保序的清单。
+def resolve_symbols(raw_symbols: str | None, all_funds: bool = False,
+                    all_nav: bool = False):
+    """把 ``--symbols`` 与 ``--all-funds`` / ``--all-nav`` 合成去重、保序的清单。
 
-    ``--all-funds`` 取 ``core.symbolinventory.fund_symbols()``（102 只，
-    与 ``quotecli --all-qdii`` 同源）；两者都给时取并集，方便临时点名补。
-    都没给就退回 ``DEFAULT_SYMBOLS``（只补一只，保持老行为）。
+    ``--all-nav`` 取 ``core.symbolinventory.nav_symbols()``（109 只 =
+    102 只 QDII + 6 只 A 股商品基金 + 1 只 ``SZ160632``），
+    是**净值回填**的正确口径；
+    ``--all-funds`` 只取 102 只 QDII（与 ``quotecli --all-qdii`` 同源），
+    保留作子集选项。两者都给时以 ``--all-nav`` 为准（它是超集）。
+    ``--symbols`` 点名的额外符号一律追加到末尾。都没给就退回
+    ``DEFAULT_SYMBOLS``（只补一只，保持老行为）。
     """
+    if all_nav:
+        base = nav_symbols()
+    elif all_funds:
+        base = fund_symbols()
+    else:
+        base = ()
     result = []
-    for symbol in (fund_symbols() if all_funds else ()):
+    for symbol in base:
         if symbol and symbol not in result:
             result.append(symbol)
     for part in (raw_symbols or "").split(","):
@@ -143,16 +176,17 @@ def print_report(source, symbols, stale_days: int) -> None:
     锚点取**基金最新净值日**，不是写死的日期，也不是全表 MAX(date) ——
     后者会被 ``forexcli`` 写进同一张表的中间价行（USCNY 等）顶到今天，
     把所有基金都误判成断档。QDII 净值 T+1~T+2 披露，落后几天属正常。
+    锚点范围取 ``nav_symbols()``（109 只），与体检清单一致。
     """
     from datetime import date
 
     states = nav_state(source, symbols)
-    all_funds = fund_symbols()
+    nav_funds = nav_symbols()
     cursor = source.connection.cursor()
     cursor.execute(
         "SELECT MAX(n.date) AS latest FROM netvaluehistory n "
         "JOIN stock s ON s.id = n.stock_id WHERE s.symbol IN (%s)"
-        % ",".join(["%s"] * len(all_funds)), tuple(all_funds))
+        % ",".join(["%s"] * len(nav_funds)), tuple(nav_funds))
     row = cursor.fetchone() or {}
     cursor.close()
     anchor_raw = row.get("latest")
@@ -189,7 +223,7 @@ def print_report(source, symbols, stale_days: int) -> None:
         print("  python -B dbtools\\backfill_nav_history.py --symbols %s "
               "--days 40 --apply" % ",".join(todo))
     else:
-        print("没有需要追补的基金。每日跑 --all-funds --days 3 --apply 即可。")
+        print("没有需要追补的基金。每日跑 --all-nav --days 3 --apply 即可。")
 
 
 def fund_code_of(symbol: str) -> str:
@@ -208,9 +242,13 @@ def main() -> int:
     days = _arg_int("--days", DEFAULT_DAYS)
     stale_days = _arg_int("--stale-days", DEFAULT_STALE_DAYS)
     raw_symbols = _arg("--symbols")
-    # --report 不带 --symbols 时也要看全量，否则只体检一只没有意义。
-    all_funds = "--all-funds" in sys.argv or (report and not raw_symbols)
-    symbols = resolve_symbols(raw_symbols, all_funds)
+    all_nav = "--all-nav" in sys.argv
+    all_funds = "--all-funds" in sys.argv
+    # --report 不带 --symbols 时看净值全集（109 只）；显式给 --all-funds
+    # 才退回 102 只 QDII 子集。只体检一只没有意义。
+    if report and not raw_symbols and not all_funds:
+        all_nav = True
+    symbols = resolve_symbols(raw_symbols, all_funds, all_nav)
 
     if report and apply:
         print("--report 是只读体检，不能和 --apply 一起用。")

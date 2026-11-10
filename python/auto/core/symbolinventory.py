@@ -45,6 +45,7 @@ from calc.fundcalc import (
     qdii_spy_symbols,
 )
 from core.stocksymbol import (
+    china_future_get_symbol_array,
     qdii_eu_get_symbol_array,
     qdii_get_symbol_array,
     qdii_hk_get_symbol_array,
@@ -55,6 +56,11 @@ from core.stocksymbol import (
 #: 汇率符号（四个地区各一条中间价）。``stockdata._get_default_cny_est()``
 #: 按基金的 QDII 地区选一条，缺了估值整条链路断。
 FOREX_SYMBOLS = ("USCNY", "HKCNY", "EUCNY", "JPCNY")
+
+#: A 股指数分类页里**已经补齐净值链路**的基金。2026-11-10 只有 ``SZ160632``
+#: 一只（见 ``dbtools/patch_china_index_fund_data.py``）；同一数组的其余 26 只
+#: 只补了 ``stock`` 行，净值/日线/快照仍空，暂不纳入以免 ``--report`` 误报。
+CHINA_INDEX_NAV_SYMBOLS = ("SZ160632",)
 
 #: 外盘期货（实时 EST 的数据源，``source/futuresquotes.py`` 用裸 ``hf_`` 符号）。
 #: ``hf_HSI`` 是恒生指数期货（2026-11-03 补）；恒生科技 / 国企指数没有对应
@@ -88,6 +94,43 @@ def fund_symbols() -> List[str]:
         for symbol in symbols:
             if symbol not in result:
                 result.append(symbol)
+    return result
+
+
+def nav_symbols() -> List[str]:
+    """需要**基金净值**的全集：102 只 QDII + 6 只 A 股商品基金
+    + 1 只 A 股指数 LOF（``SZ160632``）= **109 只**。
+
+    :func:`fund_symbols` 是 QDII **行情/归档**口径（与 ``quotecli
+    --all-qdii`` 同源），故意不含 ``china_future_get_symbol_array()`` 的
+    6 只（4 只黄金 ETF + 豆粕 ``SZ159985`` + 白银 ``SZ161226``）。
+    但净值链路比它宽：``navcli`` 的 ``NavUpdater.collect_targets()``
+    从 ``stock`` 表取所有能剥出 6 位代码的符号（实测 109 只），这 6 只
+    都在，且库里存的是**真实单位净值** ——
+    ``historytable.CALIBRATION_HEDGE_MULTIPLIERS`` 的 1000/10/15 只作用于
+    「校准记录对冲值」的显示，不是净值的量纲。
+
+    2026-11-10 之前每日只跑 ``backfill_nav_history.py --all-funds``，
+    ``navcli`` 又不单独跑，于是这 6 只净值停在 11-03，而 ``--report``
+    因为只体检 102 只还报「断档 0 只」。改由本函数统一供
+    ``--all-nav`` / ``--report`` 使用。
+
+    2026-11-10 的 ``SZ160632``：``dbtools/patch_china_index_fund_data.py``
+    给这只补齐了 ``netvaluehistory`` / ``stockhistory`` / ``realtimequote``，
+    东财 ``f10/lsjz`` 能稳定取到净值（实测 20 条）。它本来就在 ``navcli``
+    的 ``NavUpdater.collect_targets()`` 里（第 109 只，按 6 位代码从
+    ``stock`` 表收集）；不纳入 ``--all-nav`` 就会让净值停在补齐那天，
+    重演「净值停在旧月份」的老毛病。
+
+    ``china_index_get_symbol_array()`` 的**其余 26 只仍不纳入**：它们目前
+    只有 ``stock`` 行（``patch_china_index_symbols.py`` 补的），净值/日线/
+    快照全空，纳入会让 ``--report`` 把 26 只空壳一起报成断档。等 A 股指数
+    配对链路（基金 → 中证指数 + 校准）整体迁移后再一起放进清单。
+    """
+    result = list(fund_symbols())
+    for symbol in list(china_future_get_symbol_array()) + list(CHINA_INDEX_NAV_SYMBOLS):
+        if symbol not in result:
+            result.append(symbol)
     return result
 
 
