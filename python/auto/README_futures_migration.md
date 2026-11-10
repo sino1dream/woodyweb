@@ -131,6 +131,14 @@ GLD     -> hf_GC    金价ETF       → 纽约黄金      （2026-11-03 补，**
 `fundestcalc._est_quote_ref()`，取的是 GLD 的**行情收盘价 / 净值**，
 与 `calibrationhistory` 里 GLD 那一行无关。所以可以放心把 10.94 写进去。
 
+**但 `est_cal` 取哪一天由基金自己的校准日决定**（`_calibration_date_of()`），
+不是 GLD 的最新行情日。GLD 日线断档时，`calibrate_fund()` 在净值日取不到
+GLD 收盘价、`calibrationhistory` 不前进，四只黄金的 `est_cal` / `cny_cal`
+就一起停在校准旧日（2026-11-10 现场：10-30 的 355.78 / 6.7138）。
+GLD 不在 `--all-qdii` / daemon 符号集里，日线靠
+`dbtools/seed_index_history.py --days 5 --apply` 的默认清单（2026-11-10 起
+含 `GLD`）推进，见 `README_index_history_seed.md` §九。
+
 ### 3.2 校准：两种方式
 
 **① PHP 原逻辑（时刻对齐）**——`check_adjust_time()` + `calibrate()`：

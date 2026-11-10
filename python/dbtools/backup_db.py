@@ -271,7 +271,8 @@ def parse_args(argv):
     parser.add_argument("--out", default=DEFAULT_OUT,
                         help="备份目录（默认 %s）" % DEFAULT_OUT)
     parser.add_argument("--db", default="",
-                        help="库名（默认取 .env 的 PALMMICRO_DB_NAME，没配则是 stock_data）")
+                        help="库名（默认取 .env 的 PALMMICRO_DB_DATABASE，"
+                             "兼容旧的 PALMMICRO_DB_NAME，都没配则是 stock_data）")
     parser.add_argument("--env", default=DEFAULT_ENV,
                         help="配置文件路径（默认 python/auto/.env）")
     parser.add_argument("--mysqldump", default="",
@@ -302,7 +303,11 @@ def main(argv=None) -> int:
     port = env.get("PALMMICRO_DB_PORT") or "3306"
     user = env.get("PALMMICRO_DB_USER") or "root"
     password = env.get("PALMMICRO_DB_PASSWORD", "")
-    db = args.db or env.get("PALMMICRO_DB_NAME") or "stock_data"
+    # ``core.stockdata.mysql_config_from_env()`` 认的是 PALMMICRO_DB_DATABASE；
+    # 备份脚本必须与它同源，否则换了库名会 dump 到别的库（默认 stock_data 时
+    # 碰巧一样，看不出来）。PALMMICRO_DB_NAME 是旧写法，留作兼容。
+    db = (args.db or env.get("PALMMICRO_DB_DATABASE")
+          or env.get("PALMMICRO_DB_NAME") or "stock_data")
     if not password:
         print("[错误] %s 里没有 PALMMICRO_DB_PASSWORD" % args.env)
         return 2

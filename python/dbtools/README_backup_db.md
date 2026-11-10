@@ -40,7 +40,7 @@ D:/python/python.exe -B dbtools/backup_db.py --dry-run      # 只看配置和输
 | 参数 | 默认 | 说明 |
 |---|---|---|
 | `--out` | `E:\mysqldata` | 备份目录，不存在会自动建 |
-| `--db` | `.env` 的 `PALMMICRO_DB_NAME`，没有则 `stock_data` | 目标库 |
+| `--db` | `.env` 的 `PALMMICRO_DB_DATABASE`（兼容旧 `PALMMICRO_DB_NAME`），都没有则 `stock_data` | 目标库 |
 | `--env` | `python/auto/.env` | 连接配置来源 |
 | `--mysqldump` | 从 PATH 找，再退到 XAMPP 常见路径 | 二进制位置 |
 | `--keep` | `0`（不清理） | 保留最近 N 份 |
@@ -123,8 +123,10 @@ mysql -u root -p -N -B -e "SELECT COUNT(*) FROM information_schema.tables WHERE 
    所以参数集里**没有** `--no-tablespaces` 和 `--column-statistics` ——
    这两个是 MySQL 5.7.31+/8.0 才有的，照抄 MySQL 教程加进去会直接
    `unknown option` 退出。
-2. **`.env` 里没有 `PALMMICRO_DB_NAME`**，只有 HOST / PORT / USER / PASSWORD，
-   库名由代码默认 `stock_data`。脚本沿用同一套默认值。
+2. **库名的键是 `PALMMICRO_DB_DATABASE`**（当前 `.env` 里 = `stock_data`），
+   与 `core.stockdata.mysql_config_from_env()` 同源。脚本还兼容旧的
+   `PALMMICRO_DB_NAME`，两者都没有才回落 `stock_data`。2026-11-09 之前
+   只读旧键，靠"默认值碰巧也叫 stock_data"才没出事；换库名就会 dump 错库。
 
 ## 一致性策略：默认锁表，不是 `--single-transaction`
 

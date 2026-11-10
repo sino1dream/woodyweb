@@ -179,3 +179,35 @@ return GetFontElement($strDisp, $strColor);
 3. **详情页还缺生产端的几段**：校准记录、基金指数对照表、基金溢价记录
    （8 列）、净值价格比较（QQQ/TQQQ）。参考数据生产端是 **10 行**
    （比本版多盘后交易行）。
+
+## 九、2026-11-10：默认清单加 `GLD`（黄金四只）
+
+四只黄金基金（`SZ160719` / `SZ161116` / `SZ164701` / `SZ165513`）的
+`est_symbol` 是 **GLD**，由 `fundestmap` 表在数据源构造时动态注入
+（`calc.fundcalc.set_extra_est_symbols`），**不在**硬编码地区数组，也不在
+`core.symbolinventory.est_symbols()` / `sina_quote_symbols()` 里。后果：
+daemon 不抓 GLD 快照、`quotecli --archive-snapshot --all-qdii` 搬不到它、
+`INDEX_ARCHIVE_SYMBOLS` 只补 `^NDX` / `^GSPC` —— 三条日常链路集体漏掉。
+
+现场：GLD 日线停 2026-11-02，四只基金净值到 11-06。`calibrate_fund()`
+锚基金净值日（PHP `php/stock/qdiiref.php:176 AdjustFactor()`），11-06 取不到
+GLD 收盘价就 `return false` 不写校准行；`calibrationhistory` 停在 10-30 那一条，
+而页面「公共参数」的 `est_cal` / `cny_cal` 锚的正是**校准日**，于是显示
+`355.78（GLD @ 2026-10-30）` / `6.7138（USCNY @ 2026-10-30）`。
+
+**修法**：`seed_index_history.py` 新增 `DEFAULT_EXTRA_SYMBOLS = ("GLD",)`，
+`resolve_targets()` 在不带 `--symbols` 时把 `TARGETS`（八个指数）与它合并。
+没有直接塞进 `TARGETS`：`TARGETS` 的语义是"估值标的指数"，且显式
+`--symbols` 点名时只该补点名的那几个。GLD 与 11 个美股 ETF 走同一个新浪
+日线接口，实测能抓到 11-09。
+
+```bash
+python -B dbtools/seed_index_history.py --days 5 --apply          # 日常：八个指数 + GLD
+python -B dbtools/seed_index_history.py --symbols GLD --days 5 --apply   # 只补黄金
+python -B dbtools/seed_index_history.py --symbols AGG,IBB,...,XOP,GLD --days 800 --apply  # 连 EMA200 一起补
+python -B auto/cli/autocalibrationcli.py --funds --apply          # 补完日线再校准
+```
+
+`--funds` 名单连库后是 **73 只**（69 硬编码 + 4 只黄金），不是文档里旧的
+33 / 69。单测 `auto/test_seed_index_history.py` 钉住三件事：默认带 GLD、
+显式点名不带、以及"GLD 确实不在 `sina_quote_symbols()`"这个前提。

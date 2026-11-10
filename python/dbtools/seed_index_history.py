@@ -61,6 +61,29 @@ KWEB RSPH VGT VNQ XBI XLY XOP``）的日线全停在 10-23，而基金净值已�
 ``znb_TPX``（东证一部，只有 ``SH513800`` 在用）**补不了**：东财没有这个
 指数、新浪只有实时。它的基金仍会报"没有净值/行情"，属真缺口。
 
+## 黄金 est 标的 GLD（2026-11-10 补的教训）
+
+四只黄金基金（``SZ160719`` / ``SZ161116`` / ``SZ164701`` / ``SZ165513``）
+的 ``est_symbol`` 是 **GLD**，由 ``fundestmap`` 表在数据源构造时动态注入
+（``calc.fundcalc.set_extra_est_symbols``），**不在硬编码的地区数组里**，
+也不在 ``core.symbolinventory.est_symbols()`` / ``sina_quote_symbols()``
+里。于是三条日常链路都覆盖不到它：
+
+* daemon 不抓 GLD 快照（``realtimequote`` 里没有它）；
+* ``quotecli --archive-snapshot --all-qdii`` 搬不到 GLD 那一行；
+* ``INDEX_ARCHIVE_SYMBOLS`` 只额外并入 ``^NDX`` / ``^GSPC``。
+
+现场：GLD 日线停在 2026-11-02，而这四只基金的净值已到 11-06。
+``calibrate_fund()`` 锚的是**基金净值日**（照抄 PHP
+``php/stock/qdiiref.php:176`` 的 ``AdjustFactor()``），est 取不到 11-06 的
+GLD 收盘价就 ``return false`` 不写校准行；``calibrationhistory`` 因此永远
+停在 10-30 那一条，页面「公共参数」的 ``est_cal`` / ``cny_cal`` 锚校准日，
+也就一直显示 10-30 的 355.78 / 6.7138。
+
+``GLD`` 与上面 11 个美股 ETF 走同一个新浪日线接口，实测能抓到 11-09。
+所以把它加进**默认清单**（显式 ``--symbols`` 点名时不带，保持"点名只补那几个"
+的语义），每天 ①½ 那条 ``--days 5 --apply`` 就会顺带把黄金族的日线补上。
+
 用法：
 
     python -B dbtools\\seed_index_history.py                 # 预演（只抓不写）
@@ -106,6 +129,15 @@ from core.stockdata import MySqlFundDataSource  # noqa: E402
 TARGETS = ["^NDX", "^GSPC", "^HSI", "^HSTECH", "^HSCE",
            "znb_NKY", "znb_DAX", "znb_CAC"]
 
+#: 默认清单**额外**带的 est 标的（2026-11-10 加）。
+#:
+#: 黄金四只的 ``GLD`` 是 ``fundestmap`` 动态注入的，不属于任何硬编码地区数组，
+#: 也不在 ``--all-qdii`` 的符号集里 —— 漏补它会让四只黄金基金整族停在校准旧日
+#: （页面 ``est_cal`` / ``cny_cal`` 卡住），详见模块 docstring 末节。
+#: 单独成常量而不是直接塞进 ``TARGETS``：``TARGETS`` 的语义是"估值标的指数"，
+#: 且显式 ``--symbols`` 点名时只补点名的那几个，不该被这份默认附加项污染。
+DEFAULT_EXTRA_SYMBOLS = ("GLD",)
+
 #: 默认补多少天。``MAX_QUOTES_DAYS = 620`` 是均线要的窗口，
 #: 但月线要凑够 20 个月、EMA200 也要 200 天，所以给宽一点。
 DEFAULT_DAYS = 800
@@ -117,8 +149,8 @@ EMA_DAYS = (50, 200)
 def main() -> int:
     apply = "--apply" in sys.argv
     days = _arg_int("--days", DEFAULT_DAYS)
-    # --symbols 显式点名时只补那几个（ETF 一律走这条路），否则用默认的两个指数。
-    targets = _arg_list("--symbols") or TARGETS
+    # 默认清单带 GLD，理由见 DEFAULT_EXTRA_SYMBOLS（黄金四只的 est 标的）。
+    targets = resolve_targets()
 
     print("要补的符号：%s" % ", ".join(targets))
     print("每个最多取最近 %d 个交易日" % days)
@@ -257,6 +289,23 @@ def _arg_list(name: str) -> list:
             break
         symbols.extend(part for part in token.split(",") if part)
     return symbols
+
+
+def resolve_targets(argv=None) -> list:
+    """算出本次要补的符号，让"默认带 GLD"这件事能被单测钉住。
+
+    ``--symbols`` 显式点名时只补点名的那几个（ETF 那条老路），不带它才用
+    「八个指数 + GLD」。单独拆出来是因为 :func:`main` 会连库，测试不能整段跑。
+    ``argv`` 只在测试里传；生产调用走 ``sys.argv``。
+    """
+    saved = sys.argv
+    if argv is not None:
+        sys.argv = list(argv)
+    try:
+        return _arg_list("--symbols") or (TARGETS + list(DEFAULT_EXTRA_SYMBOLS))
+    finally:
+        if argv is not None:
+            sys.argv = saved
 
 
 def _arg_int(name: str, fallback: int) -> int:

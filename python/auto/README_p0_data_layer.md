@@ -821,6 +821,32 @@ CK6 是"让 `/fund/SZ161125` 与生产端 `sz161125cn.php` 逐段对齐"。前�
 补完后「基金溢价记录」第一行（`10-14`）已经八格全齐，且与生产端逐格相同：
 `3.34 / 3.1803 / 5.02% / 官方EST 3.182 / 误差 0.04% / ^GSPC价格 7805.45`。
 
+**2026-11-09 追加：清单改成自动取全量，不再手写。** 日常例程此前是两条
+`--symbols <33 只美股族>` / `--symbols <28 只港股族>`，只覆盖 **61 / 102** 只；
+没被点名的 41 只基金 `netvaluehistory` 从来没推进过，净值一直停在 10 月，
+`/fund/qdiilof` 的溢价率因此拿旧净值当分母。脚本现在提供：
+
+| 参数 | 作用 |
+| --- | --- |
+| `--all-funds` | 取 `core.symbolinventory.fund_symbols()` 的 102 只（与 `quotecli --all-qdii` 同源）；可与 `--symbols` 并用取并集 |
+| `--report` | 只读体检：锚点取**基金**最新净值日（排除 `forexcli` 写进同一张表的中间价行），按落后天数列出断档并给出可粘贴的 `--symbols` 清单；不联网、不写库 |
+| `--stale-days N` | `--report` 的断档阈值，默认 5 个自然日（QDII 净值 T+1~T+2 + 周末） |
+| `--apply` 内置备份 | 改调 `backup_db.main([])`，默认 `--lock-tables`，MyISAM 安全；失败即退出不动库。老的 `--skip-backup` 保留 |
+
+东财 `lsjz` 的 `pageSize` 实测**上限 20 条**（`--days 40` 也只回 20 条，
+约 20 个交易日，实测 `161125` 返回 `2026-10-09 ~ 2026-11-05`），
+所以断档超过 20 个交易日要分多次 / 改分页才能补齐。单测见
+`auto/test_backfill_nav_history.py`。
+
+**2026-11-10 一次性追补已执行**：旧例程漏掉的 31 只（19 只原本只有 1~2 行
+种子、12 只停在 10-29/10-30）用 `--symbols <清单> --days 40 --apply` 补
+**304 行**，内置备份 `E:\mysqldata\stock_data_20261110_112353.sql`。
+复跑同清单全部「会补 0 天」，`--report` 报断档 0 只。
+**边界**：`--all-funds` / `--report` 只覆盖 `fund_symbols()` 的 102 只；
+`SH518800` `SH518880` `SZ159934` `SZ159937` `SZ159985` `SZ161226` 这 6 只
+黄金/白银商品 ETF 不在清单里（净值停在 11-03），由另一条链路维护，
+别用「断档 0 只」推断它们已补齐。
+
 ### 9.5 剩下的断档：是 `fundest` 的**日期口径**，不是渲染
 
 其余各行只有四格（没有官方 EST / 时间 / 误差 / 标的净值），因为
@@ -985,19 +1011,45 @@ SH513350 −2.73%、SZ159502 +3.22%、SZ159518 −2.73%）：四条全部
 
 ### 10.5 每日例程（运维口径）
 
-两个窗口，顺序即依赖关系。33 只基金清单（逗号分隔，供 `--symbols`）：
-`SH501300,SH513100,SH513110,SH513290,SH513300,SH513350,SH513390,SH513400,SH513500,SH513650,SH513870,SZ159501,SZ159502,SZ159513,SZ159518,SZ159612,SZ159632,SZ159655,SZ159659,SZ159660,SZ159696,SZ159941,SZ160140,SZ160416,SZ161125,SZ161126,SZ161127,SZ161128,SZ161130,SZ162411,SZ162415,SZ162719,SZ164906`
+两个窗口，顺序即依赖关系。**净值清单不再手写**：2026-11-09 之前这里是
+33 只美股族的逗号串，加上运维 skill 里另一条 28 只港股族，合计只覆盖
+**61 / 102 只**；其余 41 只的净值永远停在 10 月（溢价率拿旧净值当分母）。
+现在统一用 `--all-funds` 取 `core.symbolinventory.fund_symbols()`，
+与凌晨 `--all-qdii` 同一份清单。
 
 **晚间（nav 公布后约 20:00，务必在美股开盘 21:30 前）**：
 
 ```bash
-# 1) 补 33 只基金净值（只补不覆盖；--days 3 足够覆盖周末/假期断档）
-python -B dbtools/backfill_nav_history.py --symbols <上面清单> --days 3 --apply --skip-backup
+# 1) 全部 102 只基金净值（只补不覆盖；--days 3 足够覆盖周末/假期断档）
+#    内置备份走 backup_db.py --lock-tables，MyISAM 安全，不必再 --skip-backup
+python -B dbtools/backfill_nav_history.py --all-funds --days 3 --apply
+# 1b) 每周一次只读体检：打印断档基金与可粘贴的补数清单（不联网、不写库）
+python -B dbtools/backfill_nav_history.py --report
+# 1c) 估值标的日线（**必须在校准之前**）：八个指数 + GLD
+#     GLD 是四只黄金基金（SZ160719/SZ161116/SZ164701/SZ165513）的 est 标的，
+#     由 fundestmap 动态注入，不在 --all-qdii / daemon 符号集里。GLD 日线断档
+#     会让这四只的 calibrationhistory 不前进，页面 est_cal / cny_cal 卡在
+#     校准旧日（2026-11-10 现场：10-30 的 355.78 / 6.7138）。
+python -B dbtools/seed_index_history.py --days 5 --apply
 # 2) 基金层校准：cal[X]，est / cny / nav 同锚一天 X（与 PHP AdjustFactor 同时机）
 python -B auto/cli/autocalibrationcli.py --funds --apply
 # 3) 可选：官方中间价回补（有断档时才需要）
 python -B auto/cli/forexcli.py --backfill
 ```
+
+`--funds` 覆盖 **73 只**"有 est 映射、需要校准"的基金：硬编码地区数组
+69 只（美股 33 + 港股 28 + 日股 5 + 欧股 3），加 `fundestmap` 表动态注入的
+4 只黄金（→ `GLD`）。与净值回填的 102 只**故意不相等**：另外 29 只不做校准，
+但一样要有净值来算溢价。断档追补用
+`--symbols <--report 输出的清单> --days 40 --apply`（东财一次最多回
+20 个交易日），详见 §9.4。
+
+**黄金那 4 只额外依赖 1c 的 GLD 日线**：`calibrate_fund()` 锚基金净值日，
+那天没有 GLD 收盘价就照 PHP `AdjustFactor()` 的语义 `return false`、不写
+校准行；`est_cal` / `cny_cal` 锚的是 `calibrationhistory` 最新一条的日期，
+于是整族停在校准旧日。`--force` 也救不了（闸门没挡，是 est 取不到）。
+2026-11-10 全量预演实测：67 只报"已校准过"、4 只黄金报
+「GLD 在净值日 11-06 没有净值/行情」，补完 GLD 日线才写得出 11-06。
 
 **凌晨（美股收盘后 04:30–09:00）**：
 
@@ -1024,10 +1076,11 @@ fundestcli 时官方中间价最新只到 X 日（SAFE 当日 09:20 公布），
 
 ### 10.6 遗留项
 
-1. **`calibrate_fund` 的锚点口径本身还没修**：它取"est 标的最新行情日"，
-   而 PHP 恒锚基金净值日。例程窗口（晚间校准、凌晨 fundest）能规避，但
-   漂移窗口里误跑仍会写出比值 1.0 的校准 —— 按 AGENTS.md 四件套单独立项
-   （锚点改成基金净值日 + 单测 + 本文档小节 + PHP 逐例对照）。
+1. ~~**`calibrate_fund` 的锚点口径本身还没修**~~ **已于 2026-10-22 结项**：
+   锚点改成**基金净值日**（§3.2 / §10.2），混日在结构上被消掉，任何时段都能
+   跑 `--funds`。这条留作历史，别再按"漂移窗口禁忌"写运维文档 —— 2026-11-10
+   排查黄金族基准价停摆时，误读这条会把根因猜成"跑错时间"，实际是
+   GLD 日线断档（净值日那天 est 取不到，见 §10.5 1c）。
 2. **中间层 `cal_m` 的每日推进**靠上面凌晨第 3 步归档的指数日线；它不进
    EST 数学（`cal_f` 在估值式里约掉、`cal_m` 根本不出现），只影响
    「校准记录」段落与中间层页面的新鲜度。
@@ -1113,7 +1166,8 @@ fundestcli 时官方中间价最新只到 X 日（SAFE 当日 09:20 公布），
    1. python -B dbtools\backup_db.py
    2. python -B dbtools\seed_index_history.py --days 800 --apply
       （默认清单已含八个：^NDX ^GSPC ^HSI ^HSTECH ^HSCE znb_NKY znb_DAX znb_CAC）
-   3. python -B dbtools\backfill_nav_history.py --symbols <要补的基金> --days 30 --apply
+   3. python -B dbtools\backfill_nav_history.py --symbols <要补的基金> --days 30 --apply --skip-backup
+      （第 1 步已锁表备份；不加 --skip-backup 会再 dump 一份，见 §9.4）
    4. python -B auto\cli\autocalibrationcli.py --funds --apply
    5. python -B auto\cli\forexcli.py --fx-only      # 五个即期快照
    ```

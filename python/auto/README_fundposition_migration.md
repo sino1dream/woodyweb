@@ -324,19 +324,32 @@ focus 的值取 `number_format($fVal, 2)` 之后的两位串转 float（PHP 的
 分母停在旧净值就会算出假溢价。2026-11-09 修的那 10 只 LOF 混合
 （`SH501225` `SH501312` `SZ160644` `SZ164824` `SZ163208` `SH501018`
 `SZ160723` `SZ161129` `SZ160216` `SZ161815`）净值停在 10-12~10-30，
-补 **115 行**到 11-05 后，全库停在 10 月的基金 55 → 45 只。生产端单只页
-净值记录也是 11-05；分类页「EST 日期 11-06」是估值日不是净值日。
+补 **115 行**到 11-05 后，全库停在 10 月的标的 55 → 45 个（其中 31 只是
+真需要补的基金，另 14 个是 `SH`/`AGG`/`QQQ` 等中间层派生净值，属另一条
+链路）。生产端单只页净值记录也是 11-05；分类页「EST 日期 11-06」是
+估值日不是净值日。**2026-11-10 那 31 只用 `--days 40 --apply` 追补 304 行，
+`--report` 断档归零。**
 
-回填顺序（**两段式 + 先备份**）：
+**这 45 个为什么会出现（2026-11-09 复盘）**：日常例程只跑两条手写的
+`--symbols`（33 只美股族 + 28 只港股族 = 61 / 102 只），剩下 41 只基金的
+`netvaluehistory` 从未被回填；上面那 10 只是本次手工补的，其余 31 只在
+2026-11-10 追补完毕（304 行）。**不是持仓、不是公式，是清单漏了基金。**
+
+回填顺序（**预演 → 应用**，备份已内置）：
 
 ```text
-python -B dbtools\backup_db.py                  # 锁表全库 → E:\mysqldata
 python -B dbtools\backfill_nav_history.py --symbols <10只> --days 40
-python -B dbtools\backfill_nav_history.py --symbols <10只> --days 40 --apply --skip-backup
+python -B dbtools\backfill_nav_history.py --symbols <10只> --days 40 --apply
 ```
 
-`--apply` 内置的备份走 `--single-transaction`，演示库多数是 MyISAM、
-事务快照无效，所以先跑 `backup_db.py` 再 `--skip-backup`。该脚本默认
-**只补 `SZ161125`**，必须 `--symbols` 点名；`--days 40` 实测东财接口每页
-只返回约 20 条。已有日期不覆盖，重跑预演会显示「会补 0 天」。
-本次备份：`E:\mysqldata\stock_data_20261109_110029.sql`（2.70 MB / 35 张表）。
+`--apply` 内置备份最初走 `--single-transaction`（MyISAM 下事务快照无效），
+当天改成调 `backup_db.main([])` → `--lock-tables`，**失败就退出不动库**，
+所以现在一条命令就是安全顺序；`--skip-backup` 只在已手工 dump 过时才用。
+2026-11-09 那次用的还是旧两步顺序，备份为
+`E:\mysqldata\stock_data_20261109_110029.sql`（2.70 MB / 35 张表）。
+
+**日常别再手写清单**：`--all-funds` 取
+`core.symbolinventory.fund_symbols()` 的 102 只（与 `quotecli --all-qdii`
+同源），`--report` 是只读断档体检。详见 `README_p0_data_layer.md` §9.4
+与运维 skill §10.1。`--days 40` 实测东财 `pageSize` 上限 20 条，
+约覆盖最近 20 个交易日；已有日期不覆盖，重跑预演显示「会补 0 天」。
